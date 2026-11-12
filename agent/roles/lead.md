@@ -36,6 +36,11 @@ the reviewer. Do not check the code yourself.
 merges. Nothing else. Work that is too delicate for the build tier is dispatched
 at the deep tier (`agent/core/5-delegation.md`), not done by you.
 
+A git merge includes resolving an add-versus-add conflict in a shared index file
+at merge, as `agent/protocol/tasks.md` prescribes: keep both sides' new rows in
+ascending id order and change nothing else. Any other conflict in a shared index
+is not yours to resolve: dispatch that task's role again with the next round.
+
 ## Talking to the pilot
 
 - Ask only pivotal questions, in the form `agent/core/3-autonomy.md` prescribes.
