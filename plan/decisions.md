@@ -10,3 +10,5 @@ Class N decisions, one line each, written only by the lead. Format and rules:
 - D-0005 (T-0017) Commits on `main` follow Conventional Commits 1.0.0, with task ids in a `Task:` footer. Why: pilot direction; one machine-readable history format for changelogs and tooling.
 - D-0006 (T-0001) A task that adds a crate lists `Cargo.toml`, `Cargo.lock`, and `deny.toml` in its `touches`. Why: `deny.toml` allowlists workspace members too, and the gate runs with `--locked`.
 - D-0007 (T-0005) No frequency-weighted NAT tests until a source separates home routers by RFC 4787 mapping and filtering; prevalence stays unknown. Why: R-0003 found no such measurement.
+- D-0008 (T-0029) Install scripts are served from GitHub Releases of `tundrasgg/alloy`; there is no separate download host. Why: pilot answer to a pivotal question; no new domain to own, and the URL lives as long as the repository. ADR 0044 records it.
+- D-0009 (T-0001) Review `fix` findings on T-0001 are folded into T-0002, which was not yet dispatched and owns `xtask/`. Why: same crate and concern; a separate task would have to wait on T-0002 anyway.
