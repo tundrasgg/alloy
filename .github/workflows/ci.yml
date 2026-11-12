@@ -1,0 +1,53 @@
+# The quality gate. This workflow only prepares a machine and runs
+# `cargo xtask ci` (ADR 0037). New checks go into xtask, never into this file.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A new push to a pull request cancels its older runs. Runs on main are never
+# cancelled, so every commit on main gets a verdict.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ci:
+    name: cargo xtask ci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # rustup reads rust-toolchain.toml and installs that toolchain with its
+      # profile and components. The runner image's rustup is used as is.
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install --no-self-update
+          rustc --version
+          cargo --version
+
+      - name: Cache Cargo state
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # cargo skips the build when this exact version is already in the cached
+      # ~/.cargo/bin.
+      - name: Install cargo-deny
+        run: cargo install --locked cargo-deny@0.20.2
+
+      - name: Run the quality gate
+        run: cargo xtask ci
