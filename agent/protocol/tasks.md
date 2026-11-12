@@ -67,7 +67,34 @@ A task is ready to dispatch only when:
 - every task in `depends` is `done`,
 - every path in `reads` exists on main,
 - the acceptance section contains runnable commands,
-- its `touches` set is disjoint from every `active` task.
+- its `touches` set is disjoint from every `active` task, leaving out the shared
+  index files below.
+
+## Shared index files
+
+These paths are shared and append-only:
+
+- `adr/README.md`
+- `spec/README.md`
+- `product/briefs/README.md`
+- `research/README.md`
+
+A task that lists one of them in `touches` may add rows to its tables. It may not
+edit, delete, or reorder an existing row, and it may not change any text outside
+the tables. A new row goes in the table where its id belongs, in ascending id
+order.
+
+The disjointness check in the readiness rules leaves these paths out, so any
+number of tasks that each add rows to the same index can be `active` at once. A
+task whose scope edits an existing row, for example an ARFC status in
+`spec/README.md`, holds that file exclusively: for that task the path counts in
+the disjointness check like any other.
+
+A merge conflict in a shared index is resolved by the lead, at merge, while it
+brings main into the task branch (`agent/eng/git.md`). The lead keeps both sides'
+new rows, in ascending id order, and changes nothing else. A conflict that is not
+two sets of added rows means a task broke the append-only rule: the lead does not
+resolve it and dispatches that task's role again with the next round.
 
 ## Sizing
 
