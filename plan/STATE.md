@@ -44,14 +44,14 @@ ADR 0036, ADR 0040 to ADR 0044, R-0001 to R-0005, and PB-0001 are allocated to t
 | T-0019 | research | researcher | done | none | Research licenses inside the Cloud Hypervisor UEFI images |
 | T-0020 | spec | architect | done | none | Resolve the per-guest seccomp clause in ARFC 0011 |
 | T-0021 | spec | architect | review | none | Resolve NAT spec issues found by R-0003 |
-| T-0022 | spec | architect | queued | T-0027 | Apply PB-0001 to ARFC 0002 and ARFC 0019 |
-| T-0023 | spec | architect | queued | T-0027 | Specify user access keys and the local admin path |
-| T-0024 | spec | architect | queued | T-0021, T-0027 | Fix the default mesh port and TCP 443 sharing |
+| T-0022 | spec | architect | active | none | Apply PB-0001 to ARFC 0002 and ARFC 0019 |
+| T-0023 | spec | architect | active | none | Specify user access keys and the local admin path |
+| T-0024 | spec | architect | queued | T-0021 | Fix the default mesh port and TCP 443 sharing |
 | T-0025 | process | architect | done | none | Let parallel tasks share append-only index files |
-| T-0026 | spec | architect | queued | T-0027 | Make the ARFC 0003 handshake implementable on Noise libraries |
-| T-0027 | process | architect | active | none | Align core delegation and the lead role with shared index files |
-| T-0028 | spec | architect | queued | T-0027 | Fix the Landlock clauses in ARFC 0011 section 2 |
-| T-0029 | spec | architect | queued | T-0027 | Record the install script location in ADR 0044 |
+| T-0026 | spec | architect | active | none | Make the ARFC 0003 handshake implementable on Noise libraries |
+| T-0027 | process | architect | done | none | Align core delegation and the lead role with shared index files |
+| T-0028 | spec | architect | active | none | Fix the Landlock clauses in ARFC 0011 section 2 |
+| T-0029 | spec | architect | active | none | Record the install script location in ADR 0044 |
 
 ## First dispatch
 
