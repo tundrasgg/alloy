@@ -41,7 +41,7 @@ ADR 0036, ADR 0038 to ADR 0043, R-0001 to R-0005, and PB-0001 are allocated to t
 | T-0016 | build | developer | queued | T-0001 | Run cargo xtask ci in GitHub Actions |
 | T-0017 | process | architect | done | none | Adopt Conventional Commits for commits on main |
 | T-0018 | build | developer | queued | T-0002 | Check commit messages on main in xtask |
-| T-0019 | research | researcher | active | none | Research licenses inside the Cloud Hypervisor UEFI images |
+| T-0019 | research | researcher | done | none | Research licenses inside the Cloud Hypervisor UEFI images |
 | T-0020 | spec | architect | review | none | Resolve the per-guest seccomp clause in ARFC 0011 |
 | T-0021 | spec | architect | active | none | Resolve NAT spec issues found by R-0003 |
 | T-0022 | spec | architect | queued | T-0025 | Apply PB-0001 to ARFC 0002 and ARFC 0019 |
@@ -66,6 +66,8 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 - Measure on a real KVM host: Cloud Hypervisor create to first guest instruction, migration downtime with vhost-user backends at 100 MiB/s dirty rate, and Landlock behavior with vhost-user socket paths (R-0002, Unknown). Needs a KVM host in the task's environment. Also confirm `Seccomp: 2` on every Cloud Hypervisor thread before the first guest instruction, and migration over a relayed Unix socket (ARFC 0011 clauses 2.3 and 2.4).
 - Spec: ARFC 0011 section 3.5 says live migration crosses the VMM sandbox only through a Unix socket in the guest directory (T-0020 follow-up).
 - Verify: `tests/conformance/hypervisor` cases for ARFC 0011 clauses 2.1 to 2.7.
+- Research: unpack the `ch-97eeb7b09` CLOUDHV images to confirm their module lists, and read the LZMA SDK and `Logo.bmp` licenses (R-0005, Unknown).
+- The next research task adds the R-0005 row to `research/README.md` in its `touches`.
 
 ## Still to cut for M1 and M2
 
