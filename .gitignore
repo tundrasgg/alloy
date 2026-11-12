@@ -1,0 +1,11 @@
+/target
+**/node_modules
+**/dist
+*.swp
+.DS_Store
+
+# session-local and personal agent state never enters the repository
+CLAUDE.md
+CLAUDE.local.md
+.claude/settings.local.json
+.claude/worktrees/

@@ -1,0 +1,140 @@
+# ARFC 0011: Compute
+
+- Status: accepted
+- Depends on: 0006, 0007, 0009, 0013
+- Crates: alloy-compute, alloy-init, alloy-imds
+- Decisions: 0022, 0023, 0024
+
+## 1. Purpose
+
+Runs tenant workloads, as virtual machines and as containers, with the isolation
+of a virtual machine for both.
+
+## 2. Model
+
+| Resource | Is |
+|---|---|
+| instance | A virtual machine: a shape, a boot volume, ENIs, volumes, user data |
+| container | One or more OCI containers that share a network namespace, run inside one microVM |
+| shape | A named size: vCPUs, memory, and optional limits. Custom sizes are allowed |
+| image | A bootable disk image, public to the cluster or private to a project |
+| key pair | An SSH public key injected at first boot |
+| placement group | A set of guests with a spread or pack rule |
+
+Guest states: `pending`, `starting`, `running`, `stopping`, `stopped`,
+`migrating`, `failed`, `deleted`.
+
+Each guest is one VMM process, started by `alloyd`, running as its own Unix user
+in its own cgroup, user namespace, and mount namespace, under a seccomp filter and
+a Landlock policy that allow only what that guest's devices need.
+
+## 3. Behavior
+
+### 3.1 Instances
+
+3.1.1 An instance boots from a volume cloned from an image. The clone is
+copy-on-write and must take under 1 second regardless of image size.
+
+3.1.2 Devices are virtio only: network (vhost-user to `alloy-net`), block
+(vhost-user to `alloy-blk`), console, entropy, and memory balloon. Firmware boot
+(UEFI) and direct kernel boot are both supported.
+
+3.1.3 From `Create` returning to the guest's first instruction must take under 3
+seconds on a node that has the image's chunks, excluding guest boot.
+
+3.1.4 `Stop` sends an ACPI shutdown and forces power off after 90 seconds.
+`Restart`, `Resize` (while stopped), and hot attach and detach of volumes and ENIs
+are supported.
+
+3.1.5 Serial console is available through the API as a stream, with the last 1 MiB
+of output kept.
+
+### 3.2 Containers
+
+3.2.1 A container resource names OCI images, commands, environment, mounts, and
+resources. Alloy boots a microVM with an Alloy-provided kernel and `alloy-init` as
+PID 1, which mounts each image and starts each container under the OCI runtime
+specification.
+
+3.2.2 Image layers are pulled once per node by the host, converted to a read-only
+block image, cached, and attached read-only. The writable layer is a volume or
+memory.
+
+3.2.3 A container has ENIs, security groups, volumes, and an instance role exactly
+as an instance does. From `Create` to the container's entry point running must
+take under 2 seconds with a cached image.
+
+3.2.4 Restart policy: `always`, `on-failure`, `never`. Logs are captured from
+standard output and error and are available through the API.
+
+### 3.3 Metadata service
+
+`alloy-imds` answers on `169.254.169.254` and `fd00:ec2::254` from each guest's
+port, served by the host. It follows the token-based protocol of the EC2 instance
+metadata service version 2: a `PUT` for a token, then `GET` with the token. It
+serves instance identity, user data, network configuration, SSH keys, and
+temporary credentials for the guest's instance role. Requests must be attributed
+by port, never by anything in the packet a guest can forge. Standard cloud images
+using cloud-init must configure themselves without changes.
+
+### 3.4 Scheduling
+
+3.4.1 The scheduler filters nodes (role, capacity, architecture, shape features,
+zone, taints, placement rules, volume locality) and scores the rest (balance,
+image and volume locality, relay-only last).
+
+3.4.2 A placement is a claim committed in the control plane. Two guests must never
+be committed to capacity that only fits one.
+
+3.4.3 Overcommit is per node pool: CPU default 4.0, memory default 1.0.
+
+3.4.4 Scheduling a guest must take under 100 ms at the 99th percentile in a region
+of 10,000 nodes.
+
+### 3.5 Migration
+
+Live migration moves a running instance between nodes of the same architecture
+over the mesh. With a replicated boot volume only memory moves. Downtime must be
+under 500 ms for a guest dirtying memory at up to 100 MiB per second. `alloy node
+drain` migrates every guest off a node.
+
+### 3.6 Nodes without hardware virtualization
+
+Such a node must not run guests for more than one org. It may hold `compute` only
+when dedicated to a single org by a cloud admin, and then runs containers through
+the `sandbox` seam with namespaces, seccomp, and cgroups. Instances are refused
+there with `Unsupported`.
+
+## 5. Seams
+
+| Kind | Trait | Implementations | Suite |
+|---|---|---|---|
+| `hypervisor` | `Hypervisor` | `cloud-hypervisor`, `mem` | `tests/conformance/hypervisor` |
+| `sandbox` | `Sandbox` | `namespace`, `mem` | `tests/conformance/sandbox` |
+| `scheduler-policy` | `SchedulerPolicy` | `default`, `mem` | `tests/conformance/scheduler` |
+
+`cloud-hypervisor` runs as a separate program. Task T-0004 confirms its
+capabilities against this ARFC.
+
+## 6. Failure behavior
+
+VMM crash: the guest is `failed`, and restarts if its policy says so. Node loss:
+after 60 seconds without a heartbeat and a fencing confirmation (ARFC 0013), guests
+with replicated volumes are restarted elsewhere. Guests with node-local volumes
+stay `failed` until the node returns. `alloyd` restart: guests are untouched
+(I-17).
+
+## 7. Limits
+
+256 vCPUs and 1 TiB of memory per instance. 16 ENIs and 32 volumes per guest. 16
+containers per container resource. 64 KiB of user data.
+
+## 8. Security
+
+The guest is hostile. Everything it can reach, the VMM, vhost-user backends, the
+metadata service, is bound by I-04. Upholds I-01, I-04, I-05.
+
+## 9. Open questions
+
+- Device passthrough for GPUs. Product brief to be cut in M10.
+- Windows guests: firmware and driver requirements. Research task to be cut in M3.
