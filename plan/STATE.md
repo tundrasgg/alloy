@@ -51,7 +51,7 @@ ADR 0036, ADR 0040 to ADR 0044, R-0001 to R-0005, and PB-0001 are allocated to t
 | T-0026 | spec | architect | active | none | Make the ARFC 0003 handshake implementable on Noise libraries |
 | T-0027 | process | architect | done | none | Align core delegation and the lead role with shared index files |
 | T-0028 | spec | architect | active | none | Fix the Landlock clauses in ARFC 0011 section 2 |
-| T-0029 | spec | architect | active | none | Record the install script location in ADR 0044 |
+| T-0029 | spec | architect | done | none | Record the install script location in ADR 0044 |
 
 ## First dispatch
 
@@ -77,7 +77,8 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 - Research then ADR: the `rustls` crypto provider (`aws-lc-rs` needs a C build and license review; `ring` release cadence). From R-0004.
 - The task that wires openraft into `alloy-rt` includes a seed replay test. From R-0004.
 - If LMDB or `blake3` are adopted, an ADR adds OpenLDAP and CC0 to the license allowlist. From R-0004.
-- Product: replace `<download-host>` in PB-0001 with the GitHub Releases URL once ADR 0044 merges.
+- Product: replace `<download-host>` in PB-0001 with the ADR 0044 URLs.
+- Build: release automation attaches `install.sh` and `install.ps1` to every release (ADR 0044).
 - Research: should the 25 s keepalive drop or adapt for NATs with UDP timeouts under 25 s (T-0021 follow-up).
 - Spec: ARFC 0004 section 8 states the probe reflection bound from section 3.2 (T-0021 follow-up).
 
