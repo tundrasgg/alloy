@@ -14,6 +14,7 @@ or supersede it.
 | [0001](0001-alloy-is-licensed-mit-or-apache-2-0.md) | Alloy is licensed MIT OR Apache-2.0 |
 | [0002](0002-rust-for-the-system-typescript-for-the-console.md) | Rust for the system, TypeScript for the console |
 | [0037](0037-github-hosts-the-source-and-ci-runs-on-github-hosted-runners.md) | GitHub hosts the source and CI runs on GitHub-hosted runners |
+| [0044](0044-install-scripts-are-served-from-github-releases.md) | Install scripts are served from GitHub Releases |
 
 ## Process
 
