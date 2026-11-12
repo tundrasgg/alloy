@@ -89,6 +89,7 @@ or supersede it.
 | [0022](0022-one-sandboxed-vmm-process-per-guest-cloud-hypervisor-first.md) | One sandboxed VMM process per guest, Cloud Hypervisor first |
 | [0023](0023-containers-run-as-microvms.md) | Containers run as microVMs |
 | [0024](0024-nodes-without-hardware-virtualization-do-not-run-mixed-tenan.md) | Nodes without hardware virtualization do not run mixed tenants |
+| [0038](0038-seccomp-is-fixed-per-hypervisor-landlock-and-namespaces-per-g.md) | Seccomp is fixed per hypervisor, Landlock and namespaces per guest |
 
 ## Storage
 

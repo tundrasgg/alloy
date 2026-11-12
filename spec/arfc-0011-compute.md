@@ -3,7 +3,7 @@
 - Status: accepted
 - Depends on: 0006, 0007, 0009, 0013
 - Crates: alloy-compute, alloy-init, alloy-imds
-- Decisions: 0022, 0023, 0024
+- Decisions: 0022, 0023, 0024, 0038
 
 ## 1. Purpose
 
@@ -24,9 +24,48 @@ of a virtual machine for both.
 Guest states: `pending`, `starting`, `running`, `stopping`, `stopped`,
 `migrating`, `failed`, `deleted`.
 
-Each guest is one VMM process, started by `alloyd`, running as its own Unix user
-in its own cgroup, user namespace, and mount namespace, under a seccomp filter and
-a Landlock policy that allow only what that guest's devices need.
+Each guest is one VMM process, started by `alloyd`, in the sandbox below (ADR
+0022, ADR 0038). The seccomp filter is the same for every guest of one
+`hypervisor` implementation and version. The user, namespaces, guest directory,
+and Landlock rules are per guest.
+
+2.1 The VMM process runs as a Unix user that is not root in the initial user
+namespace and that no other guest's VMM and no other Alloy process runs as. It
+has its own cgroup, user namespace, mount namespace, and network namespace.
+
+2.2 Each guest has one guest directory on the node. Every file the VMM writes and
+every Unix socket it binds or connects to is inside it: the control API socket,
+each vhost-user socket for network and block, and the serial console. No other
+guest's user can read, write, or search the guest directory or anything in it.
+
+2.3 The VMM's mount namespace contains no other guest's directory and no Unix
+socket file outside its own guest directory. Its network namespace contains no
+network interface other than loopback; migration traffic (section 3.5) leaves the
+sandbox only through a Unix socket in the guest directory.
+
+2.4 Every thread of the VMM process runs under a seccomp filter (`Seccomp: 2` in
+`/proc/<pid>/task/<tid>/status`) from before the guest's first instruction until
+the process exits, and a system call the filter does not allow ends the process.
+The filter is fixed per `hypervisor` implementation and version and is not derived
+from the guest's devices. Alloy never runs a VMM with its filter disabled, in a
+logging mode, or in a mode that returns an error instead of ending the process.
+For `cloud-hypervisor` this is its built-in filter in its default mode.
+
+2.5 The VMM runs under a Landlock rule set fixed when the VMM starts. The rules
+Alloy passes grant read-write access beneath the guest directory and read-only
+access to each file outside it that the guest's configuration names at start
+(firmware, kernel, initramfs, read-only images), and nothing else. No rule is
+added after start.
+
+2.6 Hot attach (3.1.4) of a volume or ENI reaches the VMM only as a vhost-user
+socket that `alloy-blk` or `alloy-net` creates inside the guest directory, so it
+is covered by the rules of 2.5 and needs no new rule.
+
+2.7 Landlock does not confine Unix sockets, so 2.2, 2.3, and this clause do: each
+socket file in a guest directory grants write permission, which connecting
+requires, to that guest's user and to no other guest's user, and abstract sockets
+of the host and of other guests are unreachable because the network namespace
+isolates them.
 
 ## 3. Behavior
 
