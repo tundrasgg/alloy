@@ -11,13 +11,13 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0031 |
+| Task `T-` | T-0033 |
 | Decision `D-` | D-0010 |
-| ADR | 0045 |
+| ADR | 0046 |
 | Research `R-` | R-0006 |
 | Brief `PB-` | PB-0002 |
 
-ADR 0036, ADR 0040 to ADR 0044, R-0001 to R-0005, and PB-0001 are allocated to the tasks below.
+ADR 0036, ADR 0040 to ADR 0043, ADR 0045, R-0001 to R-0005, and PB-0001 are allocated to the tasks below.
 
 ## Board
 
@@ -28,7 +28,7 @@ ADR 0036, ADR 0040 to ADR 0044, R-0001 to R-0005, and PB-0001 are allocated to t
 | T-0003 | research | researcher | done | none | Research deterministic simulation options in Rust |
 | T-0004 | research | researcher | done | none | Research Cloud Hypervisor against ARFC 0011 |
 | T-0005 | research | researcher | done | none | Research NAT behaviors and define lab presets |
-| T-0006 | spec | architect | queued | T-0021 | Specify the alloy-rt and alloy-seam interfaces |
+| T-0006 | spec | architect | queued | T-0021, T-0031 | Specify the alloy-rt and alloy-seam interfaces |
 | T-0007 | interface | developer | queued | T-0001, T-0006 | Define the alloy-rt and alloy-seam interface crates |
 | T-0008 | verify | verifier | queued | T-0007 | Write conformance suites for the runtime seams |
 | T-0009 | build | developer | queued | T-0007 | Build the alloy-sim deterministic simulator |
@@ -43,7 +43,7 @@ ADR 0036, ADR 0040 to ADR 0044, R-0001 to R-0005, and PB-0001 are allocated to t
 | T-0018 | build | developer | queued | T-0002 | Check commit messages on main in xtask |
 | T-0019 | research | researcher | done | none | Research licenses inside the Cloud Hypervisor UEFI images |
 | T-0020 | spec | architect | done | none | Resolve the per-guest seccomp clause in ARFC 0011 |
-| T-0021 | spec | architect | review | none | Resolve NAT spec issues found by R-0003 |
+| T-0021 | spec | architect | blocked | T-0031 | Resolve NAT spec issues found by R-0003 |
 | T-0022 | spec | architect | active | none | Apply PB-0001 to ARFC 0002 and ARFC 0019 |
 | T-0023 | spec | architect | active | none | Specify user access keys and the local admin path |
 | T-0024 | spec | architect | queued | T-0021 | Fix the default mesh port and TCP 443 sharing |
@@ -53,6 +53,8 @@ ADR 0036, ADR 0040 to ADR 0044, R-0001 to R-0005, and PB-0001 are allocated to t
 | T-0028 | spec | architect | done | none | Fix the Landlock clauses in ARFC 0011 section 2 |
 | T-0029 | spec | architect | done | none | Record the install script location in ADR 0044 |
 | T-0030 | spec | architect | queued | T-0026 | Fix the handshake DH rate limit in ARFC 0003 section 6 |
+| T-0031 | spec | architect | active | none | Fix the review findings on the T-0021 NAT spec changes |
+| T-0032 | process | architect | active | none | Define the inputs of a second round for every role |
 
 ## First dispatch
 
