@@ -1,0 +1,44 @@
+# The dependency allowlist. Rules: agent/eng/deps.md.
+#
+# A crate builds in CI only if it is listed in `bans.allow` below. Adding one is a
+# class N decision with a research note, made by the lead in the task that needs it.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+# The licenses compatible with MIT OR Apache-2.0 that agent/eng/deps.md accepts.
+allow = [
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.93
+# The list is policy, not an inventory: a license nothing uses yet stays allowed.
+unused-allowed-license = "allow"
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+allow-wildcard-paths = true
+# The allowlist. Every crate in the graph, workspace members included, must be
+# named here. Nothing else builds.
+allow = [
+    { crate = "xtask", reason = "workspace member: repository automation" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
