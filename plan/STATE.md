@@ -54,7 +54,7 @@ ADR 0036, ADR 0040 to ADR 0043, ADR 0045, R-0001 to R-0005, and PB-0001 are allo
 | T-0029 | spec | architect | done | none | Record the install script location in ADR 0044 |
 | T-0030 | spec | architect | queued | T-0026 | Fix the handshake DH rate limit in ARFC 0003 section 6 |
 | T-0031 | spec | architect | active | none | Fix the review findings on the T-0021 NAT spec changes |
-| T-0032 | process | architect | active | none | Define the inputs of a second round for every role |
+| T-0032 | process | architect | done | none | Define the inputs of a second round for every role |
 | T-0033 | build | developer | review | none | Never cancel CI runs on main |
 
 ## First dispatch
@@ -67,6 +67,11 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 - Simulator checkers: linearizability, isolation, durability (ARFC 0005 section 3.6).
 - Real-mode NAT scripts and the simulated versus real comparison (ARFC 0005 section 3.5). Include a check that nftables and namespaces can build every R-0003 preset, especially endpoint-independent filtering with a dependent mapping, a separate timer per filter entry, and outbound-only refresh.
 - The path lock and banned pattern fixtures for milestone exit criterion 4, if T-0002 leaves any out.
+
+## Process follow-ups
+
+- Which branch a different role starts from in round 1 of a task whose branch another role owns (a `test-issue` ruling). From T-0032.
+- `.claude/harness.md` binds "remove the earlier workspace" before a later round to the harness's worktree cleanup. From T-0032.
 
 ## Still to cut for M3
 
