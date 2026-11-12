@@ -24,6 +24,7 @@ One term per concept. Use these exact words in specs, code, messages, and docs.
 | role (node) | What a node does: `anchor`, `control`, `compute`, `storage`. A node may hold several |
 | anchor | A node with an address every other node can reach. Reflects addresses, relays traffic, admits joins, and can hold public addresses |
 | join token | The string that lets a machine join. Starts with `alyt_` |
+| advertise address | An address an anchor publishes in join tokens for other machines to reach it. Set with `--advertise` |
 | cluster key | The Ed25519 key that signs node records. The root of cluster trust |
 | node record | A signed statement binding a node's keys, roles, and addresses |
 | seam | A runtime-swappable subsystem boundary: a trait, a registry name, a conformance suite |
@@ -53,6 +54,15 @@ One term per concept. Use these exact words in specs, code, messages, and docs.
 | project | A grouping of resources inside an org. The unit of quota and default access |
 | principal | An identity that can be authorized: user, service account, node, instance role |
 | policy | A document of allow and deny statements |
+| access key | A long-lived credential, `AKAL` and 16 characters with a secret, used to sign API requests |
+
+## Surfaces
+
+| Term | Meaning |
+|---|---|
+| context | A saved CLI target: an API endpoint, a pinned certificate authority, a credential, and a default org and project |
+| login code | A one-use string that logs a computer in as a user and pins the cluster's certificate authority. Starts with `alyc_` |
+| standing warning | A warning shown wherever the user looks for as long as a risk lasts, with the command that removes it |
 
 ## Compute and storage
 
