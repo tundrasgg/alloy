@@ -11,7 +11,7 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0033 |
+| Task `T-` | T-0034 |
 | Decision `D-` | D-0010 |
 | ADR | 0046 |
 | Research `R-` | R-0006 |
@@ -38,7 +38,7 @@ ADR 0036, ADR 0040 to ADR 0043, ADR 0045, R-0001 to R-0005, and PB-0001 are allo
 | T-0013 | product | product | done | none | Write the brief for init, join, and first login |
 | T-0014 | research | researcher | done | none | Research crates for consensus, storage, and crypto |
 | T-0015 | spec | architect | done | none | Record repository hosting and CI runners in ADR 0037 |
-| T-0016 | build | developer | review | none | Run cargo xtask ci in GitHub Actions |
+| T-0016 | build | developer | done | none | Run cargo xtask ci in GitHub Actions |
 | T-0017 | process | architect | done | none | Adopt Conventional Commits for commits on main |
 | T-0018 | build | developer | queued | T-0002 | Check commit messages on main in xtask |
 | T-0019 | research | researcher | done | none | Research licenses inside the Cloud Hypervisor UEFI images |
@@ -55,6 +55,7 @@ ADR 0036, ADR 0040 to ADR 0043, ADR 0045, R-0001 to R-0005, and PB-0001 are allo
 | T-0030 | spec | architect | queued | T-0026 | Fix the handshake DH rate limit in ARFC 0003 section 6 |
 | T-0031 | spec | architect | active | none | Fix the review findings on the T-0021 NAT spec changes |
 | T-0032 | process | architect | active | none | Define the inputs of a second round for every role |
+| T-0033 | build | developer | active | none | Never cancel CI runs on main |
 
 ## First dispatch
 
