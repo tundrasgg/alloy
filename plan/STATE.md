@@ -38,7 +38,7 @@ ADR 0036, ADR 0040 to ADR 0044, R-0001 to R-0005, and PB-0001 are allocated to t
 | T-0013 | product | product | done | none | Write the brief for init, join, and first login |
 | T-0014 | research | researcher | done | none | Research crates for consensus, storage, and crypto |
 | T-0015 | spec | architect | done | none | Record repository hosting and CI runners in ADR 0037 |
-| T-0016 | build | developer | active | none | Run cargo xtask ci in GitHub Actions |
+| T-0016 | build | developer | review | none | Run cargo xtask ci in GitHub Actions |
 | T-0017 | process | architect | done | none | Adopt Conventional Commits for commits on main |
 | T-0018 | build | developer | queued | T-0002 | Check commit messages on main in xtask |
 | T-0019 | research | researcher | done | none | Research licenses inside the Cloud Hypervisor UEFI images |
@@ -50,7 +50,7 @@ ADR 0036, ADR 0040 to ADR 0044, R-0001 to R-0005, and PB-0001 are allocated to t
 | T-0025 | process | architect | done | none | Let parallel tasks share append-only index files |
 | T-0026 | spec | architect | active | none | Make the ARFC 0003 handshake implementable on Noise libraries |
 | T-0027 | process | architect | done | none | Align core delegation and the lead role with shared index files |
-| T-0028 | spec | architect | active | none | Fix the Landlock clauses in ARFC 0011 section 2 |
+| T-0028 | spec | architect | done | none | Fix the Landlock clauses in ARFC 0011 section 2 |
 | T-0029 | spec | architect | done | none | Record the install script location in ADR 0044 |
 
 ## First dispatch
@@ -68,7 +68,7 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 
 - Measure on a real KVM host: Cloud Hypervisor create to first guest instruction, migration downtime with vhost-user backends at 100 MiB/s dirty rate, and Landlock behavior with vhost-user socket paths (R-0002, Unknown). Needs a KVM host in the task's environment. Also confirm `Seccomp: 2` on every Cloud Hypervisor thread before the first guest instruction, and migration over a relayed Unix socket (ARFC 0011 clauses 2.3 and 2.4).
 - Spec: ARFC 0011 section 3.5 says live migration crosses the VMM sandbox only through a Unix socket in the guest directory (T-0020 follow-up).
-- Verify: `tests/conformance/hypervisor` cases for ARFC 0011 clauses 2.1 to 2.7, placed so the `mem` implementation can pass them or is exempt by stated rule (T-0020 review F5).
+- Verify: `tests/conformance/hypervisor` cases for ARFC 0011 clauses 2.1 to 2.7, placed so the `mem` implementation can pass them or is exempt by stated rule (T-0020 review F5). Clause 2.5 tests check the thread that applies the rule set and the threads it starts afterwards, not every TID (T-0028).
 - Research: unpack the `ch-97eeb7b09` CLOUDHV images to confirm their module lists, and read the LZMA SDK and `Logo.bmp` licenses (R-0005, Unknown).
 - The next research task adds the R-0005 row to `research/README.md` in its `touches`.
 
