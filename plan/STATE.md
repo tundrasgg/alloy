@@ -11,13 +11,13 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0019 |
+| Task `T-` | T-0021 |
 | Decision `D-` | D-0006 |
-| ADR | 0038 |
-| Research `R-` | R-0005 |
+| ADR | 0039 |
+| Research `R-` | R-0006 |
 | Brief `PB-` | PB-0002 |
 
-ADR 0036, ADR 0037, R-0001 to R-0004, and PB-0001 are allocated to the tasks below.
+ADR 0036, ADR 0038, R-0001 to R-0005, and PB-0001 are allocated to the tasks below.
 
 ## Board
 
@@ -26,7 +26,7 @@ ADR 0036, ADR 0037, R-0001 to R-0004, and PB-0001 are allocated to the tasks bel
 | T-0001 | build | developer | active | none | Bootstrap the Cargo workspace and the CI gate |
 | T-0002 | build | developer | queued | T-0001 | Implement repository policy lints in check-repo |
 | T-0003 | research | researcher | active | none | Research deterministic simulation options in Rust |
-| T-0004 | research | researcher | active | none | Research Cloud Hypervisor against ARFC 0011 |
+| T-0004 | research | researcher | done | none | Research Cloud Hypervisor against ARFC 0011 |
 | T-0005 | research | researcher | active | none | Research NAT behaviors and define lab presets |
 | T-0006 | spec | architect | queued | T-0003 | Specify the alloy-rt and alloy-seam interfaces |
 | T-0007 | interface | developer | queued | T-0001, T-0006 | Define the alloy-rt and alloy-seam interface crates |
@@ -41,6 +41,8 @@ ADR 0036, ADR 0037, R-0001 to R-0004, and PB-0001 are allocated to the tasks bel
 | T-0016 | build | developer | queued | T-0001 | Run cargo xtask ci in GitHub Actions |
 | T-0017 | process | architect | done | none | Adopt Conventional Commits for commits on main |
 | T-0018 | build | developer | queued | T-0002 | Check commit messages on main in xtask |
+| T-0019 | research | researcher | active | none | Research licenses inside the Cloud Hypervisor UEFI images |
+| T-0020 | spec | architect | active | none | Resolve the per-guest seccomp clause in ARFC 0011 |
 
 ## First dispatch
 
@@ -52,6 +54,10 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 - Simulator checkers: linearizability, isolation, durability (ARFC 0005 section 3.6).
 - Real-mode NAT scripts and the simulated versus real comparison (ARFC 0005 section 3.5).
 - The path lock and banned pattern fixtures for milestone exit criterion 4, if T-0002 leaves any out.
+
+## Still to cut for M3
+
+- Measure on a real KVM host: Cloud Hypervisor create to first guest instruction, migration downtime with vhost-user backends at 100 MiB/s dirty rate, and Landlock behavior with vhost-user socket paths (R-0002, Unknown). Needs a KVM host in the task's environment.
 
 ## Pending pivotal questions
 
