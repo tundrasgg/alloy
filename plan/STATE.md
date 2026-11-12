@@ -55,7 +55,7 @@ ADR 0036, ADR 0040 to ADR 0043, ADR 0045, R-0001 to R-0005, and PB-0001 are allo
 | T-0030 | spec | architect | queued | T-0026 | Fix the handshake DH rate limit in ARFC 0003 section 6 |
 | T-0031 | spec | architect | active | none | Fix the review findings on the T-0021 NAT spec changes |
 | T-0032 | process | architect | active | none | Define the inputs of a second round for every role |
-| T-0033 | build | developer | active | none | Never cancel CI runs on main |
+| T-0033 | build | developer | review | none | Never cancel CI runs on main |
 
 ## First dispatch
 
