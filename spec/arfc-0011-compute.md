@@ -51,17 +51,37 @@ from the guest's devices. Alloy never runs a VMM with its filter disabled, in a
 logging mode, or in a mode that returns an error instead of ending the process.
 For `cloud-hypervisor` this is its built-in filter in its default mode.
 
-2.5 The VMM runs under a Landlock rule set fixed when the VMM starts. The rules
-Alloy passes grant read-write access beneath the guest directory and read-only
-access to each file outside it that the guest's configuration names at start
-(firmware, kernel, initramfs, read-only images), and nothing else. No rule is
-added after start.
+2.5 The VMM runs under a Landlock rule set whose rules are fixed when the rule
+set is applied, before the guest's first instruction. The rules Alloy passes
+grant read-write access beneath the guest directory and read-only access to each
+file outside it that the guest's configuration names at start (firmware, kernel,
+initramfs, read-only images), and nothing else. No rule is added after the rule
+set is applied. The rule set covers the thread that applies it and every thread
+that thread starts afterwards, from the moment it is applied until each exits.
+Threads of the VMM process that exist before it is applied are not covered by it
+(Landlock without `LANDLOCK_RESTRICT_SELF_TSYNC`, ABI 8, confines only the calling
+thread and its later children, https://docs.kernel.org/userspace-api/landlock.html).
+For `cloud-hypervisor` v54.1 the rule set is applied when the VMM handles
+`vm_create`, without `LANDLOCK_RESTRICT_SELF_TSYNC`, so the main thread and the
+HTTP API thread, started earlier, run outside it
+(https://raw.githubusercontent.com/cloud-hypervisor/cloud-hypervisor/v54.1/vmm/src/landlock.rs,
+https://raw.githubusercontent.com/cloud-hypervisor/cloud-hypervisor/v54.1/docs/landlock.md,
+https://raw.githubusercontent.com/cloud-hypervisor/cloud-hypervisor/v54.1/docs/seccomp.md).
+Every thread outside the rule set shares an address space with the threads inside
+it, so the per-guest boundary of section 2 rests on 2.1 to 2.4, which cover every
+thread, and Landlock is an additional layer for the threads it covers.
 
 2.6 Hot attach (3.1.4) of a volume or ENI reaches the VMM only as a vhost-user
 socket that `alloy-blk` or `alloy-net` creates inside the guest directory, so it
 is covered by the rules of 2.5 and needs no new rule.
 
-2.7 Landlock does not confine Unix sockets, so 2.2, 2.3, and this clause do: each
+2.7 Unix sockets are confined by 2.2, 2.3, and this clause, never by Landlock.
+The Landlock ABI that the `hypervisor` implementation uses may not restrict them:
+`cloud-hypervisor` v54.1 uses ABI 3 and handles filesystem access rights only,
+while abstract Unix sockets are scoped from ABI 6
+(`LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET`) and connecting to pathname Unix sockets is
+restricted from ABI 9 (`LANDLOCK_ACCESS_FS_RESOLVE_UNIX`); threads outside the
+rule set (2.5) are not confined by Landlock at all. Whatever ABI is used, each
 socket file in a guest directory grants write permission, which connecting
 requires, to that guest's user and to no other guest's user, and abstract sockets
 of the host and of other guests are unreachable because the network namespace

@@ -3,7 +3,7 @@
 - Status: accepted
 - Depends on: 0000
 - Crates: all
-- Decisions: 0017, 0018, 0022
+- Decisions: 0017, 0018, 0022, 0038
 
 ## 1. Purpose
 
