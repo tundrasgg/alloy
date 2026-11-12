@@ -11,7 +11,7 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0030 |
+| Task `T-` | T-0031 |
 | Decision `D-` | D-0010 |
 | ADR | 0045 |
 | Research `R-` | R-0006 |
@@ -48,10 +48,11 @@ ADR 0036, ADR 0040 to ADR 0044, R-0001 to R-0005, and PB-0001 are allocated to t
 | T-0023 | spec | architect | active | none | Specify user access keys and the local admin path |
 | T-0024 | spec | architect | queued | T-0021 | Fix the default mesh port and TCP 443 sharing |
 | T-0025 | process | architect | done | none | Let parallel tasks share append-only index files |
-| T-0026 | spec | architect | active | none | Make the ARFC 0003 handshake implementable on Noise libraries |
+| T-0026 | spec | architect | review | none | Make the ARFC 0003 handshake implementable on Noise libraries |
 | T-0027 | process | architect | done | none | Align core delegation and the lead role with shared index files |
 | T-0028 | spec | architect | done | none | Fix the Landlock clauses in ARFC 0011 section 2 |
 | T-0029 | spec | architect | done | none | Record the install script location in ADR 0044 |
+| T-0030 | spec | architect | queued | T-0026 | Fix the handshake DH rate limit in ARFC 0003 section 6 |
 
 ## First dispatch
 
@@ -74,6 +75,7 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 
 ## Still to cut for M1 and M2
 
+- Verify: a fixed `IKpsk2` handshake vector for ARFC 0003 sections 3.1 and 3.3 (keys, psk, message bytes, `i2r`, `r2i`, `salt`) in the ARFC 0003 conformance suite (T-0026 follow-up).
 - Research then ADR: the `rustls` crypto provider (`aws-lc-rs` needs a C build and license review; `ring` release cadence). From R-0004.
 - The task that wires openraft into `alloy-rt` includes a seed replay test. From R-0004.
 - If LMDB or `blake3` are adopted, an ADR adds OpenLDAP and CC0 to the license allowlist. From R-0004.
