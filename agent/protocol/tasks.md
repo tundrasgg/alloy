@@ -53,8 +53,9 @@ keeps the history.
 5. **Fix.** `block` findings go back to the developer once. `fix` findings go
    back in the same round if there are any `block` findings, otherwise they become
    a follow-up task. `note` findings are recorded and not acted on.
-6. **Merge.** Lead squashes `task/T-A` onto main as one commit and marks both
-   tasks `done`. See `agent/eng/git.md`.
+6. **Merge.** Lead squashes `task/T-A` onto main as one Conventional Commits
+   commit whose footer names both tasks, `Task: T-A, T-B`, and marks both tasks
+   `done`. See `agent/eng/git.md`.
 
 Research, product, spec, and process tasks skip steps 3 to 5. A spec task that
 changes behavior gets one review by the reviewer role before merge.
