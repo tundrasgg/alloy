@@ -37,8 +37,8 @@ ADR 0036, ADR 0037, R-0001 to R-0004, and PB-0001 are allocated to the tasks bel
 | T-0012 | verify | verifier | queued | T-0007, T-0005 | Write NAT model tests and the matrix file |
 | T-0013 | product | product | active | none | Write the brief for init, join, and first login |
 | T-0014 | research | researcher | active | none | Research crates for consensus, storage, and crypto |
-| T-0015 | spec | architect | active | none | Record repository hosting and CI runners in ADR 0037 |
-| T-0016 | build | developer | queued | T-0001, T-0015 | Run cargo xtask ci in GitHub Actions |
+| T-0015 | spec | architect | done | none | Record repository hosting and CI runners in ADR 0037 |
+| T-0016 | build | developer | queued | T-0001 | Run cargo xtask ci in GitHub Actions |
 | T-0017 | process | architect | active | none | Adopt Conventional Commits for commits on main |
 
 ## First dispatch
