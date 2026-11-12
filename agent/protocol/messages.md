@@ -18,10 +18,45 @@ file: plan/tasks/T-NNNN.md
 
 Nothing may be added. Context that is not in the task file or reachable from its
 `reads` list does not exist for the role. `round` starts at 1 and increases when
-the same role is dispatched again for the same task.
+the same role is dispatched again for the same task (see Later rounds).
 
 The lead commits the task file to main before dispatching, so that an isolated
 workspace created from main contains it.
+
+## Later rounds
+
+A dispatch with `round` greater than 1 carries the same five fields and nothing
+more. What the role starts from and what it reads follow from the task id and the
+round alone.
+
+Before dispatching a later round, the lead:
+
+1. Commits to main every reviewer report for the task that is not there yet. A
+   `review/T-NNNN.<round>` branch holds only its report, so main is where the
+   next round finds it.
+2. Makes sure no workspace holds `task/T-NNNN` checked out, by removing the
+   workspace of the earlier round. Its commits are on the branch, so nothing is
+   lost, and the new workspace can check the branch out.
+
+The role, in a round greater than 1, reads its task file and the `reads` list as
+in round 1 (`agent/ROOT.md`), and then, before changing anything:
+
+1. **Starts from its branch.** It continues on `task/T-NNNN`, the branch the
+   earlier rounds committed to. If its workspace was created from main, it checks
+   out `task/T-NNNN` before any other step. Then it merges main into
+   `task/T-NNNN`, so the workspace holds both the earlier rounds' work and the
+   reports the lead committed to main. All its commits in this round go on
+   `task/T-NNNN`, and its report names that branch.
+2. **Reads the earlier reports.** It reads every report for the task written in
+   an earlier dispatch, of every role, reviewer reports included: every file
+   `plan/reports/T-NNNN.*.md` in its workspace. These are the inputs of the
+   round. Its report says, by finding id in its `Changes` section, how each
+   `block` and `fix` finding it was sent was resolved.
+
+A reviewer in a round greater than 1 is the exception to step 1: it never commits
+to `task/T-NNNN`. It reviews the current tip of `task/T-NNNN`, reads the reports
+of step 2 from main and from that branch, and commits its report on a new
+`review/T-NNNN.<round>` branch created from main.
 
 ## Report (role to lead)
 
