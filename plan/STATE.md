@@ -11,13 +11,13 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0071 |
-| Decision `D-` | D-0026 |
-| ADR | 0060 |
+| Task `T-` | T-0072 |
+| Decision `D-` | D-0027 |
+| ADR | 0061 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0002 |
 
-ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0059, R-0001 to R-0008, and PB-0001 are allocated to the tasks below.
+ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0060, R-0001 to R-0008, and PB-0001 are allocated to the tasks below.
 
 ## Board
 
@@ -83,7 +83,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0059, R-0001 to R-0008
 | T-0058 | process | architect | done | none | Align core and lead rules with shared workspace files |
 | T-0059 | spec | architect | review | none | Discard sessions a failed handover's successor touched |
 | T-0060 | spec | architect | cancelled | none | Settle the open fragment and queue details in ARFC 0003 |
-| T-0061 | build | developer | active | none | Add fuzz targets for every alloy-wire decoder |
+| T-0061 | build | developer | blocked | T-0071 | Add fuzz targets for every alloy-wire decoder |
 | T-0062 | build | developer | done | none | Allow thiserror and proptest in the dependency allowlist |
 | T-0063 | spec | architect | queued | T-0059 | Shrink the AL transport header to 25 bytes of overhead |
 | T-0064 | build | developer | queued | T-0063 | Rework alloy-wire for the compact transport header |
@@ -93,6 +93,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0059, R-0001 to R-0008
 | T-0068 | build | developer | queued | T-0053 | Close the direct-io gaps and vet the Clippy fixture's crates |
 | T-0069 | build | developer | review | none | Property-test the seam config codec and tidy the crates |
 | T-0070 | spec | architect | active | none | State plainly that root on a control node reads all tenant data |
+| T-0071 | process | architect | active | none | Record the NCSA exception for libfuzzer-sys in ADR 0060 |
 
 ## First dispatch
 
