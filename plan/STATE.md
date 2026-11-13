@@ -11,13 +11,13 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0050 |
-| Decision `D-` | D-0018 |
-| ADR | 0054 |
+| Task `T-` | T-0051 |
+| Decision `D-` | D-0019 |
+| ADR | 0055 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0002 |
 
-ADR 0036, ADR 0042, ADR 0046 to ADR 0053, R-0001 to R-0008, and PB-0001 are allocated to the tasks below.
+ADR 0036, ADR 0042, ADR 0046 to ADR 0054, R-0001 to R-0008, and PB-0001 are allocated to the tasks below.
 
 ## Board
 
@@ -28,11 +28,11 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0053, R-0001 to R-0008, and PB-0001 are allo
 | T-0003 | research | researcher | done | none | Research deterministic simulation options in Rust |
 | T-0004 | research | researcher | done | none | Research Cloud Hypervisor against ARFC 0011 |
 | T-0005 | research | researcher | done | none | Research NAT behaviors and define lab presets |
-| T-0006 | spec | architect | active | none | Specify the alloy-rt and alloy-seam interfaces |
+| T-0006 | spec | architect | review | none | Specify the alloy-rt and alloy-seam interfaces |
 | T-0007 | interface | developer | queued | T-0001, T-0006 | Define the alloy-rt and alloy-seam interface crates |
 | T-0008 | verify | verifier | queued | T-0007 | Write conformance suites for the runtime seams |
-| T-0009 | build | developer | queued | T-0007 | Build the alloy-sim deterministic simulator |
-| T-0010 | verify | verifier | queued | T-0007 | Write determinism and fault tests for the simulator |
+| T-0009 | build | developer | queued | T-0007, T-0050 | Build the alloy-sim deterministic simulator |
+| T-0010 | verify | verifier | queued | T-0007, T-0050 | Write determinism and fault tests for the simulator |
 | T-0011 | build | developer | queued | T-0009, T-0021 | Build the NAT models in alloy-natlab |
 | T-0012 | verify | verifier | queued | T-0007, T-0021 | Write NAT model tests and the matrix file |
 | T-0013 | product | product | done | none | Write the brief for init, join, and first login |
@@ -72,6 +72,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0053, R-0001 to R-0008, and PB-0001 are allo
 | T-0047 | spec | architect | queued | T-0044 | Protect the last cloud-admin and mark ADR 0041 superseded |
 | T-0048 | research | researcher | active | none | Research the rustls provider and a P-256 signing source |
 | T-0049 | process | architect | queued | T-0048 | Fix the P-256 rules in the crypto engineering file |
+| T-0050 | spec | architect | queued | T-0006 | Specify the alloy-sim world and scenario interface |
 
 ## First dispatch
 
@@ -88,6 +89,11 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 
 - Which branch a different role starts from in round 1 of a task whose branch another role owns (a `test-issue` ruling). From T-0032.
 - `.claude/harness.md` binds "remove the earlier workspace" before a later round to the harness's worktree cleanup. From T-0032.
+
+## Still to cut from T-0006
+
+- T-0007 adds `blake3` (through `alloy-crypto`) to the `deny.toml` allowlist, with the license check R-0004 asks for.
+- Spec before the crates that need them: blocking-work offload in `Spawn` (Argon2), Unix peer credentials in `Net` (after the `SO_PEERCRED` research), socket and device handover by file descriptor (ARFC 0017 clause 3.5), and where process spawning lives for the `hypervisor` and `sandbox` seams.
 
 ## Still to cut for M3
 

@@ -10,8 +10,8 @@ Dependency rule: a crate may depend only on crates in rows above it, and on
 | Crate | Kind | Spec | Holds |
 |---|---|---|---|
 | `xtask` | bin | none | `ci`, `check-repo`, code generation |
-| `alloy-rt` | lib | 0005 | Runtime traits, `os` implementations |
 | `alloy-seam` | lib | 0001 | Seam registry |
+| `alloy-rt` | lib | 0005 | Runtime traits, `os` implementations |
 | `alloy-sim` | lib | 0005 | Simulator, `mem` runtime, checkers |
 | `alloy-natlab` | lib | 0005 | NAT models and presets |
 | `alloy-crypto` | lib | 0003 | The only crate that depends on cryptographic crates |
