@@ -29,7 +29,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0056, R-0001 to R-0008
 | T-0004 | research | researcher | done | none | Research Cloud Hypervisor against ARFC 0011 |
 | T-0005 | research | researcher | done | none | Research NAT behaviors and define lab presets |
 | T-0006 | spec | architect | done | none | Specify the alloy-rt and alloy-seam interfaces |
-| T-0007 | interface | developer | queued | T-0056 | Define the alloy-rt and alloy-seam interface crates |
+| T-0007 | interface | developer | active | none | Define the alloy-rt and alloy-seam interface crates |
 | T-0008 | verify | verifier | queued | T-0007 | Write conformance suites for the runtime seams |
 | T-0009 | build | developer | queued | T-0007, T-0050 | Build the alloy-sim deterministic simulator |
 | T-0010 | verify | verifier | queued | T-0007, T-0050 | Write determinism and fault tests for the simulator |
@@ -78,7 +78,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0056, R-0001 to R-0008
 | T-0053 | build | developer | queued | T-0046 | Parse commit trailers only from the last paragraph |
 | T-0054 | build | developer | active | none | Build alloy-wire for AL handshake and transport messages |
 | T-0055 | verify | verifier | queued | T-0054 | Write conformance vectors for AL handshake and transport bytes |
-| T-0056 | process | architect | active | none | Let parallel tasks add crates to the shared workspace files |
+| T-0056 | process | architect | done | none | Let parallel tasks add crates to the shared workspace files |
 | T-0057 | spec | architect | active | none | Keep stored seam configuration readable across releases |
 
 ## First dispatch
