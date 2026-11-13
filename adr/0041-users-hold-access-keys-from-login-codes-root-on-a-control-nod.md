@@ -1,6 +1,6 @@
 # ADR 0041: Users hold access keys from login codes, root on a control node is a local admin
 
-- Status: accepted
+- Status: superseded by 0050
 - Subject: tenancy
 - Specs: arfc-0007, arfc-0020
 

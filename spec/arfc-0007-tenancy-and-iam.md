@@ -3,7 +3,7 @@
 - Status: accepted
 - Depends on: 0006
 - Crates: alloy-iam
-- Decisions: 0017, 0018, 0050
+- Decisions: 0017, 0018, 0055
 
 ## 1. Purpose
 
@@ -96,7 +96,8 @@ request for a resource that does not exist (I-02).
 3.3 Cloud admins manage nodes, pools, address pools, and orgs. A cloud admin role
 does not grant access to the contents of an org's resources. Access to tenant data
 by a cloud admin requires an explicit, audited grant from that org or a break
-glass action that the org's audit log records.
+glass action that the org's audit log records. The same holds for a local admin
+(3.10.1, 3.10.6).
 
 3.4 Authorization must run on every API call, before any state is read on the
 caller's behalf, and its decision must take under 1 ms at the 99th percentile with
@@ -288,46 +289,61 @@ session token or temporary key that derives from no access key.
 ### 3.10 Local admin
 
 3.10.1 Each node that holds the `control` role has one built-in principal, its
-local admin, named `root@<node name>`. It is not a user, belongs to no org, holds
-no credential, and cannot be given policies, roles, or group membership. Its
-policy is fixed and allows exactly these actions:
+local admin, named `root@<node name>`. It is the cluster's break-glass
+administrator: the way to administer the cluster when no user credential works
+or none can be trusted. It is not a user, belongs to no org, holds no
+credential, and cannot be given policies, roles, or group membership. Its policy
+is fixed and allows exactly these actions:
 
-| Action | Limited to |
-|---|---|
-| `iam:IssueLoginCode` | A named user that holds the cluster role `cloud-admin` when the call commits. Default: user `admin` in org `default` |
-| `iam:RevokeUserAccessKeys` | A named user, any user (3.9.13). Default: user `admin` in org `default` |
-| `cluster:CreateJoinToken` | No further limit (ARFC 0002 section 3.2) |
-| `cluster:UpdateNode` | The roles and advertise addresses in the node record of the node it runs on |
+| Part | Actions | On |
+|---|---|---|
+| cluster administration | Every action that the cluster role `cloud-admin` allows: managing nodes, pools, address pools, and orgs (3.3), with `cluster:CreateJoinToken` (ARFC 0002 section 3.2) and `cluster:UpdateNode` on any node among them | Every resource on which that role allows the action |
+| identity | Every action of the `iam` service, `iam:*` | Every resource of that service, in every org and at cluster scope: users, groups, service accounts, roles and who holds them, cluster roles included, policies and what they are attached to, access keys, and login codes |
 
-Every other call by a local admin must fail with `PermissionDenied` and must be
-audited as an authorization denial. The fixed policy is the local admin's whole
-authorization: no deny refuses a local admin call, wherever the deny is attached,
-which is the one exception to 3.1. A login code issued by a local admin must still
-be refused when, as the call commits, the user does not hold `cloud-admin`, or
-the user or its org is disabled (3.9.2). A revocation by a local admin under
-3.9.13 is refused by no policy and no user or org state: it must succeed for a
-user that is disabled, holds no role, or is under a deny on
+A local admin may therefore do everything a cloud admin may. The first row is
+the set of actions that the specification gives the built-in cluster role
+`cloud-admin`, not the state of any role record. No API method may change which
+actions a built-in role (2.4) allows, for any caller, so no call changes the
+fixed policy. Every other call by
+a local admin must fail with `PermissionDenied` and must be audited as an
+authorization denial. The fixed policy is the local admin's whole authorization,
+which is the one exception to 3.1: no deny refuses a local admin call, wherever
+the deny is attached, and no role, group membership, or enabled state of any
+principal or org is consulted to authorize it.
+
+What is not policy binds a local admin call as it binds every caller:
+
+- The fixed policy grants no access to the contents of an org's resources (3.3):
+  like the cluster role `cloud-admin`, it allows no action that reads or changes
+  them. Its `iam` part can still lead to such access, by a change of who has
+  access or by a new credential of a principal that already has it. Each such
+  call is a break-glass action in the sense of 3.3, and 3.10.6 records it in
+  that org's chain (section 8).
+- A user access key is created only by an exchange (3.9.1). A local admin issues
+  a login code instead.
+- A login code is refused when, as the call commits, the user or its org is
+  disabled (3.9.2). A local admin enables them first (3.10.7).
+- Quotas (3.5), the limits of section 7, argument checks, a stale `generation`
+  (ARFC 0008 clause 3.5), and every refusal that an ARFC states for all callers
+  whatever their policies, such as deleting the last control node (ARFC 0002
+  section 3.9).
+
+A local admin call of `iam:IssueLoginCode` or `iam:RevokeUserAccessKeys` that
+names no user acts on user `admin` in org `default`. A revocation by a local
+admin under 3.9.13 is refused by no policy and no user or org state: it must
+succeed for a user that is disabled, holds no role, or is under a deny on
 `iam:RevokeUserAccessKeys`.
-
-The two `iam` actions are the recovery path of a user that holds no credential.
-The local admin revokes all of that user's access keys (3.9.13), which ends a
-stolen key's lineage and brings both of the user's counts in section 7 to 0, and,
-for a user that holds `cloud-admin`, issues a login code that the user exchanges
-(3.10.7). Either call may come first: a login code issued by a local admin is not
-voided by the revocation, and an exchange refused at a limit of section 7 does
-not spend it. Nothing a credential can change before the recovery stops it: no
-deny binds the local admin, the revocation is limited to no user, and the
-cluster always holds a user that a local admin can issue a login code for
-(3.10.8).
 
 3.10.2 A local admin authenticates only through the local admin socket: a Unix
 domain stream socket at the path `/run/alloy/admin.sock`, owned by user id 0, with
 mode `0600`, in a directory owned by user id 0 with mode `0700`. `alloyd` must
 serve a connection on it only if the kernel reports the peer's user id as 0, and
 must otherwise close the connection without reading a request and write an audit
-record of a failed authentication. The socket serves the native API methods
-behind the four actions above and nothing else. No TCP, UDP, mesh, or abstract
-socket listener may accept a local admin.
+record of a failed authentication. The socket serves the methods of the native
+API (ARFC 0008), each as a local admin call whatever credential the request
+carries, and nothing else. It does not serve `ExchangeLoginCode` (ARFC 0002
+section 3.7), which fails on it with `PermissionDenied`. No TCP, UDP, mesh, or
+abstract socket listener may accept a local admin.
 
 3.10.3 `alloyd` must create the local admin socket only while its node's current
 node record holds the `control` role, and must remove it within 5 seconds of
@@ -335,7 +351,7 @@ learning that the role or the record is gone.
 
 3.10.4 The control plane must not rely on 3.10.3. It must take the node in
 `root@<node name>` from where the call entered the control plane: the control
-node whose own socket accepted it, or, for a write forwarded to the leader (ARFC
+node whose own socket accepted it, or, for a call forwarded to the leader (ARFC
 0006 section 3.4), the node record bound to the AL session that carried it. It
 must never take it from the content of a request. A local admin call that arrives
 over a session whose node record lacks the `control` role, or over any API
@@ -343,28 +359,96 @@ endpoint other than the local admin socket, must fail with `PermissionDenied`,
 must change nothing, and must be audited as an authorization denial.
 
 3.10.5 A local admin call passes authorization (3.4) and is committed through the
-control plane like any other write. Without quorum it fails with `Unavailable`.
-There is no path around consensus.
+control plane like any other write. That holds for a read too, because every
+local admin call commits an audit record (3.10.6). Without quorum every local
+admin call fails with `Unavailable`, and none is served as a stale read (ARFC
+0008 section 6). There is no path around consensus.
 
-3.10.6 Audit. Every local admin call, allowed or denied, writes a record in the
-cluster chain with principal `root@<node name>`, no org, and the node's
-infrastructure address (ARFC 0002 section 3.4) as source address, in the same
-transaction as the change (I-15). A login code issued by a local admin is also
-recorded in the org chain of the user it was issued for (3.9.9).
+3.10.6 Audit. Every local admin call, read or write, allowed or denied, writes a
+record in the cluster chain (ARFC 0018 section 3.3) with principal
+`root@<node name>`, no org, and the node's infrastructure address (ARFC 0002
+section 3.4) as source address. A call that the fixed policy allows and that
+reads or changes an org, or a resource in an org, also writes a record with that
+principal in the chain of each such org, where the org's admins read it (ARFC
+0018 clause 3.3.5). That covers the records of 3.9.9. Every record commits in
+the transaction of the call, together with the change when the call makes one
+(I-15). A call whose records cannot be committed must fail, must change nothing,
+and must return no data (section 6).
 
-3.10.7 A login code issued by a local admin is exchanged like any other (3.9.3
-to 3.9.5). Everything done with the resulting access key is done, and audited, as
-that user.
+3.10.7 Restoring an administrator. Through calls that 3.10.1 allows, a local
+admin must be able to do each of the following, for any org and any principal,
+whatever policies are attached anywhere and whatever roles, group memberships,
+and enabled states principals and orgs have:
 
-3.10.8 Last `cloud-admin`. The cluster must always hold at least one user that
-holds the cluster role `cloud-admin`, is enabled, and belongs to an enabled org.
-`alloy init` creates the first (ARFC 0002 section 3.1). A call that would leave
-no such user, whether it removes that role from a user, disables or deletes a
-user, or disables or deletes an org (3.7), must fail with `Conflict`, must change
-nothing, and its message must say that it would remove the last enabled
-`cloud-admin` user. So a stolen credential cannot leave the cluster with no user
-that a local admin can issue a login code for (3.10.1): the cluster always keeps
-a `cloud-admin` user that root on a control node can log in as.
+| Step | What the local admin can do |
+|---|---|
+| see | List every org with its enabled state. List every user of an org with its enabled state, its groups, and the roles it holds, cluster roles included. List and read the policies attached to a principal, a group, a project, or an org. List a principal's access keys as 3.9.6 and 3.9.11 say, never a secret (I-22) |
+| cut off | Revoke one access key (3.9.7) or all keys of a user (3.9.13). Disable a user. Remove a role from a principal, cluster roles included. Delete a service account. Disable an org (3.7) |
+| unbind | Detach a policy from a principal, a group, a project, or an org. Delete a policy. Remove a user from a group |
+| restore | Create an org, or restore a disabled one within its 7 days (3.7). Create a user in an org, or enable a disabled one. Grant a user a role, cluster roles included |
+| log in | Issue a login code for any enabled user of an enabled org (3.9.2) |
+
+A login code issued by a local admin is exchanged like any other (3.9.3 to
+3.9.5), and everything done with the resulting access key is done, and audited,
+as that user.
+
+Take any user `U` in any org `O`, whether they exist yet or not, and any state
+that API calls can have produced. A local admin creates or restores `O`, creates
+or enables `U`, grants `U` the cluster role `cloud-admin`, detaches every policy
+that holds a deny statement from `U`, from the groups `U` belongs to, and from
+`O`, revokes all keys of `U` (3.9.13), and issues `U` a login code. When no
+other principal changes that state in between:
+
+- none of those local admin calls may fail with `PermissionDenied`;
+- the exchange of that login code must not be refused by a limit of section 7,
+  since both key counts of `U` are 0, nor by the state of `U` or `O` (3.9.4);
+  and
+- a call signed with the resulting access key must be allowed whenever the
+  cluster role `cloud-admin` allows it and no deny statement matches it in a
+  policy that still applies to it (3.1).
+
+After those detachments no policy attached to `U`, to a group of `U`, or to `O`
+holds a deny. The policies that can still deny such a call are therefore the
+ones attached on the side of its target, and only these: the resource policy of
+the target resource (2.4); a policy attached to the target's project; a policy
+attached to the target's org, when that org is not `O`; and, when the target is
+a principal, a policy attached to that principal or to a group it belongs to
+(3.9.2). A deny in any other place must not refuse the call. The local admin can
+list each of those policies and detach it (rows "see" and "unbind"), except a
+resource policy, which is changed through the resource's own service and so
+lies outside the fixed policy (3.10.1). Once the local admin has detached the
+ones that match, the call must be allowed, except on a resource whose own
+resource policy denies it.
+
+A user created in an org that the local admin created in the same recovery has
+no group and no attached policy, so nothing needs detaching for it. Cutting off
+comes first: a principal that would change that state in between is stopped by
+the calls of the second row, and nothing that principal can do refuses or
+narrows a local admin call.
+
+The cluster therefore need not hold any user with the cluster role
+`cloud-admin`. A call that removes that role from the last user that holds it,
+or that disables or deletes that user or its org, must not be refused for
+leaving the cluster without one.
+
+3.10.8 Standing warning. The control plane keeps one record of local admin use
+per cluster. It holds the principal and the commit time of the latest local
+admin write, and the number of local admin writes since the record was created.
+A local admin write is a local admin call to a mutating method (ARFC 0008 clause
+3.2) that succeeds, whether or not it changed anything. The transaction of each
+local admin write must create the record, or update it. A local admin read, and
+a local admin call that is denied or fails, must not create or change it.
+
+While the record exists, starting with the commit that created it, the API must
+report one standing warning (ARFC 0019 clause 3.2.5) of kind `local-admin-used`.
+Its affected resource is the cluster. Its message names the principal
+`root@<node name>` of the latest local admin write, the time of that write, and
+the number of writes, and says that the audit log of the cluster lists each one.
+Its command is empty: no command removes this warning. The control plane must
+delete the record 7 days after the commit of the latest local admin write, and
+the warning must no longer be reported 60 seconds after that. No call by any
+principal, a local admin included, deletes the record, changes it in any other
+way, or shortens the 7 days.
 
 ## 5. Seams
 
@@ -382,8 +466,11 @@ that provider fail.
 An exchange of a login code that fails at any step must create no access key and
 must revoke no access key. Whether a failed exchange spends the login code is
 defined with the login code, in ARFC 0002, except where this ARFC says it must
-not (3.9.3 and section 7). If the audit record of a local admin call or of an
-exchange cannot be committed, the call must fail and change nothing. If the
+not (3.9.3 and section 7). If an audit record of a local admin call, read or
+write, or of an exchange cannot be committed, the call must fail, change
+nothing, and return no data (3.10.6). If the record of local admin use cannot be
+written with a local admin write (3.10.8), that write must fail and change
+nothing. If the
 control plane cannot read the state of the access key that a session token or
 temporary key derives from (2.3), it must refuse that credential.
 
@@ -414,8 +501,9 @@ only within the 1,000 (I-21).
 Names, including access key names: 1 to 63 characters, `[a-z0-9-]`, starting
 with a letter. A key name is cut to 59 characters before a number is appended
 (3.9.3).
-One local admin per control node. At least one enabled `cloud-admin` user in an
-enabled org per cluster (3.10.8).
+One local admin per control node. One record of local admin use per cluster
+(3.10.8). No number of users with the cluster role `cloud-admin` is required
+(3.10.7).
 
 ## 8. Security
 
@@ -442,22 +530,24 @@ revoked key in that window (3.9.2). A user whose only credential was stolen has
 nothing to send the revocation with. A local admin revokes all of its keys
 (3.9.13, 3.10.1), for any user and whatever the thief changed with the stolen
 credential first: no deny binds the local admin, and no role, user state, or
-limit narrows that call. If the user holds `cloud-admin`, the local admin then
-issues it a login code, which works at either limit and when the user is the
-cluster's only `cloud-admin`. If the thief removed that role, disabled the user,
-or disabled its org, the local admin issues the code for another `cloud-admin`
-user instead, one of which always exists (3.10.8), so the cluster never loses
-its last administrator to a stolen credential. A user without `cloud-admin` can
-also send the revocation with a session token from its password or identity
-provider (2.2), or a principal whose policies allow `iam:RevokeUserAccessKeys` on
-that user sends it for it (3.9.13). Only the user itself can then issue it a
-login code (3.9.2). A user's own re-logins also fill the kept keys when each
-login code comes from the key it replaces, and section 7 says how that room is
-freed.
+limit narrows that call. The local admin then issues the user a login code,
+which works at either limit once the keys are revoked. Whatever else the thief
+changed to stop that, a removed role, a disabled user or org, or an attached
+deny, the local admin undoes first, or it sets up another user (3.10.7). It
+needs no user to be left for that, so no credential, stolen or not, can leave
+the cluster without a way to a working administrator. A user can also send the
+revocation with a session token from its password or identity provider (2.2), or
+a principal whose policies allow `iam:RevokeUserAccessKeys` on that user sends it
+for it (3.9.13). A user's own re-logins also fill the kept keys when each login
+code comes from the key it replaces, and section 7 says how that room is freed.
 
-The remedy has two limits. It does not undo anything else done with the user's
-policies, such as a service account's access key or an attached policy: the
-audit log lists those.
+The remedy has two limits. A revocation does not undo anything else done with
+the user's policies, such as a service account's access key or an attached
+policy. That includes what a revoked key does in the up to 5 seconds in which a
+node still accepts it (ARFC 0020 section 3.4): it can issue no login code
+(3.9.2), but it can still make a credential of another principal, which
+outlives it. The audit log lists all of this, and a local admin can undo every
+such change to identity state (3.10.7).
 And a user access key whose `issued_by` is `session` descends from no key: if a
 session token that derives from no access key is stolen, the keys made with it
 are found through `issued_by` and the audit log and are revoked one by one, or
@@ -470,36 +560,88 @@ that code can be exchanged until it expires (ARFC 0002). A deny cannot bind the
 local admin because the credential the recovery must remove can attach one: a
 thief holding a `cloud-admin` user's only key, which in PB-0001 is also `owner`
 of org `default`, would otherwise deny both `iam` actions on that user and its
-org and keep the key for good. A disabled user gains no key by any path (3.9.2,
-3.9.4, 3.9.8).
+org and keep the key for good. For the same reason a local admin can detach any
+policy (3.10.7): a deny attached to an org binds that org's users after they log
+in, and a deny that covers every caller can be removed only by a caller that no
+deny binds. A disabled user gains no key by any path (3.9.2, 3.9.4, 3.9.8).
 
-Local admin. User id 0 on a running control node is not a new trusted party. ARFC
-0020 section 2.2 trusts the hardware and kernel of each node, section 2.1 names a
-compromised compute node as an adversary and no compromised control node, and
-section 2.3 has no boundary between user id 0 and `alloyd` on one node. Accepted
-ARFCs already give a single control node the power of every principal that holds
-an access key: every control node serves the API (ARFC 0006 section 3.4) and
-authenticates each call it serves (ARFC 0008 section 3.7), verifying SigV4 needs
-the access key secret (3.8), and at rest those secrets sit under a node key file
-of mode `0600` (ARFC 0020 section 3.7), the same gate as the socket. The control
-plane promises to survive the loss of a minority of control nodes (I-11). No ARFC
-promises anything when a control node is hostile. The ruling does not rest on
-where the cluster key is kept, which no ARFC states. The path gives that party
-no power it lacks and makes its use evident in the audit log as
-`root@<node name>`. It gives nothing to any adversary in ARFC 0020 section 2.1:
-it has no network listener, it does not exist on a machine that is not running
-as a control node, a guest reaches it only by breaking the guest to host
-boundary, and a compromised compute node is refused by the control plane under
-3.10.4, not by its own `alloyd`, so ARFC 0020 section 3.3 holds. Revoking all
-keys of a user (3.9.13) adds no access either: it reads no data and grants
-nothing, it only removes credentials, the user's org chain records it (3.9.9),
-and it is what lets a stolen key be revoked, as ARFC 0020 section 3.4 requires,
-when its user has no credential left or the thief has attached a deny. Exempting
-the local admin from denies lets it issue a login code for a `cloud-admin` user
-against that user's org's deny, recorded in the cluster chain and the user's org
-chain (3.9.9, 3.10.6). It reaches only `cloud-admin` users, whose power that
-party already holds wherever one of them holds an access key, and the deny still
-binds every other principal. The local admin cannot be revoked short of
-removing the node's `control` role or its record.
+Local admin. The local admin is the cluster's break-glass administrator: it may
+do everything a cloud admin may and change all identity state (3.10.1). User id
+0 on a running control node is still not a new trusted party. ARFC 0020 section
+2.2 trusts the hardware and kernel of each node, section 2.1 names a compromised
+compute node as an adversary and no compromised control node, and section 2.3
+has no boundary between user id 0 and `alloyd` on one node. Accepted ARFCs
+already give a single control node the power of every principal that holds an
+access key, `cloud-admin` users and org owners among them: every control node
+serves the API (ARFC 0006 section 3.4) and authenticates each call it serves
+(ARFC 0008 section 3.7), verifying SigV4 needs the access key secret (3.8), and
+at rest those secrets sit under a node key file of mode `0600` (ARFC 0020 section
+3.7), the same gate as the socket. Where a control node holds the cluster key,
+which ARFC 0002 section 2 lists as held by the control plane, user id 0 on that
+node holds it too. The ruling does not rest on that, because how the key is kept
+across control nodes is open (ARFC 0002 section 9). The control plane promises
+to survive the loss of a minority of control nodes (I-11). No ARFC promises
+anything when a control node is hostile.
+
+What the socket adds to that party's reach is identity state that no holder of
+an access key could change, for example in an org whose admins all log in with a
+password. ARFC 0020 section 2.2 trusts that party there as well. In exchange the
+socket moves its power from key files to calls that pass authorization and
+consensus (3.10.5) and are evident: every call is in the cluster chain as
+`root@<node name>`, every call that touches an org is in that org's chain
+(3.10.6), and every write raises a standing warning that lasts 7 days and that
+the local admin cannot clear (3.10.8).
+
+The path gives nothing to any adversary in ARFC 0020 section 2.1. It has no
+network listener, it does not exist on a machine that is not running as a
+control node, a guest reaches it only by breaking the guest to host boundary,
+and a compromised compute node is refused by the control plane under 3.10.4, not
+by its own `alloyd`, so ARFC 0020 section 3.3 holds. A stolen credential gains
+nothing either: the local admin holds no credential, cannot be assumed,
+delegated, or granted, and nothing a credential can set binds it, so a stolen
+key grants its principal's policies only until it is revoked (ARFC 0020 section
+3.4) and can no longer stop its own revocation. The one way to make a new local
+admin is to give a node the `control` role. A cloud admin could always do that,
+and it makes the node a voter of the control plane whether or not a local admin
+exists. Removing the role or the node record ends that local admin (3.10.3,
+3.10.4), and nothing else revokes one.
+
+Tenant isolation. The local admin lives in no org, and its fixed policy reaches
+the identity state of every org under no policy of that org. I-02 and 3.2 guard
+the boundary between orgs (ARFC 0020 section 2.3): a principal of one org never
+reaches another org's resources. The local admin stands on the cluster side of
+that boundary, where 3.3 already puts cluster administrators, and it is
+consistent with I-02 for four reasons, of which the second names every path to
+tenant data. No principal of any org gains reach
+through it, since it has no credential and cannot be assumed, delegated, or
+granted. Its fixed policy allows no action that reads or changes the contents
+of an org's resources (3.3, 3.10.1). Its `iam` part can still lead to tenant
+data, and only by getting a credential of a principal that has access in that
+org. There are two ways to one, and each is a local admin write to that org's
+identity state:
+
+| Way | Local admin write | What else that org's chain records |
+|---|---|---|
+| Change who has access | Grants a role, attaches or changes a policy, or changes group membership, for a principal whose credential it holds or then makes in the second way | What the second way records |
+| Make a credential of a principal that already has access, an org `owner` for example | For a user, issues a login code (3.10.7). For a service account, creates an access key, which 3.9.1 does not forbid. For either, any other `iam` action that sets how the principal authenticates, such as a password or an identity provider | The exchange of the login code, which the API serves and the socket does not (3.10.2), and the new key with `issued_by` `root@<node name>` (3.9.5, 3.9.9). A service account's new key names `root@<node name>` in `issued_by` (2.3) |
+
+Neither way needs a grant from the org, so each of these writes is a
+break-glass action in the sense of 3.3. Each is recorded in that org's own
+chain with principal `root@<node name>`, in the transaction that makes the
+change (3.10.6), which is what 3.3 requires of break-glass access, and each
+raises the standing warning (3.10.8). A call then made with such a credential
+is authorized by the policies that bind its principal and is audited as any
+call of that principal is (ARFC 0018 clause 3.3.1). There is no third way:
+every other action of the fixed policy is one that the cluster role
+`cloud-admin` allows, which reaches no contents (3.3), and no response to a
+local admin holds a secret other than that of a credential the call creates
+(3.9.4, I-22), which is the second way. So the org's admins can see every step by
+which a local admin comes to hold a credential for their data. The record does
+not stop user id 0, whom ARFC 0020 section 2.2 trusts. Every other local admin
+call that reads or changes anything in an org is recorded in that org's chain
+too (3.10.6). And its
+responses go only to user id 0 on a control node, so no org learns anything
+about another, and a denied cross-org request stays indistinguishable from a
+request for a resource that does not exist (3.2).
 
 Upholds I-02, I-05, I-15, I-21, I-22.

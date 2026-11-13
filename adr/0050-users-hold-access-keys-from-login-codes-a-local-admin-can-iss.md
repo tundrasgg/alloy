@@ -1,6 +1,6 @@
 # ADR 0050: Users hold access keys from login codes, a local admin can issue and revoke them
 
-- Status: accepted
+- Status: superseded by 0055
 - Subject: tenancy
 - Specs: arfc-0007, arfc-0020
 
