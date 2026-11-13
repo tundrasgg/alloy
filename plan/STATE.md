@@ -132,7 +132,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0106 | build | developer | active | none | Build alloy-id keys, records, tokens, and stored data |
 | T-0107 | build | developer | active | none | Build alloy-state stores on openraft and redb |
 | T-0108 | verify | verifier | queued | T-0107 | Write the log-store and state-store conformance suites |
-| T-0109 | build | developer | active | none | Build alloy-proto and the alloy-api server for nodes |
+| T-0109 | build | developer | review | none | Build alloy-proto and the alloy-api server for nodes |
 | T-0110 | spec | architect | review | none | Bound what an anchor can do with forwarded join requests |
 | T-0111 | build | developer | queued | T-0104, T-0106, T-0109, T-0114 | Wire alloyd init, join, node channel, and heartbeats |
 | T-0112 | build | developer | queued | T-0109, T-0111 | Add alloy init, join, login, and node list to the CLI |
