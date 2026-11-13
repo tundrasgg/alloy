@@ -120,3 +120,4 @@ or supersede it.
 | [0029](0029-upgrades-are-rolling-with-process-handover-and-a-one-release.md) | Upgrades are rolling, with process handover and a one-release skew |
 | [0040](0040-init-and-join-need-no-flags-and-a-one-use-login-code-carries.md) | Init and join need no flags, and a one-use login code carries the first credential |
 | [0056](0056-finalizing-an-upgrade-rewrites-stored-seam-bindings.md) | Finalizing an upgrade rewrites stored seam bindings |
+| [0059](0059-finalization-covers-new-groups-running-releases-and-re-encoding.md) | Finalization covers new groups, running releases, and re-encoding |

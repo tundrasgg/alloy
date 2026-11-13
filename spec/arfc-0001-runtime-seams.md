@@ -3,7 +3,7 @@
 - Status: accepted
 - Depends on: 0000
 - Crates: alloy-seam, alloy-rt
-- Decisions: 0009, 0056
+- Decisions: 0009, 0056, 0059
 
 ## 1. Purpose
 
@@ -64,6 +64,9 @@ impl ImplName {
     pub fn new(name: &str) -> Result<ImplName, NameError>;
     pub fn as_str(&self) -> &str;
 }
+
+impl fmt::Display for Kind { /* writes as_str() */ }
+impl fmt::Display for ImplName { /* writes as_str() */ }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NameError {
@@ -178,8 +181,10 @@ impl ConfigValue {
 }
 
 /// An implementation's typed configuration. `==` is configuration
-/// equality, which the binding identity rule of clause 3.13 uses.
-pub trait SeamConfig: Sized + PartialEq {
+/// equality, which the binding identity rule of clause 3.13 uses. The `Eq`
+/// bound makes it an equivalence: every configuration equals itself, so a
+/// type with a floating-point field wraps it in a type whose `==` is reflexive.
+pub trait SeamConfig: Sized + Eq {
     /// The newest version `to_value` writes and `from_value` reads.
     const VERSION: u16;
     /// The oldest version `to_value` writes and `from_value` reads.
@@ -408,11 +413,15 @@ before `activate`, and the old instance then resumes. After `activate` there is 
 automatic way back.
 
 3.10 Names. `Kind::new` and `ImplName::new` must accept exactly the strings of 1
-to 32 bytes drawn from `[a-z0-9-]`, and otherwise return `Empty`, `TooLong`, or
-`InvalidByte` with the index of the first offending byte.
+to 32 bytes drawn from `[a-z0-9-]`. Otherwise they check in this order and return
+the first error that applies: `Empty` for 0 bytes, `TooLong` with the length for
+more than 32 bytes, and `InvalidByte` with the index of the first byte not in
+`[a-z0-9-]`. So a 40-byte string holding `A` returns `TooLong`, not
+`InvalidByte`. `Display` of a `Kind` or an `ImplName` writes exactly `as_str()`.
 
 3.11 Registration. `RegistryBuilder::register::<S>` must fail, and leave the
-builder unchanged, with:
+builder unchanged, with the first error that applies, checked in this order of
+precedence:
 
 - `InvalidKind` when `S::KIND` breaks the rules of clause 3.10,
 - `KindConflict` when another marker type registered `S::KIND` before, compared by
@@ -420,14 +429,23 @@ builder unchanged, with:
 - `Duplicate` when `(S::KIND, name)` is registered,
 - `Full` when the builder holds 1,024 registrations.
 
+So a marker whose kind another marker holds gets `KindConflict` even for a name
+that is registered, and a registered `(S::KIND, name)` gets `Duplicate` even when
+the builder is full.
+
 There is no global registry. A process, or a simulated host, builds its own.
 
 3.12 Instantiation. `Registry::instantiate::<S>` must call exactly the factory
 registered under `(S::KIND, name)` by marker `S`, once, and return its result
 unchanged. When there is none it must return `SeamUnavailable` with that kind and
-name and call no factory: there is no fallback to another implementation.
-`entries` must list every registration once, sorted by kind and then by name, each
-with the `SWAP` of its marker.
+name and call no factory: there is no fallback to another implementation. When
+`S::KIND` breaks the rules of clause 3.10, no marker `S` can have registered
+(clause 3.11), and it must return `BuildError::Failed` and call no factory. Its
+detail is `Detail::new` of the text `format!("seam kind {:?} is invalid: {}",
+S::KIND, e)`, where `e` is the `NameError` of `Kind::new(S::KIND)`, so a long
+`S::KIND` is truncated as section 7 states. `entries` must list every
+registration once, sorted by kind and then by name, each with the `SWAP` of its
+marker.
 
 3.13 Configuration. `SeamConfig::from_value` must return `UnsupportedVersion`, with
 `min` set to `MIN_VERSION` and `max` to `VERSION`, for a version outside that
@@ -454,50 +472,119 @@ release to the next: `V(R)` is at least `V(R - 1)`.
 
 Finalizing the upgrade to release `R` (ARFC 0017 clause 3.7) **starts** at the
 switch and **completes** when the rewrite leaves no stored binding at a version
-other than `V(R)`, both as defined below. A cluster created at release `R` is
-created with the finalization of `R` complete: every group's write versions are
-the `V(R)` of every configuration type release `R` registers, and `R` is recorded
-as the finalized release.
+other than `V(R)`, both as defined below. The **write versions of `R`** are the
+`V(R)` of every configuration type release `R` registers, and nothing else. A
+cluster created at release `R` is created with the finalization of `R` complete:
+the global group holds the write versions of `R`, and `R` is recorded as the
+finalized release.
 
-- Write versions. Each consensus group (ARFC 0006 clause 2.2) holds a write
-  version per `(kind, name)`. Whoever writes a binding to control plane state
-  calls `to_value` with the write version of its implementation in the group that
-  stores it, or with its own release's `VERSION` when that group holds none. A
-  group applies a binding write, in log order, only if its version equals that
-  write version or the group holds none for the implementation. Otherwise the
-  write fails with `UnsupportedVersion` whose `min` and `max` are the write
-  version, and nothing is stored. A configuration that fails with
-  `NotExpressible` at the write version is given back to the caller as an error
-  and not stored. Write versions change only at the switch, so before the switch
-  for `R` they are the `V(R - 1)` that the switch for `R - 1`, or cluster
-  creation, set.
-- Check. Finalization first decodes every stored binding with the configuration
-  types of release `R` (clause 3.19), and writes nothing. If a binding's
-  implementation has no configuration type in release `R`, or `from_value`
-  fails, finalization reports each such binding with its resource and error and
-  stops before the switch, so rollback to `R - 1` stays possible.
+- Groups. The global group lists regions and records each regional group (ARFC
+  0006 section 2.2). A regional group is created by a write to the global group
+  that records it, made before the group's first log entry is proposed. A region
+  whose regional group is not recorded has no regional group and stores no
+  binding, and no step below waits for it. The **groups recorded** at a position of the
+  global group are the global group and every regional group recorded at or
+  before that position.
+- Write versions. Each group holds a write version per `(kind, name)`, and the
+  release those write versions belong to. A write that sets a group's write
+  versions to those of release `X` applies only if the group holds none, or holds
+  those of a release older than `X`. Otherwise it changes nothing and reports
+  success. So once a group holds the write versions of `R`, no write gives it
+  older ones, in whatever order such writes commit. The global group's write
+  versions are set at cluster creation and by each switch, and by nothing else.
+  The write that records a regional group returns the global group's write
+  versions at that write's position, and the group's first log entry sets its
+  write versions to them. After that entry only a switch sets them. A group that
+  holds no write versions refuses every binding write with `Unavailable`. So
+  before the switch for `R`, every group, whenever it was recorded, holds the
+  write versions of `R - 1` that the switch for `R - 1`, or cluster creation,
+  set, or holds none and stores no binding.
+- Binding epoch. Each group holds a binding epoch, an unsigned 64-bit counter
+  that is 0 when the group is created and that only the check below
+  increments. A binding write names the write version it was encoded at and the
+  binding epoch, both read from the group that stores it.
+- Writing a binding. Whoever writes a binding to control plane state calls
+  `to_value` with the write version of its implementation in the group that
+  stores it, or with its own release's `VERSION` when that group holds none for
+  the implementation. It also calls `to_value` with its own release's `VERSION`,
+  and when either call fails it gives that error back to the caller and writes
+  nothing: a release writes only configurations it can also write at its own
+  `VERSION`. A group applies a binding write, in log order, only if it holds
+  write versions, the write names the group's current binding epoch, and its
+  version equals the write version or the group holds none for the
+  implementation. Otherwise the write fails with the first error that applies,
+  in this order: `Unavailable` when the group holds no write versions,
+  `Conflict` when the epoch is not current, as for a stale `generation` (ARFC
+  0006 clause 3.5), and `UnsupportedVersion`, whose `min` and `max` are the
+  write version. Nothing is stored.
+- A write that races the switch or a check. A writer whose binding write fails
+  with `UnsupportedVersion` naming a write version other than the one it encoded
+  at, or with `Conflict` when the group's binding epoch is no longer the one the
+  write named, reads the group's write version and binding epoch again, encodes
+  as above, writes once more, and gives its caller the outcome of that second
+  write. It retries once and only for these causes. A `Conflict` for a stale
+  `generation` goes to the caller unchanged. After a group's first entry only a
+  switch changes its write versions, and the switch for `R` sets the `V(R)` that
+  a writer of release `R` can write, so the second write of a writer of release
+  `R` is not refused for its version.
+- Check. Finalization first reads the global group at a position `P` where every
+  node's running release (ARFC 0017 clause 3.11) is `R`: the check **begins**
+  there. For each group recorded at `P`, it then increments the group's binding
+  epoch with one write, reads every binding the group stores at a position after
+  that write, and computes `reencode(value, V(R))` (clause 3.19) of each with the
+  configuration types of release `R`: a decode, then an encode at `V(R)`. It
+  writes nothing else. If a group recorded at `P` cannot be written or read, a
+  binding's implementation has no configuration type in release `R`, or
+  `reencode` fails, for example `from_value` with `Invalid` or `to_value` with
+  `TooLarge` because the configuration is longer at `V(R)`, finalization reports
+  each such group with its region and error, and each such binding with its
+  resource and error, and stops before the switch, so rollback to `R - 1` stays
+  possible. From the check's write on, the group refuses every binding write
+  that names an earlier epoch, as every write whose epoch was read before it
+  does, whatever release proposed it and however long it was delayed. So every
+  binding a group stores when it switches was read by the check, or was written
+  by a process running after `P`: after the check's write to that group, or in a
+  regional group recorded after `P`. Such a process runs release `R` and wrote
+  only what it could also write at `V(R)` (Writing a binding, above), or it
+  wrote a running release other than `R` after `P`, and the switch is refused
+  (below).
 - Switch. Finalization then starts with one write to the global group that
-  records `R` as the finalized release (ARFC 0017 section 8) and sets the group's
-  write versions to exactly the `V(R)` of every configuration type release `R`
-  registers, followed by one write that sets the same write versions in each
-  regional group. From the switch on, no node runs release `R - 1`: rollback,
-  falling back to the previous binary (ARFC 0017 section 6), and starting
-  `alloyd` of release `R - 1` are refused.
-- Rewrite. After a group's switch, finalization replaces each binding stored in
-  that group whose version is not `V(R)` with `reencode(value, V(R))` (clause
+  records `R` as the finalized release (ARFC 0017 section 8) and sets the global
+  group's write versions to the write versions of `R`. That write names `P`, and
+  it applies only if, at its own position in the global group's log, every
+  node's running release is `R`, and no running release other than `R` was
+  written between the two positions. Otherwise nothing is written, finalization
+  reports each such node and has not started, and rollback stays possible. After
+  it, finalization sets the same write versions with one write to each regional
+  group the global group records, as read after the switch. A regional group
+  recorded after the switch receives the write versions of `R` from its record. A
+  group has **switched** for `R` when it holds the write versions of `R`. From
+  the switch on, no node runs release `R - 1`: rollback, falling back to the
+  previous binary (ARFC 0017 section 6), and starting `alloyd` of release `R - 1`
+  are refused, and an `alloyd` of release `R - 1` whose running release was not
+  written before the switch never serves (ARFC 0017 clause 3.11).
+- Rewrite. After a group has switched, finalization replaces each binding stored
+  in that group whose version is not `V(R)` with `reencode(value, V(R))` (clause
   3.19), which is the same configuration (round trip rule above). Each
   replacement is a write that names the resource `generation` it read (ARFC 0006
   clause 3.5). On `Conflict` it reads the resource again and replaces the
   binding only if it is still at a version other than `V(R)`: a change made by
   another writer after the switch is already at `V(R)` and is never overwritten.
-  A binding at `V(R)` is not rewritten.
+  A binding at `V(R)` is not rewritten. Every binding a group stores when it
+  switches re-encodes at `V(R)` (Check, above), and so does every binding a
+  writer of release `R` writes after that.
 - Completion. Finalization completes, and `alloy cluster upgrade --finalize`
-  reports success, only when every group has switched and no group stores a
-  binding at a version other than `V(R)`. From then until the next switch none
-  does, because every group refuses binding writes at another version. A binding
-  the rewrite cannot replace is reported with its resource and error, and
-  finalization stays started and not complete until a later run replaces it or
-  the resource is rebound or deleted.
+  reports success, only when the global group and every regional group the
+  global group records have switched, and no group stores a binding at a version
+  other than `V(R)`. A regional group that does not accept finalization's write,
+  for example while it has no quorum (ARFC 0006 section 6), is reported with its
+  region and error. A binding the rewrite cannot replace is reported with its
+  resource and error. In both cases finalization stays started and not complete
+  until a later run of `--finalize` switches the group or replaces the binding:
+  the group's quorum is restored, or the resource is rebound or deleted, and
+  `--finalize` is run again. From completion until the next switch no group stores a binding at
+  another version, because every group refuses binding writes at another
+  version.
 - Who runs it. The check and the rewrite run in `alloyd` of release `R` on a
   control node, as a controller of each group (ARFC 0006 clause 2.4). Clause 3.19
   gives every such process the configuration type of every implementation release
@@ -513,14 +600,16 @@ as the finalized release.
   restart, and does not change any slot's `current`, `binding`, or `generation`.
 - Ordering. The upgrade to release `R + 1` must not start, and `alloyd` of release
   `R + 1` refuses to start, while the finalization of release `R` is not
-  complete.
+  complete (ARFC 0017 clause 3.7).
 - Bound. `MIN_VERSION` of release `R + 1` must be no newer than `V(R)`. With the
   rules above, the releases that may run and the versions stored are, in order:
   before the switch for `R`, releases `R - 1` and `R`, with bindings at
   `V(R - 1)`; from that switch until completion, release `R` only, with bindings
   at `V(R - 1)` or `V(R)`; from completion until the switch for `R + 1`, releases
-  `R` and `R + 1`, with bindings at `V(R)`. Every stored binding therefore stays
-  readable by every release that may run on the cluster, after any number of
+  `R` and `R + 1`, with bindings at `V(R)`. This holds in every group, including
+  a regional group recorded at any point (Write versions, above). Every stored
+  binding therefore stays readable by every release that may run on the cluster
+  and registers its implementation's configuration type, after any number of
   upgrades (I-18), and no release decodes a version older than its predecessor's
   `VERSION`.
 
@@ -580,7 +669,8 @@ The `Debug` output of a seam instance is its implementation's, and must not hold
 secrets either.
 
 3.19 Configuration types. `RegistryBuilder::register_config::<S, C>` must fail,
-and leave the builder unchanged, with:
+and leave the builder unchanged, with the first error that applies, checked in
+this order of precedence, as in clause 3.11:
 
 - `InvalidKind` when `S::KIND` breaks the rules of clause 3.10,
 - `KindConflict` when another marker type registered `S::KIND` before, by
@@ -661,12 +751,13 @@ marker implements `LiveSeam`.
 The registry and the slot are not a seam. Their conformance suite is
 `tests/conformance/seam/`, and it checks clauses 3.10 to 3.19 and section 4 with
 test seams and test configurations defined in the suite. The rules of clause 3.13
-for bindings stored in control plane state (write versions, check, switch,
-rewrite, completion, binding identity, ordering) are control plane behavior and
-are checked by the upgrade scenarios that ARFC 0017 clause 3.10 runs, not by this
-suite. The last paragraph of clause 3.19 is a property of `alloyd` builds and is
-checked by building `alloyd` for both supported hosts and comparing their
-`configs`, not by this suite.
+for bindings stored in control plane state (groups, write versions, binding
+epoch, writing a binding, a write that races the switch or a check, check,
+switch, rewrite, completion, binding identity, ordering, bound) are control
+plane behavior and are checked by the finalization suite of ARFC 0017 clause
+3.12, not by this suite. The last paragraph of clause 3.19 is a property of
+`alloyd` builds and is checked by building `alloyd` for both supported hosts and
+comparing their `configs`, not by this suite.
 
 ## 6. Failure behavior
 
@@ -675,15 +766,27 @@ instance serving and must surface the error on the resource that asked for it. A
 resource bound to an implementation the node does not have must report
 `SeamUnavailable` and must not fall back to a different implementation.
 
-A configuration that the write version cannot carry fails with `NotExpressible`,
-and a binding written at a version other than the write version fails with
-`UnsupportedVersion`. Neither is stored (clause 3.13).
+A configuration that the write version, or the writer's own `VERSION`, cannot
+carry fails with the error of `to_value`, for example `NotExpressible` or
+`TooLarge`, and a binding written at a version other than the write version fails
+with `UnsupportedVersion`. A binding write to a group that holds no write
+versions yet fails with `Unavailable`, and one that names a binding epoch that
+is no longer current fails with `Conflict`. None of these is stored (clause
+3.13). A writer whose write fails only because a switch changed the write
+version, or a check changed the binding epoch, after it read them reads them
+again and writes once more; its caller sees the error only when that second
+write fails too.
 
-A stored binding that the finalization check cannot decode is reported with its
-resource and error, and finalization does not start: rollback stays possible. A
-stored binding that the rewrite cannot replace after the switch is reported the
-same way, and finalization stays started and not complete until a later run
-replaces it or the resource is rebound or deleted (clause 3.13).
+A stored binding that the finalization check cannot decode, or cannot encode at
+`V(R)`, or whose implementation release `R` does not register, and a group the
+check cannot write or read, are reported with the resource or region and the
+error, and finalization does not start: rollback stays possible. A switch
+refused because a node's running release is not `R`, at the switch or at any
+point after the check began, is reported with that node, and finalization does
+not start either. A regional group that does not accept finalization's switch
+write, and a stored binding that the rewrite cannot replace after the switch,
+are reported the same way, and finalization stays started and not complete
+until a later run switches the group or replaces the binding (clause 3.13).
 
 A failed or timed-out swap leaves the old instance current and resumed, or reports
 in `resumed` that it could not resume. The owning subsystem surfaces either result
