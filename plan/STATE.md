@@ -11,13 +11,13 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0043 |
-| Decision `D-` | D-0015 |
-| ADR | 0049 |
+| Task `T-` | T-0044 |
+| Decision `D-` | D-0016 |
+| ADR | 0050 |
 | Research `R-` | R-0008 |
 | Brief `PB-` | PB-0002 |
 
-ADR 0036, ADR 0040, ADR 0042, ADR 0045 to ADR 0048, R-0001 to R-0007, and PB-0001 are allocated to the tasks below.
+ADR 0036, ADR 0040, ADR 0042, ADR 0046 to ADR 0049, R-0001 to R-0007, and PB-0001 are allocated to the tasks below.
 
 ## Board
 
@@ -28,7 +28,7 @@ ADR 0036, ADR 0040, ADR 0042, ADR 0045 to ADR 0048, R-0001 to R-0007, and PB-000
 | T-0003 | research | researcher | done | none | Research deterministic simulation options in Rust |
 | T-0004 | research | researcher | done | none | Research Cloud Hypervisor against ARFC 0011 |
 | T-0005 | research | researcher | done | none | Research NAT behaviors and define lab presets |
-| T-0006 | spec | architect | queued | T-0021, T-0031 | Specify the alloy-rt and alloy-seam interfaces |
+| T-0006 | spec | architect | active | none | Specify the alloy-rt and alloy-seam interfaces |
 | T-0007 | interface | developer | queued | T-0001, T-0006 | Define the alloy-rt and alloy-seam interface crates |
 | T-0008 | verify | verifier | queued | T-0007 | Write conformance suites for the runtime seams |
 | T-0009 | build | developer | queued | T-0007 | Build the alloy-sim deterministic simulator |
@@ -43,28 +43,29 @@ ADR 0036, ADR 0040, ADR 0042, ADR 0045 to ADR 0048, R-0001 to R-0007, and PB-000
 | T-0018 | build | developer | queued | T-0042 | Check commit messages on main in xtask |
 | T-0019 | research | researcher | done | none | Research licenses inside the Cloud Hypervisor UEFI images |
 | T-0020 | spec | architect | done | none | Resolve the per-guest seccomp clause in ARFC 0011 |
-| T-0021 | spec | architect | blocked | T-0031 | Resolve NAT spec issues found by R-0003 |
+| T-0021 | spec | architect | done | none | Resolve NAT spec issues found by R-0003 |
 | T-0022 | spec | architect | review | none | Apply PB-0001 to ARFC 0002 and ARFC 0019 |
 | T-0023 | spec | architect | done | none | Specify user access keys and the local admin path |
-| T-0024 | spec | architect | queued | T-0021 | Fix the default mesh port and TCP 443 sharing |
+| T-0024 | spec | architect | queued | T-0043, T-0041 | Fix the default mesh port and TCP 443 sharing |
 | T-0025 | process | architect | done | none | Let parallel tasks share append-only index files |
 | T-0026 | spec | architect | done | none | Make the ARFC 0003 handshake implementable on Noise libraries |
 | T-0027 | process | architect | done | none | Align core delegation and the lead role with shared index files |
 | T-0028 | spec | architect | done | none | Fix the Landlock clauses in ARFC 0011 section 2 |
 | T-0029 | spec | architect | done | none | Record the install script location in ADR 0044 |
 | T-0030 | spec | architect | done | none | Fix the DH rate limit and cookie lifetime in ARFC 0003 |
-| T-0031 | spec | architect | review | none | Fix the review findings on the T-0021 NAT spec changes |
+| T-0031 | spec | architect | done | none | Fix the review findings on the T-0021 NAT spec changes |
 | T-0032 | process | architect | done | none | Define the inputs of a second round for every role |
 | T-0033 | build | developer | done | none | Never cancel CI runs on main |
 | T-0034 | research | researcher | done | none | Research browser support for Ed25519 TLS certificates |
 | T-0035 | research | researcher | done | none | Research generating the console's TypeScript API client |
 | T-0036 | build | developer | done | none | Keep check-repo green on main with plan files in flight |
-| T-0037 | build | developer | active | none | Run the check-repo path lock in CI |
-| T-0038 | spec | architect | queued | T-0031 | Specify probe bytes and probe replay protection in ARFC 0003 |
-| T-0039 | spec | architect | queued | T-0031 | Bound probe sets and return path moves in ARFC 0004 |
+| T-0037 | build | developer | review | none | Run the check-repo path lock in CI |
+| T-0038 | spec | architect | active | none | Specify probe bytes and probe replay protection in ARFC 0003 |
+| T-0039 | spec | architect | cancelled | none | Bound probe sets and return path moves in ARFC 0004 |
 | T-0040 | spec | architect | review | none | Bound lineage state and close gaps in ARFC 0007 section 3.9 |
 | T-0041 | spec | architect | queued | T-0022 | Use a browser-compatible key type for the API CA |
 | T-0042 | build | developer | active | none | Close the check-repo gaps found in review |
+| T-0043 | spec | architect | active | none | Settle the path class rule and bound return path moves |
 
 ## First dispatch
 
@@ -91,8 +92,8 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 
 ## Still to cut for M1 and M2
 
-- From `plan/reports/T-0022.architect.1.md` (cut after T-0022 and T-0023 merge): ARFC 0007 accepts client-generated access key secrets from `ExchangeLoginCode`; T-0024 adds the API CA chain for clients that connect by address; ARFC 0006 heartbeat interval under the 30 s `unreachable` rule; ARFC 0017 next minor release across 0.x to 1.0; PB-0001 wording for unreachable and revoked; a command that removes a one-node cluster; proto definitions for the new calls in the first `alloy-proto` task.
-- From `plan/reports/T-0022.architect.2.md` (cut after T-0022 merges): I-22 versus the access key secret returned by ARFC 0007 clause 3.9.4, change one; ARFC 0008 clause 3.7 names `ExchangeLoginCode` and the local admin socket; glossary entries for advertise address and context; PB-0001 wording for `key_in_use`, `login_code_voided`, and non-local advertise addresses; a pool brief and a command to take a disk out of a pool so `node leave` works on storage nodes; `--api-port` on `join` goes to T-0024.
+- From `plan/reports/T-0022.architect.1.md` (cut after T-0022 and T-0023 merge): ARFC 0007 accepts client-generated access key secrets from `ExchangeLoginCode`; ARFC 0006 heartbeat interval under the 30 s `unreachable` rule; ARFC 0017 next minor release across 0.x to 1.0; PB-0001 wording for unreachable and revoked; a command that removes a one-node cluster; proto definitions for the new calls in the first `alloy-proto` task.
+- From `plan/reports/T-0022.architect.2.md` (cut after T-0022 merges): I-22 versus the access key secret returned by ARFC 0007 clause 3.9.4, change one; ARFC 0008 clause 3.7 names `ExchangeLoginCode` and the local admin socket; glossary entries for advertise address and context; PB-0001 wording for `key_in_use`, `login_code_voided`, and non-local advertise addresses; a pool brief and a command to take a disk out of a pool so `node leave` works on storage nodes; `--api-port` on `join` is in T-0024.
 - From `plan/reports/T-0040.architect.1.md` (cut after T-0022 merges): ARFC 0019 revokes a context's stored key when a login stores another user's key (F6); ARFC 0002 bounds the login code table and keeps each unspent code's issuer, including the access key behind an issuing session token; state the meaning of `key_id` in the token payload; `tests/conformance/authn` cases listed in that report.
 - From `plan/reports/T-0023.architect.1.md` (cut after T-0022 merges and T-0023 review): the issues on ARFC 0008, 0002, 0019, 0006, and 0020, the last `cloud-admin` binding, PB-0001 local admin errors, the `SO_PEERCRED` research question, glossary terms, and `tests/conformance/authn` cases.
 
