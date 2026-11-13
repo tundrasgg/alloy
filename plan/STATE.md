@@ -28,7 +28,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0055, R-0001 to R-0008
 | T-0003 | research | researcher | done | none | Research deterministic simulation options in Rust |
 | T-0004 | research | researcher | done | none | Research Cloud Hypervisor against ARFC 0011 |
 | T-0005 | research | researcher | done | none | Research NAT behaviors and define lab presets |
-| T-0006 | spec | architect | active | none | Specify the alloy-rt and alloy-seam interfaces |
+| T-0006 | spec | architect | review | none | Specify the alloy-rt and alloy-seam interfaces |
 | T-0007 | interface | developer | queued | T-0001, T-0006 | Define the alloy-rt and alloy-seam interface crates |
 | T-0008 | verify | verifier | queued | T-0007 | Write conformance suites for the runtime seams |
 | T-0009 | build | developer | queued | T-0007, T-0050 | Build the alloy-sim deterministic simulator |
