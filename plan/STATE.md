@@ -13,7 +13,7 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 | Series | Next |
 |---|---|
 | Task `T-` | T-0095 |
-| Decision `D-` | D-0041 |
+| Decision `D-` | D-0042 |
 | ADR | 0063 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0002 |
@@ -99,7 +99,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0073 | process | architect | done | none | Adopt lean task sizing and review rules |
 | T-0074 | build | developer | done | none | Create alloy-crypto with BLAKE3 content hashing |
 | T-0075 | build | developer | done | none | Build the alloy-sim executor, runs, and trace |
-| T-0076 | build | developer | review | none | Build alloy-sim hosts, mem runtime, and faults |
+| T-0076 | build | developer | active | none | Build alloy-sim hosts, mem runtime, and faults |
 | T-0077 | build | developer | queued | T-0094 | Build alloy-sim networks, UDP, and the echo scenario |
 | T-0078 | build | developer | queued | T-0077 | Build alloy-sim mem streams |
 | T-0079 | build | developer | done | none | Run the commit check inside cargo xtask ci |
@@ -189,6 +189,9 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 - Spec: ARFC 0004 section 8 states the probe reflection bound from section 3.2 (T-0021 follow-up).
 
 ## M11 notes
+
+- T-0083 round 2 on Linux (8059f64): `cargo test -p alloy-rt` gives 65 passed, 1 failed, `os::disk::tests::a_direct_read_across_the_end_returns_the_bytes_before_it` panics at `crates/alloy-rt/src/os/disk/tests.rs:406`. It passes on Windows. T-0083 cannot merge until it passes on Linux.
+- Naming (D-0041): a product task maps the public names onto the glossary, CLI help, and console. "Underlay Mesh" names the overlay, while the glossary's "underlay" means the networks beneath it; that task resolves the wording.
 
 - From T-0086 (fold into the next ARFC 0003 task): the handshake nonce is always 24 zero bytes in `IKpsk2`, so its byte order is unobservable; section 3.3 erasure can only be checked by proxies; add probe key vectors once section 3.6 sealing exists.
 - From T-0079 review (note): a dependency added to `alloy-wire` must also update `fuzz/Cargo.lock`, which the `fuzz` gate step does not name when it fails; fold into the next `xtask` task.
