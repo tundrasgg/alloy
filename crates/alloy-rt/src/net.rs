@@ -183,12 +183,11 @@ pub struct Datagram<'a> {
     pub payload: &'a [u8],
 }
 
-/// Writes the addresses and the payload length, never the payload (I-22).
+/// Writes `Datagram { len: <payload length> }`: lengths only, never the
+/// payload (ARFC 0005 section 2.1, I-22).
 impl fmt::Debug for Datagram<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Datagram")
-            .field("dst", &self.dst)
-            .field("src_ip", &self.src_ip)
             .field("len", &self.payload.len())
             .finish()
     }
@@ -219,15 +218,13 @@ pub struct RecvSlot {
     pub dst_ip: IpAddr,
 }
 
-/// Writes the capacity, the length, and the addresses, never the bytes (I-22).
+/// Writes `RecvSlot { capacity: <buffer length>, len: <datagram length> }`:
+/// lengths only, never the bytes (ARFC 0005 section 2.1, I-22).
 impl fmt::Debug for RecvSlot {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RecvSlot")
             .field("capacity", &self.buf.len())
             .field("len", &self.len)
-            .field("truncated", &self.truncated)
-            .field("src", &self.src)
-            .field("dst_ip", &self.dst_ip)
             .finish()
     }
 }
@@ -506,18 +503,13 @@ mod tests {
             src_ip: None,
             payload: b"tenant payload",
         };
-        assert_eq!(
-            format!("{datagram:?}"),
-            "Datagram { dst: [::1]:9, src_ip: None, len: 14 }"
-        );
+        assert_eq!(format!("{datagram:?}"), "Datagram { len: 14 }");
         let mut slot = RecvSlot::new(4).unwrap();
         slot.buf.copy_from_slice(&[0xAB; 4]);
-        slot.len = 4;
-        let text = format!("{slot:?}");
-        assert_eq!(
-            text,
-            "RecvSlot { capacity: 4, len: 4, truncated: false, src: 0.0.0.0:0, dst_ip: 0.0.0.0 }"
-        );
+        slot.len = 3;
+        slot.truncated = true;
+        slot.src = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 9);
+        assert_eq!(format!("{slot:?}"), "RecvSlot { capacity: 4, len: 3 }");
     }
 
     #[test]

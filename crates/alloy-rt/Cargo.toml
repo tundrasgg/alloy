@@ -9,7 +9,10 @@ publish.workspace = true
 
 [dependencies]
 alloy-seam = { path = "../alloy-seam" }
-thiserror = "2.0.18"
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
 
 [lints]
 workspace = true
