@@ -4,39 +4,37 @@
 //! stream yet.
 
 use std::collections::BTreeMap;
-use std::future::poll_fn;
+use std::future::{Future, poll_fn};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::task::Poll;
 use std::time::Duration;
 
+use alloy_crypto::ecdsa::SigningKey;
+use alloy_crypto::tls::{ClientTls, HandshakeError, NO_APPLICATION_PROTOCOL};
+use alloy_crypto::x509::{self, CertificateFields};
 use alloy_proto::cluster::v1alpha1::{
     GetNodeRequest, ListNodesRequest, Node, NodeSpec, NodeState, NodeStatus, Role,
 };
 use alloy_proto::common::v1alpha1::{Error, ErrorCode};
 use alloy_proto::error::ERROR_TRAILER;
 use alloy_rt::{
-    BoxFuture, ListenOptions, OsHost, Runtime, RuntimeConfig, StreamAddr, StreamOptions,
-    register_os,
+    BoxFuture, ListenOptions, Listener, NetError, OsHost, Runtime, RuntimeConfig, Stream,
+    StreamAddr, StreamOptions, register_os,
 };
 use alloy_seam::{Binding, ConfigValue, ImplName, RegistryBuilder};
 use prost::Message;
-use rcgen::{
-    BasicConstraints, CertificateParams, CertifiedIssuer, DnType, ExtendedKeyUsagePurpose, IsCa,
-    KeyPair, KeyUsagePurpose, PKCS_ECDSA_P256_SHA256, SanType,
-};
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName};
-use rustls::server::ResolvesServerCert;
-use rustls::sign::{CertifiedKey, SingleCertAndKey};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::client::{Client, ConnectError, RetryPolicy, connect, retry};
 use crate::io::RtIo;
-use crate::tls::{ApiCaFingerprint, Protocol, client_config, server_config};
+use crate::tls::{ApiCaFingerprint, Protocol, RtWall, ServerCert, server_config};
 use crate::transport::H2_PREFACE;
 use crate::{
-    Access, Action, ApiPort, ApiServer, AuthnError, ConnLimits, MAX_MESSAGE_BYTES, NodeName,
-    NodeStore, Principal, SessionToken, StreamConn, StreamUnderlay, Transport,
+    Access, Action, AdminLimits, ApiPort, ApiServer, AuthnError, ConnLimits, MAX_MESSAGE_BYTES,
+    NodeName, NodeStore, Principal, SessionToken, StreamConn, StreamUnderlay, Transport,
     UNAUTHENTICATED_MESSAGE,
 };
 
@@ -141,41 +139,99 @@ fn runtime(host: &OsHost) -> Runtime {
     Runtime::from_registry(&builder.build(), &config).expect("runtime")
 }
 
-/// A test API CA and a server certificate it issued for `ip`.
+/// A test API CA and a server certificate it issued for `ip`, valid from an
+/// hour before `now`, in seconds since 1970, for a day.
 struct Pki {
-    ca: CertificateDer<'static>,
-    resolver: Arc<dyn ResolvesServerCert>,
+    ca: Vec<u8>,
+    cert: ServerCert,
 }
 
-fn pki(ip: IpAddr) -> Pki {
-    let ca_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).expect("ca key");
-    let mut ca_params = CertificateParams::new(Vec::<String>::new()).expect("params");
-    ca_params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
-    ca_params
-        .distinguished_name
-        .push(DnType::CommonName, "Alloy API CA test");
-    ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
-    let ca = CertifiedIssuer::self_signed(ca_params, ca_key).expect("ca");
+fn pki(ip: IpAddr, now: i64) -> Pki {
+    let ca_key = SigningKey::from_scalar(&[0x11; 32]).expect("ca key");
+    let fields = |serial: u8, common_name| CertificateFields {
+        serial: [serial; 16],
+        common_name,
+        not_before: now - 3_600,
+        not_after: now + 86_400,
+    };
+    let ca = x509::self_signed_ca(&ca_key, &fields(1, "Alloy API CA test")).expect("ca");
+    let leaf_key = SigningKey::from_scalar(&[0x22; 32]).expect("leaf key");
+    let leaf = x509::issue_server(
+        &ca_key,
+        "Alloy API CA test",
+        &leaf_key.public_key(),
+        &fields(2, "linux-1"),
+        &[ip],
+    )
+    .expect("leaf");
+    let cert = ServerCert::new(vec![leaf, ca.clone()], leaf_key).expect("server cert");
+    Pki { ca, cert }
+}
 
-    let leaf_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).expect("leaf key");
-    let mut leaf_params = CertificateParams::new(Vec::<String>::new()).expect("params");
-    leaf_params
-        .distinguished_name
-        .push(DnType::CommonName, "linux-1");
-    leaf_params.subject_alt_names = vec![SanType::IpAddress(ip)];
-    leaf_params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
-    leaf_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
-    let leaf = leaf_params.signed_by(&leaf_key, &ca).expect("leaf");
+/// Two real listeners served as one port, each standing for one source
+/// address: every loopback connection comes from 127.0.0.1, so the
+/// connections of the second listener report the peer [`FRIEND`] instead.
+#[derive(Debug)]
+struct TwoSources {
+    first: Box<dyn Listener>,
+    second: Box<dyn Listener>,
+}
 
-    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(leaf_key.serialize_der()));
-    let signing = crate::tls::provider()
-        .key_provider
-        .load_private_key(key)
-        .expect("signing key");
-    let certified = CertifiedKey::new(vec![leaf.der().clone(), ca.der().clone()], signing);
-    Pki {
-        ca: ca.der().clone(),
-        resolver: Arc::new(SingleCertAndKey::from(certified)),
+/// The source the second listener's connections report.
+const FRIEND: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7));
+
+impl Listener for TwoSources {
+    fn local_addr(&self) -> StreamAddr {
+        self.first.local_addr()
+    }
+
+    fn accept(&self) -> BoxFuture<'_, Result<Box<dyn Stream>, NetError>> {
+        Box::pin(async move {
+            let mut first = self.first.accept();
+            let mut second = self.second.accept();
+            // The second listener first: a flood on the first must not hide
+            // it, as the kernel's queue would not hide one source behind
+            // another.
+            poll_fn(|cx| {
+                if let Poll::Ready(stream) = second.as_mut().poll(cx) {
+                    return Poll::Ready(
+                        stream.map(|inner| Box::new(FromFriend(inner)) as Box<dyn Stream>),
+                    );
+                }
+                first.as_mut().poll(cx)
+            })
+            .await
+        })
+    }
+}
+
+/// A stream whose peer reports [`FRIEND`].
+#[derive(Debug)]
+struct FromFriend(Box<dyn Stream>);
+
+impl Stream for FromFriend {
+    fn local_addr(&self) -> Option<StreamAddr> {
+        self.0.local_addr()
+    }
+
+    fn peer_addr(&self) -> Option<StreamAddr> {
+        let port = match self.0.peer_addr() {
+            Some(StreamAddr::Ip(addr)) => addr.port(),
+            _ => 0,
+        };
+        Some(StreamAddr::Ip(SocketAddr::new(FRIEND, port)))
+    }
+
+    fn read<'a>(&'a self, buf: &'a mut [u8]) -> BoxFuture<'a, Result<usize, NetError>> {
+        self.0.read(buf)
+    }
+
+    fn write<'a>(&'a self, bufs: &'a [&'a [u8]]) -> BoxFuture<'a, Result<usize, NetError>> {
+        self.0.write(bufs)
+    }
+
+    fn shutdown_write(&self) -> BoxFuture<'_, Result<(), NetError>> {
+        self.0.shutdown_write()
     }
 }
 
@@ -212,6 +268,8 @@ struct Setup {
     transport: Transport,
     limits: ConnLimits,
     stream: bool,
+    /// A second listener whose connections come from [`FRIEND`].
+    friend: bool,
 }
 
 impl Setup {
@@ -224,6 +282,7 @@ impl Setup {
             transport: Transport::TLS,
             limits: ConnLimits::API_PORT,
             stream: false,
+            friend: false,
         }
     }
 }
@@ -233,6 +292,8 @@ struct Fixture {
     host: OsHost,
     runtime: Runtime,
     addr: SocketAddr,
+    /// The address of the listener whose connections come from [`FRIEND`].
+    friend: Option<SocketAddr>,
     pin: ApiCaFingerprint,
     server: ApiServer,
     transport: Transport,
@@ -252,31 +313,29 @@ impl Fixture {
             .map(|n| (n.name.clone(), n))
             .collect();
         let server = ApiServer::new(runtime.clone(), Arc::new(Nodes(nodes)), Arc::new(Policy));
-        let pki = pki(setup.cert_ip);
-        let tls = server_config(
-            Arc::clone(runtime.clock()),
-            Arc::clone(&pki.resolver),
-            Protocol::Api,
-        )
-        .expect("server config");
-        let listener = runtime
-            .net()
-            .listen(
-                StreamAddr::Ip(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))),
-                ListenOptions::default(),
-            )
-            .expect("listen");
-        let StreamAddr::Ip(addr) = listener.local_addr() else {
-            panic!("a TCP listener has an IP address");
-        };
+        let now = runtime.clock().wall().0 / 1_000_000_000;
+        let pki = pki(setup.cert_ip, now);
+        let tls = server_config(Arc::clone(runtime.clock()), &pki.cert, Protocol::Api)
+            .expect("server config");
+        let (listener, addr) = listen(&runtime);
         let mut port = ApiPort::new(runtime.clone(), setup.transport)
             .with_limits(setup.limits)
             .with_api(server.clone(), tls);
         if setup.stream {
-            let tls = server_config(Arc::clone(runtime.clock()), pki.resolver, Protocol::Stream)
+            let tls = server_config(Arc::clone(runtime.clock()), &pki.cert, Protocol::Stream)
                 .expect("stream config");
             port = port.with_stream(Arc::new(Echo), tls);
         }
+        let (listener, friend): (Box<dyn Listener>, _) = if setup.friend {
+            let (second, friend) = listen(&runtime);
+            let both = TwoSources {
+                first: listener,
+                second,
+            };
+            (Box::new(both), Some(friend))
+        } else {
+            (listener, None)
+        };
         runtime
             .spawn(crate::io::task_name("test-port"), async move {
                 port.serve(listener).await;
@@ -287,6 +346,7 @@ impl Fixture {
             host,
             runtime,
             addr,
+            friend,
             pin,
             server,
             transport: setup.transport,
@@ -304,11 +364,19 @@ impl Fixture {
     }
 
     async fn try_client(&self, token: Option<&str>) -> Result<Client, ConnectError> {
+        self.try_client_at(self.addr, token).await
+    }
+
+    async fn try_client_at(
+        &self,
+        addr: SocketAddr,
+        token: Option<&str>,
+    ) -> Result<Client, ConnectError> {
         let token = token.map(|t| SessionToken::new(t).expect("token"));
         connect(
             &self.runtime,
             self.transport,
-            self.addr,
+            addr,
             self.pin,
             token.as_ref(),
         )
@@ -318,10 +386,14 @@ impl Fixture {
     /// Opens a raw stream to the port, writes `bytes`, and reads to its end.
     /// `None` when the port closes it with an error.
     async fn exchange(&self, bytes: &[u8]) -> Option<Vec<u8>> {
+        self.exchange_at(self.addr, bytes).await
+    }
+
+    async fn exchange_at(&self, addr: SocketAddr, bytes: &[u8]) -> Option<Vec<u8>> {
         let stream = self
             .runtime
             .net()
-            .connect(StreamAddr::Ip(self.addr), StreamOptions::default())
+            .connect(StreamAddr::Ip(addr), StreamOptions::default())
             .await
             .expect("connect");
         let mut at = 0;
@@ -342,6 +414,21 @@ impl Fixture {
 
 fn localhost() -> IpAddr {
     IpAddr::V4(Ipv4Addr::LOCALHOST)
+}
+
+/// A TCP listener on a free loopback port, and its address.
+fn listen(runtime: &Runtime) -> (Box<dyn Listener>, SocketAddr) {
+    let listener = runtime
+        .net()
+        .listen(
+            StreamAddr::Ip(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))),
+            ListenOptions::default(),
+        )
+        .expect("listen");
+    let StreamAddr::Ip(addr) = listener.local_addr() else {
+        panic!("a TCP listener has an IP address");
+    };
+    (listener, addr)
 }
 
 #[test]
@@ -519,32 +606,26 @@ fn a_chain_that_fails_the_pin_or_the_address_is_refused() {
 fn a_client_hello_without_h2_gets_no_application_protocol() {
     let f = Fixture::start(1, localhost());
     f.run(async {
-        for offered in [vec![b"http/1.1".to_vec()], vec![]] {
-            let config = client_config(Arc::clone(f.runtime.clock()), f.pin).expect("config");
-            let mut config = Arc::unwrap_or_clone(config);
-            config.alpn_protocols = offered;
+        let offers: [&[&[u8]]; 2] = [&[b"http/1.1"], &[]];
+        for offered in offers {
+            let wall = Arc::new(RtWall(Arc::clone(f.runtime.clock())));
+            let config = ClientTls::pinned(wall, f.pin, offered).expect("config");
             let stream = f
                 .runtime
                 .net()
                 .connect(StreamAddr::Ip(f.addr), StreamOptions::default())
                 .await
                 .expect("connect");
-            let refused = tokio_rustls::TlsConnector::from(Arc::new(config))
-                .connect(
-                    ServerName::IpAddress(localhost().into()),
-                    RtIo::new(Arc::from(stream)),
-                )
+            let refused = config
+                .connect(localhost(), RtIo::new(Arc::from(stream)))
                 .await
                 .expect_err("refused");
-            let alert = refused
-                .get_ref()
-                .and_then(|e| e.downcast_ref::<rustls::Error>())
-                .cloned();
-            assert_eq!(
-                alert,
-                Some(rustls::Error::AlertReceived(
-                    rustls::AlertDescription::NoApplicationProtocol
-                ))
+            assert!(
+                matches!(
+                    refused,
+                    HandshakeError::AlertReceived(NO_APPLICATION_PROTOCOL)
+                ),
+                "{refused:?}"
             );
         }
     });
@@ -571,7 +652,7 @@ fn the_local_admin_socket_takes_no_credential() {
         f.runtime
             .spawn(crate::io::task_name("test-admin"), async move {
                 server
-                    .serve_local_admin(listener, ConnLimits::LOCAL_ADMIN)
+                    .serve_local_admin(listener, AdminLimits::LOCAL_ADMIN)
                     .await;
             })
             .expect("spawn");
@@ -593,23 +674,34 @@ fn the_local_admin_socket_takes_no_credential() {
     });
 }
 
+/// Bounds small enough to reach in a test, with `idle` and `prove` given.
+fn small(prove: Duration, idle: Duration) -> ConnLimits {
+    ConnLimits {
+        unproven: 4,
+        unproven_per_source: 2,
+        api: 2,
+        stream: 1,
+        handshake: Duration::from_secs(10),
+        prove,
+        rejected: 3,
+        idle,
+    }
+}
+
 #[test]
 fn connections_are_bounded_and_idle_ones_close() {
     let idle = Duration::from_millis(400);
     let f = Fixture::with(Setup {
-        limits: ConnLimits {
-            max_connections: 2,
-            handshake: Duration::from_secs(10),
-            idle,
-        },
+        limits: small(Duration::from_secs(10), idle),
         ..Setup::new(1, localhost())
     });
     f.run(async {
         let alice = f.client(Some(ALICE)).await;
         assert!(alice.get_node("node-00").await.is_ok());
-        // A connection with no credential that never calls holds a place.
-        let _silent = f.client(None).await;
-        // A third while two are open is closed at once, before TLS.
+        // Proven, Alice's connection left the unproven count: two silent
+        // connections with no credential fill the share of 127.0.0.1.
+        let _silent = [f.client(None).await, f.client(None).await];
+        // A third from the same source is closed at once, before TLS.
         let refused = f.try_client(Some(ALICE)).await;
         assert!(
             matches!(refused, Err(ConnectError::Tls(_) | ConnectError::Net(_))),
@@ -617,10 +709,171 @@ fn connections_are_bounded_and_idle_ones_close() {
         );
 
         f.runtime.sleep(idle * 3).await;
-        // Both idle connections were closed, and their places came back.
+        // Alice's idle connection was closed; the silent ones still hold
+        // their places, which only `prove` ends.
         assert!(alice.get_node("node-00").await.is_err());
-        let again = f.client(Some(ALICE)).await;
-        assert!(again.get_node("node-00").await.is_ok());
+        assert!(f.try_client(Some(ALICE)).await.is_err());
+    });
+}
+
+#[test]
+fn a_full_api_count_refuses_the_proving_call() {
+    let f = Fixture::with(Setup {
+        limits: small(Duration::from_secs(10), Duration::from_secs(10)),
+        ..Setup::new(1, localhost())
+    });
+    f.run(async {
+        let a = f.client(Some(ALICE)).await;
+        let b = f.client(Some(BOB)).await;
+        assert!(a.get_node("node-00").await.is_ok());
+        // Bob is authenticated and refused by policy: his connection is
+        // proven all the same.
+        assert_eq!(
+            b.get_node("node-00").await.map_err(|e| e.code()),
+            Err(ErrorCode::PermissionDenied)
+        );
+        let c = f.client(Some(ALICE)).await;
+        let full = c.get_node("node-00").await.expect_err("api count full");
+        assert_eq!(full.code(), ErrorCode::Unavailable);
+        assert!(full.retry_delay().is_some());
+        // The refusal was rejected, and the connection stays unproven: once
+        // a proven connection closes, its next call proves it.
+        drop((a, b));
+        f.runtime.sleep(Duration::from_millis(300)).await;
+        assert_eq!(
+            c.get_node("node-00").await.expect("served"),
+            node("node-00")
+        );
+    });
+}
+
+#[test]
+fn rejected_calls_do_not_keep_a_connection() {
+    let prove = Duration::from_millis(600);
+    let f = Fixture::with(Setup {
+        limits: small(prove, Duration::from_secs(10)),
+        ..Setup::new(1, localhost())
+    });
+    f.run(async {
+        // At most 3 rejected calls are answered; the fourth closes the
+        // connection unanswered.
+        let caller = f.client(Some("not-a-token")).await;
+        for _ in 0..3 {
+            let rejected = caller.get_node("node-00").await.expect_err("rejected");
+            assert_eq!(rejected.code(), ErrorCode::Unauthenticated);
+        }
+        let closed = caller.get_node("node-00").await.expect_err("closed");
+        assert_ne!(closed.code(), ErrorCode::Unauthenticated);
+        assert!(caller.get_node("node-00").await.is_err());
+
+        // Rejected calls spaced under any idle time do not keep a
+        // connection past `prove` from accept.
+        let caller = f.client(None).await;
+        let started = f.runtime.clock().now();
+        let mut answered = 0;
+        while caller.get_node("node-00").await.map_err(|e| e.code())
+            == Err(ErrorCode::Unauthenticated)
+        {
+            answered += 1;
+            if answered == 2 {
+                // Stay under the rejected bound: wait out the rest.
+                f.runtime.sleep(prove).await;
+            }
+        }
+        let held = f.runtime.clock().now().saturating_duration_since(started);
+        assert!(answered <= 2, "{answered}");
+        assert!(held < prove * 3, "{held:?}");
+
+        // A path that names no method is rejected too.
+        let caller = f.client(Some(ALICE)).await;
+        for _ in 0..3 {
+            let status = unimplemented_call(&f, &caller).await;
+            assert_eq!(status.code(), tonic::Code::Unimplemented);
+        }
+        let status = unimplemented_call(&f, &caller).await;
+        assert_ne!(status.code(), tonic::Code::Unimplemented);
+    });
+}
+
+/// Calls a path that names no method on `client`'s connection.
+async fn unimplemented_call(f: &Fixture, client: &Client) -> tonic::Status {
+    let uri = format!("https://{}", f.addr);
+    let path =
+        http::uri::PathAndQuery::from_static("/alloy.cluster.v1alpha1.ClusterService/DeleteNode");
+    let mut grpc = tonic::client::Grpc::with_origin(client.channel(), uri.parse().expect("uri"));
+    if let Err(e) = grpc.ready().await {
+        return tonic::Status::unavailable(e.to_string());
+    }
+    let codec = tonic_prost::ProstCodec::<ListNodesRequest, ListNodesRequest>::default();
+    grpc.unary(
+        tonic::Request::new(ListNodesRequest::default()),
+        path,
+        codec,
+    )
+    .await
+    .expect_err("no such method")
+}
+
+#[test]
+fn unauthenticated_callers_do_not_lock_out_clients_or_stream() {
+    // The attack of the T-0109 re-review: 16 callers with no credential
+    // repeat rejected calls from one source, back to back, reconnecting
+    // whenever they are closed. Meanwhile, from another source, a client
+    // with a token connects and is served, and a `stream` peer is echoed.
+    let f = Fixture::with(Setup {
+        transport: Transport::CLEAR,
+        stream: true,
+        friend: true,
+        limits: ConnLimits {
+            api: 4,
+            stream: 2,
+            ..small(Duration::from_millis(500), Duration::from_secs(10))
+        },
+        ..Setup::new(1, localhost())
+    });
+    f.run(async {
+        let attacking = Arc::new(AtomicUsize::new(1));
+        let rejected = Arc::new(AtomicUsize::new(0));
+        for i in 0..16 {
+            let runtime = f.runtime.clone();
+            let (addr, pin, attacking, rejected) =
+                (f.addr, f.pin, Arc::clone(&attacking), Arc::clone(&rejected));
+            f.runtime
+                .spawn(crate::io::task_name("test-attacker"), async move {
+                    let token = SessionToken::new(&format!("forged-{i}")).expect("token");
+                    while attacking.load(Ordering::Acquire) == 1 {
+                        let Ok(client) =
+                            connect(&runtime, Transport::CLEAR, addr, pin, Some(&token)).await
+                        else {
+                            runtime.sleep(Duration::from_millis(5)).await;
+                            continue;
+                        };
+                        while let Err(e) = client.get_node("node-00").await {
+                            if e.code() != ErrorCode::Unauthenticated {
+                                break;
+                            }
+                            rejected.fetch_add(1, Ordering::AcqRel);
+                        }
+                        runtime.sleep(Duration::from_millis(5)).await;
+                    }
+                })
+                .expect("spawn");
+        }
+        f.runtime.sleep(Duration::from_millis(300)).await;
+        let friend = f.friend.expect("a second source");
+        for _ in 0..3 {
+            let alice = f.try_client_at(friend, Some(ALICE)).await.expect("connect");
+            assert_eq!(
+                alice.get_node("node-00").await.expect("served"),
+                node("node-00")
+            );
+            let echoed = f.exchange_at(friend, b"AL hello").await.expect("echo");
+            assert_eq!(echoed, b"\0AL hello");
+            f.runtime.sleep(Duration::from_millis(400)).await;
+        }
+        attacking.store(0, Ordering::Release);
+        // The attackers were answered, closed, and came back many times.
+        assert!(rejected.load(Ordering::Acquire) >= 16, "{rejected:?}");
     });
 }
 
@@ -811,19 +1064,4 @@ fn retry_stops_at_success_or_a_final_error() {
         assert_eq!(result.map_err(|e| e.code()), Err(ErrorCode::NotFound));
         assert_eq!(calls, 1);
     });
-}
-
-#[test]
-fn the_fingerprint_covers_the_whole_spki() {
-    let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).expect("key");
-    let cert = CertificateParams::new(Vec::<String>::new())
-        .expect("params")
-        .self_signed(&key)
-        .expect("cert");
-    let spki = rcgen::PublicKeyData::subject_public_key_info(&key);
-    assert_eq!(spki.len(), 91);
-    assert_eq!(
-        ApiCaFingerprint::of_certificate(cert.der()),
-        Some(ApiCaFingerprint::of_spki(&spki))
-    );
 }

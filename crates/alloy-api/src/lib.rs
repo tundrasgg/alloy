@@ -18,12 +18,17 @@
 //! larger than 4 MiB with `InvalidArgument`.
 //!
 //! Every connection is an `alloy-rt` stream and every task an `alloy-rt`
-//! task. TLS uses the `aws-lc-rs` provider as [`tls`] configures it; its
+//! task. TLS comes from `alloy-crypto`, the only crate that depends on
+//! `rustls` (`agent/eng/crypto.md` rule 1), as [`tls`] configures it; its
 //! tests run under the `os` runtime on loopback (ADR 0042). Under the `mem`
 //! `net` implementation the port and its clients exchange the same bytes in
-//! the clear instead, as [`Transport`] decides (clause 3.8.1). Each listener
-//! bounds its open connections and closes idle ones ([`ConnLimits`]), and no
-//! byte the server sends depends on a clock outside `alloy-rt`.
+//! the clear instead, as [`Transport`] decides (clause 3.8.1). The API port
+//! counts connections with no credential apart from authenticated API
+//! connections and `stream` connections, and closes them after a bounded
+//! time and a bounded number of rejected calls ([`ConnLimits`]); the local
+//! admin socket bounds its connections and closes idle ones
+//! ([`AdminLimits`]). No byte the server sends depends on a clock outside
+//! `alloy-rt`.
 //!
 //! [`client`] is the generated client over one connection, with the helpers
 //! of `product/principles.md` A18.
@@ -36,6 +41,7 @@
 
 mod access;
 pub mod client;
+mod conn;
 mod io;
 mod page;
 mod server;
@@ -52,6 +58,6 @@ pub use access::{
     unauthenticated,
 };
 pub use page::{DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE};
-pub use server::{ApiPort, ApiServer, MAX_MESSAGE_BYTES, StreamConn, StreamUnderlay};
+pub use server::{ApiPort, ApiServer, CLOSE_GRACE, MAX_MESSAGE_BYTES, StreamConn, StreamUnderlay};
 pub use store::{MAX_NAME_LEN, NodeName, NodeStore};
-pub use transport::{ConnLimits, Transport};
+pub use transport::{AdminLimits, ConnLimits, Transport};

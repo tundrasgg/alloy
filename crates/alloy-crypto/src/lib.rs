@@ -29,11 +29,17 @@
 //! [`x509`], and XChaCha20-Poly1305 with a
 //! caller-chosen nonce for data at rest in [`aead`].
 //!
+//! TLS 1.3 for the API endpoints, in [`tls`]: the server and client
+//! configurations, the ClientHello read before a configuration is chosen,
+//! and the encrypted streams (ARFC 0008 clauses 3.8 and 3.8.1).
+//!
 //! # Randomness
 //!
-//! Nothing in this crate reads a random generator. Every key is built from
-//! bytes the caller draws from the `alloy-rt` randomness trait and hands over
-//! (`agent/eng/crypto.md` rule 4), and every signature is deterministic.
+//! Nothing in this crate reads a random generator, except the `rustls`
+//! provider inside [`tls`] for the values of one TLS 1.3 handshake that
+//! `agent/eng/crypto.md` rule 4 lists and allows (ADR 0042). Every key is
+//! built from bytes the caller draws from the `alloy-rt` randomness trait and
+//! hands over, and every signature is deterministic.
 //!
 //! # Erasure
 //!
@@ -51,6 +57,7 @@ pub mod aead;
 pub mod al;
 pub mod ecdsa;
 pub mod ed25519;
+pub mod tls;
 pub mod x509;
 
 pub use zeroize::{Zeroize, Zeroizing};

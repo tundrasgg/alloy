@@ -16,19 +16,15 @@ http.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 prost.workspace = true
-rustls.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-tokio-rustls.workspace = true
 tonic.workspace = true
 tower-service.workspace = true
 tracing.workspace = true
-webpki.workspace = true
 
 [dev-dependencies]
 alloy-seam = { path = "../alloy-seam" }
 proptest.workspace = true
-rcgen.workspace = true
 tonic-prost.workspace = true
 
 [lints]
