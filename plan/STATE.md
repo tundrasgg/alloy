@@ -83,7 +83,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0058 | process | architect | done | none | Align core and lead rules with shared workspace files |
 | T-0059 | spec | architect | done | none | Discard sessions a failed handover's successor touched |
 | T-0060 | spec | architect | cancelled | none | Settle the open fragment and queue details in ARFC 0003 |
-| T-0061 | build | developer | review | none | Add fuzz targets for every alloy-wire decoder |
+| T-0061 | build | developer | active | none | Add fuzz targets for every alloy-wire decoder |
 | T-0062 | build | developer | done | none | Allow thiserror and proptest in the dependency allowlist |
 | T-0063 | spec | architect | review | none | Shrink the AL transport header to 25 bytes of overhead |
 | T-0064 | build | developer | queued | T-0063 | Rework alloy-wire for the compact transport header |
@@ -96,8 +96,8 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0071 | process | architect | done | none | Record the NCSA exception for libfuzzer-sys in ADR 0060 |
 | T-0072 | build | developer | cancelled | none | Run the commit message check in CI from the current cut |
 | T-0073 | process | architect | done | none | Adopt lean task sizing and review rules |
-| T-0074 | build | developer | review | none | Create alloy-crypto with BLAKE3 content hashing |
-| T-0075 | build | developer | queued | T-0074 | Build the alloy-sim executor, runs, and trace |
+| T-0074 | build | developer | done | none | Create alloy-crypto with BLAKE3 content hashing |
+| T-0075 | build | developer | active | none | Build the alloy-sim executor, runs, and trace |
 | T-0076 | build | developer | queued | T-0075 | Build alloy-sim hosts, mem runtime, and faults |
 | T-0077 | build | developer | queued | T-0076 | Build alloy-sim networks, UDP, and the echo scenario |
 | T-0078 | build | developer | queued | T-0077 | Build alloy-sim mem streams |
@@ -158,6 +158,7 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 - From T-0066: decide whether consensus groups refuse binding writes from releases older than `R` during the finalization check (the one case that still stalls finalization until a resource is rebound); ARFC 0006 section 2.2 and ARFC 0002 section 2 cross-reference ARFC 0001 clause 3.13 and ARFC 0017 clause 3.11; the upgrade conformance item extends `tests/conformance/upgrade/` from ARFC 0017 clause 3.12. At merge, ARFC 0017's `Decisions` line combines T-0059's and T-0066's: `0029, 0056, 0057, 0059`.
 - Note (T-0059 re-review F1): after a failed handover, a peer whose only session was made by the successor gets no re-handshake and waits up to 120 s.
 - Notes from T-0066 re-review (fold into the next ARFC 0001 or 0017 task): ARFC 0017 clause 3.12 lacks scenarios for four rules added in T-0066 round 2 (F1); the clause 3.11 conclusion about written running releases (F2); a global-group recover from a node without the switch re-allows rollback (F3).
+- Notes from T-0074 review (fold into the next task on these files): restore the space before `reason` in the `alloy-rt` entry of `deny.toml`; `alloy-crypto`'s `Hasher` doc overstates its buffer (one 64-byte block plus a chaining value).
 - Process notes (fold into the next process task): `agent/protocol/spec-change.md`'s behavior-change row matches the lean review rule; `agent/roles/reviewer.md` names interface, spec, and process tasks as review inputs (T-0073).
 - Process: a task that supersedes an ADR needs that ADR's status line and its index row in `touches`; the shared index rule has no append-only way to mark a superseded row (T-0044).
 - Spec: ARFC 0014 maps native errors, including `Unauthenticated`, to S3 errors; add `Unauthenticated` to `proto/alloy/common/errors.proto` when it is written (T-0044).
