@@ -30,7 +30,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0005 | research | researcher | done | none | Research NAT behaviors and define lab presets |
 | T-0006 | spec | architect | done | none | Specify the alloy-rt and alloy-seam interfaces |
 | T-0007 | interface | developer | done | none | Define the alloy-rt and alloy-seam interface crates |
-| T-0008 | verify | verifier | queued | T-0066 | Write conformance suites for the runtime seams |
+| T-0008 | verify | verifier | active | none | Write conformance suites for the runtime seams |
 | T-0009 | build | developer | cancelled | none | Build the alloy-sim deterministic simulator |
 | T-0010 | verify | verifier | active | none | Write determinism and fault tests for the simulator |
 | T-0011 | build | developer | queued | T-0009, T-0021 | Build the NAT models in alloy-natlab |
@@ -88,7 +88,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0063 | spec | architect | review | none | Shrink the AL transport header to 25 bytes of overhead |
 | T-0064 | build | developer | queued | T-0063 | Rework alloy-wire for the compact transport header |
 | T-0065 | spec | architect | done | none | State break-glass reach into tenant data accurately |
-| T-0066 | spec | architect | review | none | Close the open stored-binding and interface gaps in ARFC 0001 |
+| T-0066 | spec | architect | done | none | Close the open stored-binding and interface gaps in ARFC 0001 |
 | T-0067 | spec | architect | done | none | Settle timeout start and path joining in ARFC 0005 |
 | T-0068 | build | developer | active | none | Close the direct-io gaps and vet the Clippy fixture's crates |
 | T-0069 | build | developer | done | none | Property-test the seam config codec and tidy the crates |
@@ -157,6 +157,7 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 - Testing rule: crates that use `proptest` set a fixed seed and no time-based shrink limit, since its `std` feature reads `Instant::now()` and OS entropy by default (T-0062 review note F1); state it in `agent/eng/testing.md` by a `process` task before the first crate adopts `proptest`.
 - From T-0066: decide whether consensus groups refuse binding writes from releases older than `R` during the finalization check (the one case that still stalls finalization until a resource is rebound); ARFC 0006 section 2.2 and ARFC 0002 section 2 cross-reference ARFC 0001 clause 3.13 and ARFC 0017 clause 3.11; the upgrade conformance item extends `tests/conformance/upgrade/` from ARFC 0017 clause 3.12. At merge, ARFC 0017's `Decisions` line combines T-0059's and T-0066's: `0029, 0056, 0057, 0059`.
 - Note (T-0059 re-review F1): after a failed handover, a peer whose only session was made by the successor gets no re-handshake and waits up to 120 s.
+- Notes from T-0066 re-review (fold into the next ARFC 0001 or 0017 task): ARFC 0017 clause 3.12 lacks scenarios for four rules added in T-0066 round 2 (F1); the clause 3.11 conclusion about written running releases (F2); a global-group recover from a node without the switch re-allows rollback (F3).
 - Process notes (fold into the next process task): `agent/protocol/spec-change.md`'s behavior-change row matches the lean review rule; `agent/roles/reviewer.md` names interface, spec, and process tasks as review inputs (T-0073).
 - Process: a task that supersedes an ADR needs that ADR's status line and its index row in `touches`; the shared index rule has no append-only way to mark a superseded row (T-0044).
 - Spec: ARFC 0014 maps native errors, including `Unauthenticated`, to S3 errors; add `Unauthenticated` to `proto/alloy/common/errors.proto` when it is written (T-0044).
