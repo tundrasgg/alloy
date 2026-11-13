@@ -66,7 +66,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0054, R-0001 to R-0008, and PB-0001 are allo
 | T-0041 | spec | architect | done | none | Use a browser-compatible key type for the API CA |
 | T-0042 | build | developer | done | none | Close the check-repo gaps found in review |
 | T-0043 | spec | architect | active | none | Settle the path class rule and bound return path moves |
-| T-0044 | spec | architect | active | none | Make access key recovery and deleted-key requests well defined |
+| T-0044 | spec | architect | review | none | Make access key recovery and deleted-key requests well defined |
 | T-0045 | spec | architect | queued | T-0044 | Close join, local admin, and API CA gaps in ARFC 0002 and 0019 |
 | T-0046 | build | developer | queued | T-0018 | Enforce direct-io with Clippy on resolved paths |
 | T-0047 | spec | architect | queued | T-0044 | Protect the last cloud-admin and mark ADR 0041 superseded |
