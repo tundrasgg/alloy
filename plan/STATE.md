@@ -11,7 +11,7 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0042 |
+| Task `T-` | T-0043 |
 | Decision `D-` | D-0015 |
 | ADR | 0049 |
 | Research `R-` | R-0008 |
@@ -24,7 +24,7 @@ ADR 0036, ADR 0040, ADR 0042, ADR 0045 to ADR 0048, R-0001 to R-0007, and PB-000
 | Task | Type | Role | Status | Waits on | Title |
 |---|---|---|---|---|---|
 | T-0001 | build | developer | done | none | Bootstrap the Cargo workspace and the CI gate |
-| T-0002 | build | developer | review | none | Implement repository policy lints in check-repo |
+| T-0002 | build | developer | done | none | Implement repository policy lints in check-repo |
 | T-0003 | research | researcher | done | none | Research deterministic simulation options in Rust |
 | T-0004 | research | researcher | done | none | Research Cloud Hypervisor against ARFC 0011 |
 | T-0005 | research | researcher | done | none | Research NAT behaviors and define lab presets |
@@ -40,7 +40,7 @@ ADR 0036, ADR 0040, ADR 0042, ADR 0045 to ADR 0048, R-0001 to R-0007, and PB-000
 | T-0015 | spec | architect | done | none | Record repository hosting and CI runners in ADR 0037 |
 | T-0016 | build | developer | done | none | Run cargo xtask ci in GitHub Actions |
 | T-0017 | process | architect | done | none | Adopt Conventional Commits for commits on main |
-| T-0018 | build | developer | queued | T-0036 | Check commit messages on main in xtask |
+| T-0018 | build | developer | queued | T-0042 | Check commit messages on main in xtask |
 | T-0019 | research | researcher | done | none | Research licenses inside the Cloud Hypervisor UEFI images |
 | T-0020 | spec | architect | done | none | Resolve the per-guest seccomp clause in ARFC 0011 |
 | T-0021 | spec | architect | blocked | T-0031 | Resolve NAT spec issues found by R-0003 |
@@ -58,12 +58,13 @@ ADR 0036, ADR 0040, ADR 0042, ADR 0045 to ADR 0048, R-0001 to R-0007, and PB-000
 | T-0033 | build | developer | done | none | Never cancel CI runs on main |
 | T-0034 | research | researcher | done | none | Research browser support for Ed25519 TLS certificates |
 | T-0035 | research | researcher | done | none | Research generating the console's TypeScript API client |
-| T-0036 | build | developer | review | none | Keep check-repo green on main with plan files in flight |
-| T-0037 | build | developer | queued | T-0036 | Run the check-repo path lock in CI |
+| T-0036 | build | developer | done | none | Keep check-repo green on main with plan files in flight |
+| T-0037 | build | developer | active | none | Run the check-repo path lock in CI |
 | T-0038 | spec | architect | queued | T-0031 | Specify probe bytes and probe replay protection in ARFC 0003 |
 | T-0039 | spec | architect | queued | T-0031 | Bound probe sets and return path moves in ARFC 0004 |
 | T-0040 | spec | architect | review | none | Bound lineage state and close gaps in ARFC 0007 section 3.9 |
 | T-0041 | spec | architect | queued | T-0022 | Use a browser-compatible key type for the API CA |
+| T-0042 | build | developer | active | none | Close the check-repo gaps found in review |
 
 ## First dispatch
 
