@@ -12,7 +12,7 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0091 |
+| Task `T-` | T-0094 |
 | Decision `D-` | D-0039 |
 | ADR | 0063 |
 | Research `R-` | R-0009 |
@@ -102,7 +102,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0076 | build | developer | active | none | Build alloy-sim hosts, mem runtime, and faults |
 | T-0077 | build | developer | queued | T-0076 | Build alloy-sim networks, UDP, and the echo scenario |
 | T-0078 | build | developer | queued | T-0077 | Build alloy-sim mem streams |
-| T-0079 | build | developer | review | none | Run the commit check inside cargo xtask ci |
+| T-0079 | build | developer | done | none | Run the commit check inside cargo xtask ci |
 | T-0080 | spec | architect | done | none | Replace path-move heuristics with verify-before-move |
 | T-0081 | build | developer | done | none | Update the alloy-wire fuzz targets to the compact layout |
 | T-0082 | build | developer | done | none | Make xtask output parsing independent of terminal color |
@@ -112,8 +112,11 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0086 | verify | verifier | active | none | Write fixed IKpsk2 handshake vectors for ARFC 0003 |
 | T-0087 | product | product | done | none | Set the design standard for the CLI, console, and APIs |
 | T-0088 | spec | architect | review | none | Specify install, uninstall, and the Windows client node |
-| T-0089 | build | developer | queued | T-0079 | Let binary crates set their exit code |
+| T-0089 | build | developer | active | none | Let binary crates set their exit code |
 | T-0090 | spec | architect | active | none | Keep path checks apart from probe-set challenges |
+| T-0091 | build | developer | queued | T-0088 | Create the alloy and alloyd binaries |
+| T-0092 | build | developer | queued | T-0088 | Build the release workflow and the install scripts |
+| T-0093 | verify | verifier | queued | T-0088 | Write the M11 rung 1 install and uninstall check |
 
 ## First dispatch
 
@@ -185,6 +188,9 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 - Spec: ARFC 0004 section 8 states the probe reflection bound from section 3.2 (T-0021 follow-up).
 
 ## M11 notes
+
+- From T-0079 review (note): a dependency added to `alloy-wire` must also update `fuzz/Cargo.lock`, which the `fuzz` gate step does not name when it fails; fold into the next `xtask` task.
+- From T-0088 report: no default mesh port is fixed (ARFC 0004 section 3.6); ARFC 0004 does not exclude Alloy's own `al*` addresses from candidates; ARFC 0020 section 2.2 omits release publishers as trusted; PB-0001 must match ARFC 0017 clauses 3.14 to 3.16; `agent/eng/deps.md` should name the ADR 0062 exception; no ARFC defines how `alloy-net` opens its host virtual interface (needed before rungs 2 and 3); compute capacity on a Proxmox VE host must not count memory its guests use (before rung 4).
 
 - The Ubuntu node already runs Docker, a game panel's bridge, and Tailscale (100.64.0.0/10). The Proxmox VE node runs production guests. T-0088 states the coexistence rules.
 - From T-0087 (fold into the M11 tasks on ARFC 0008 and 0019): the spec issues listed in `plan/reports/T-0087.product.1.md`, glossary entries for "operation" and "command palette", and a PB-0001 check against rules T1 to T30.
