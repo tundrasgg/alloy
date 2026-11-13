@@ -156,10 +156,57 @@ function ConvertTo-AlloyEntry([string]$Line) {
     New-Object PSObject -Property @{ Kind = $kind; Path = $rest; Sha = $sha; Line = $Line }
 }
 
+# An uninstall moves the install directory to its .alloy-old name only when it
+# holds nothing but the manifest, and moves it back when something else
+# appeared in it in the meantime. Interrupted between those two moves, it
+# leaves the manifest in a directory under the .alloy-old name that is not a
+# marker. Returns the manifest's path there, or $null.
+function Get-AlloyDisplaced {
+    $root = $AlloyState.Paths.Root
+    $old = "$root.alloy-old"
+    if (Test-AlloyExists $root) { return $null }
+    $item = Get-Item -LiteralPath $old -Force -ErrorAction SilentlyContinue
+    if (-not $item -or -not $item.PSIsContainer) { return $null }
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { return $null }
+    if (Test-AlloyMarker $old) { return $null }
+    $dm = Join-Path $old 'manifest'
+    $mi = Get-Item -LiteralPath $dm -Force -ErrorAction SilentlyContinue
+    if (-not $mi -or $mi.PSIsContainer) { return $null }
+    if ($mi.Attributes -band [IO.FileAttributes]::ReparsePoint) { return $null }
+    return $dm
+}
+
+# Moves the directory that Get-AlloyDisplaced found back to its path, so that
+# the manifest is where it belongs again.
+function Restore-AlloyDisplaced {
+    if (-not $AlloyState.Displaced) { return }
+    $root = $AlloyState.Paths.Root
+    $moved = $false
+    if (-not (Test-AlloyExists $root)) {
+        try {
+            [IO.Directory]::Move("$root.alloy-old", $root)
+            $moved = $true
+        } catch {
+        }
+    }
+    if (-not $moved) {
+        Stop-Alloy 1 "Could not move $root.alloy-old, left by an interrupted uninstall, back to $root." 'run this again'
+    }
+    Write-AlloyStep 'done' "moved $root.alloy-old, left by an interrupted uninstall, back to $root"
+    $AlloyState.Displaced = $false
+}
+
+# Reads the manifest, from where an interrupted uninstall left it when it is
+# not at its path (Get-AlloyDisplaced).
 function Read-AlloyManifest {
     $AlloyState.Manifest = $null
+    $AlloyState.Displaced = $false
     $m = $AlloyState.Paths.Manifest
-    if (-not (Test-AlloyExists $m)) { return }
+    if (-not (Test-AlloyExists $m)) {
+        $m = Get-AlloyDisplaced
+        if (-not $m) { return }
+        $AlloyState.Displaced = $true
+    }
     if (-not (Test-Path -LiteralPath $m -PathType Leaf)) {
         Stop-Alloy 1 "The install manifest $m is not a file, so it cannot be read. Nothing was changed."
     }
@@ -174,10 +221,19 @@ function Read-AlloyManifest {
     }
     $entries = @()
     for ($i = 4; $i -lt $lines.Count; $i++) { $entries += ConvertTo-AlloyEntry $lines[$i] }
+    $state = $lines[3].Substring(6)
+    if ($AlloyState.Displaced) {
+        $root = $AlloyState.Paths.Root
+        if (-not ($entries | Where-Object { $_.Kind -ceq 'dir' -and $_.Path -ieq $root })) {
+            Stop-Alloy 1 "The install manifest $m does not list $root, so it was not left there by an uninstall and cannot be trusted. Nothing was changed."
+        }
+        # An uninstall was under way, so the install it records is not complete.
+        $state = 'pending'
+    }
     $AlloyState.Manifest = @{
         Version = $lines[1].Substring(8)
         Kind = $lines[2].Substring(5)
-        State = $lines[3].Substring(6)
+        State = $state
         Entries = $entries
     }
 }
@@ -196,7 +252,9 @@ function Test-AlloyListed([string]$Kind, [string]$Path) {
 # rename: it builds them as <directory>.alloy-new and renames that into place,
 # and an uninstall removes them the same way through <directory>.alloy-old.
 # Such a directory is a marker: it holds nothing but, at most, the manifest.
-# Every install and uninstall recognizes and removes it.
+# Every install and uninstall recognizes and removes it. An uninstall moves the
+# directory to its .alloy-old name only when it already holds nothing else, so
+# that no interruption leaves another product's file away from its path.
 
 function Test-AlloyMarker([string]$Path) {
     $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
@@ -416,8 +474,10 @@ function Remove-AlloyTempNames([string]$Path) {
     return ($a -and $b)
 }
 
-# Removes one manifest entry with its temporary names. Returns $false when it
-# could not be removed.
+# Removes one manifest entry with its temporary names. Returns 'removed',
+# 'failed' when it could not be removed, or 'left' for a directory left in
+# place because it holds files the install did not place (clause 3.16 step 7
+# removes directories that are empty).
 function Remove-AlloyEntry($Entry) {
     $p = $Entry.Path
     switch -CaseSensitive ($Entry.Kind) {
@@ -425,14 +485,14 @@ function Remove-AlloyEntry($Entry) {
             $item = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
             if ($item -and $item.PSIsContainer) {
                 Write-AlloyStep 'warn' "left $p in place: the manifest lists a file there, and it is a directory"
-                return $false
+                return 'failed'
             }
             if ($item) {
                 try {
                     Remove-Item -LiteralPath $p -Force -ErrorAction Stop
                 } catch {
                     Write-AlloyStep 'warn' "could not remove $p, which is in use"
-                    return $false
+                    return 'failed'
                 }
                 Write-AlloyStep 'done' "removed $p"
             }
@@ -441,8 +501,12 @@ function Remove-AlloyEntry($Entry) {
         'dir' {
             $item = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
             if ($item -and $item.PSIsContainer) {
-                if (-not (Test-AlloyEmptyDir $p)) { return $false }
-                try { Remove-Item -LiteralPath $p -Force -ErrorAction Stop } catch { return $false }
+                if (-not (Test-AlloyEmptyDir $p)) {
+                    [void](Remove-AlloyTempNames $p)
+                    Write-AlloyStep 'warn' "left $p in place: it holds files the install did not place"
+                    return 'left'
+                }
+                try { Remove-Item -LiteralPath $p -Force -ErrorAction Stop } catch { return 'failed' }
                 Write-AlloyStep 'done' "removed $p"
             }
             [void](Remove-AlloyTempNames $p)
@@ -452,7 +516,7 @@ function Remove-AlloyEntry($Entry) {
                 $out = & sc.exe delete $p 2>&1
                 if ($LASTEXITCODE -ne 0) {
                     Write-AlloyStep 'warn' "could not delete the service ${p}: $out"
-                    return $false
+                    return 'failed'
                 }
                 Write-AlloyStep 'done' "removed the service $p"
             }
@@ -464,18 +528,18 @@ function Remove-AlloyEntry($Entry) {
             Write-AlloyStep 'warn' "skipped the manifest entry '$($Entry.Line)', which Windows does not have"
         }
     }
-    return $true
+    return 'removed'
 }
 
 # Removes the manifest and the install directory that holds it. When nothing
-# else is left in the directory, it goes in one rename, so that an
-# interruption leaves a marker that the next run recognizes.
+# else is in the directory, it goes in one rename, so that an interruption
+# leaves a marker that the next run recognizes. A directory that holds anything
+# else is never moved: the manifest is removed from it, and it is left in place.
 function Remove-AlloyManifest {
     $root = $AlloyState.Paths.Root
     $m = $AlloyState.Paths.Manifest
     [void](Remove-AlloyTempNames $m)
-    if ((Test-AlloyListed 'dir' $root) -and (Test-AlloyExists $root)) {
-        [void](Remove-AlloyTempName "$root.alloy-old")
+    if ((Test-AlloyListed 'dir' $root) -and (Test-AlloyMarker $root) -and (Remove-AlloyTempName "$root.alloy-old")) {
         $moved = $false
         try {
             [IO.Directory]::Move($root, "$root.alloy-old")
@@ -488,7 +552,15 @@ function Remove-AlloyManifest {
                 Write-AlloyStep 'done' "removed $root"
                 return
             }
-            [IO.Directory]::Move("$root.alloy-old", $root)
+            # Another file appeared in it after the check. Get-AlloyDisplaced
+            # finds it on the next run.
+            $back = $false
+            try {
+                [IO.Directory]::Move("$root.alloy-old", $root)
+                $back = $true
+            } catch {
+            }
+            if (-not $back) { Stop-Alloy 1 "Could not move $root.alloy-old back to $root." 'run this uninstall again' }
         }
     }
     Remove-Item -LiteralPath $m -Force
@@ -643,12 +715,13 @@ function Invoke-AlloyUninstall([string]$Try) {
     # Step 7.
     if ($AlloyState.Manifest) {
         Write-AlloySay 'Removing installed files'
+        Restore-AlloyDisplaced
         $entries = @($AlloyState.Manifest.Entries)
         [array]::Reverse($entries)
         $left = $false
         foreach ($e in $entries) {
             if ($e.Kind -ceq 'dir' -and $e.Path -ieq $paths.Root) { continue }
-            if (-not (Remove-AlloyEntry $e)) { $left = $true }
+            if ((Remove-AlloyEntry $e) -ceq 'failed') { $left = $true }
         }
         if ($left) {
             Stop-Alloy 1 "Some installed files could not be removed, so the install manifest $($paths.Manifest) is kept." 'run this uninstall again'
@@ -1066,6 +1139,7 @@ function Install-AlloyFiles($Plan) {
         if (-not $seen.ContainsKey($k)) { $seen[$k] = $true; $lines += $e.Line }
     }
     $pending = $lines
+    Restore-AlloyDisplaced
     Write-AlloyPendingManifest (Get-AlloyManifestText 'pending' $pending)
     $AlloyState.Changed = $false
     $alloyd = Join-Path $paths.Root 'alloyd.exe'
@@ -1102,7 +1176,7 @@ function Install-AlloyFiles($Plan) {
         [array]::Reverse($old)
         foreach ($e in $old) {
             if ($planKeys.ContainsKey("$($e.Kind) $($e.Path)".ToLowerInvariant())) { continue }
-            if (Remove-AlloyEntry $e) { continue }
+            if ((Remove-AlloyEntry $e) -ceq 'removed') { continue }
             if ($e.Kind -ceq 'file' -and (Test-AlloyExists $e.Path)) {
                 # In use: renamed to its .alloy-old name.
                 try { [IO.File]::Move($e.Path, "$($e.Path).alloy-old") } catch { }
@@ -1246,6 +1320,7 @@ function Invoke-AlloyInstallScript {
         Paths = $null
         AsFile = [bool]$AlloyScriptPath
         Tmp = $null
+        Displaced = $false
         Purge = $false
         Force = $false
         Yes = $false

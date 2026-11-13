@@ -12,8 +12,10 @@
 # make-archive.sh and stamp.sh, from stand-in executables that print the
 # version (alloy also answers `node leave`), until the binaries of T-0091
 # exist, and checks the install, the second install, the uninstall, the second
-# uninstall, interrupted installs and uninstalls, conflicts, digest and entry
-# checks, upgrades, --version, the preview rule, and --purge.
+# uninstall, interrupted installs and uninstalls, other products' files in the
+# directories the install created, an uninstall interrupted at every command
+# that changes a file (with setsid and shims for those commands), conflicts,
+# digest and entry checks, upgrades, --version, the preview rule, and --purge.
 #
 # When systemd is not the service manager, as in a container, it puts a stub
 # systemctl that records its calls at /usr/local/sbin/systemctl and creates
@@ -205,6 +207,149 @@ cp /usr/local/bin/alloy /usr/local/bin/alloyd.alloy-new
 run 0 "uninstall of an interrupted install" sh "$U"
 footprint
 gone /usr/local/bin/alloyd.alloy-new
+
+echo "== Other files in the directories the install created (T-0092 review F1 and F2)"
+# /usr/local/bin is missing on a machine where nothing has made it.
+bin_made=0
+if [ -d /usr/local/bin ] && [ -z "$(ls -A /usr/local/bin)" ]; then
+  rmdir /usr/local/bin
+  bin_made=1
+fi
+run 0 "install $V1" sh "$I1"
+if [ "$bin_made" = 1 ]; then
+  if grep -qx 'dir /usr/local/bin' /usr/local/share/alloy/manifest; then pass "  ...and the manifest lists dir /usr/local/bin"; else fail "  the manifest does not list dir /usr/local/bin"; fi
+fi
+echo other >/usr/local/bin/other-tool
+echo other >/usr/local/share/alloy/other.txt
+run 0 "uninstall with other files in /usr/local/bin and /usr/local/share/alloy" sh "$U"
+if [ "$bin_made" = 1 ]; then says "left /usr/local/bin in place"; fi
+says "left /usr/local/share/alloy in place"
+present /usr/local/bin/other-tool /usr/local/share/alloy/other.txt
+gone /usr/local/bin/alloy /usr/local/bin/alloyd /usr/local/share/alloy/manifest /usr/local/share/alloy/uninstall.sh /usr/local/share/alloy.alloy-old
+run 0 "uninstall again" sh "$I1" --uninstall
+says "not installed"
+present /usr/local/bin/other-tool /usr/local/share/alloy/other.txt
+run 5 "install where /usr/local/share/alloy holds another file" sh "$I1"
+says "  /usr/local/share/alloy$"
+rm /usr/local/share/alloy/other.txt
+rmdir /usr/local/share/alloy
+# An uninstall interrupted between moving /usr/local/share/alloy to its
+# .alloy-old name and moving it back, after another file appeared in it.
+for then in uninstall install; do
+  run 0 "install $V1" sh "$I1"
+  mv /usr/local/share/alloy /usr/local/share/alloy.alloy-old
+  echo other >/usr/local/share/alloy.alloy-old/other.txt
+  if [ "$then" = uninstall ]; then
+    run 0 "uninstall after an uninstall interrupted with /usr/local/share/alloy moved away" sh "$I1" --uninstall
+    says "back to /usr/local/share/alloy"
+    gone /usr/local/bin/alloy /usr/local/share/alloy/manifest /usr/local/share/alloy.alloy-old
+  else
+    run 0 "install after an uninstall interrupted with /usr/local/share/alloy moved away" sh "$I1"
+    says "back to /usr/local/share/alloy"
+    present /usr/local/bin/alloy /usr/local/share/alloy/manifest
+    gone /usr/local/share/alloy.alloy-old
+    run 0 "uninstall" sh "$U"
+  fi
+  present /usr/local/share/alloy/other.txt
+  rm /usr/local/share/alloy/other.txt
+  rmdir /usr/local/share/alloy
+done
+rm /usr/local/bin/other-tool
+
+echo "== Interrupted uninstalls (T-0092 review F1 and F2)"
+# Shims for the commands that change files kill the uninstall's process group
+# just before their k-th call, for every k up to the last call. After each
+# interruption a second uninstall, or an install and then an uninstall, must
+# leave the other files at their paths and nothing of Alloy's.
+mkdir "$work/shim"
+for t in mv rm rmdir cp mkdir chmod; do
+  real=$(command -v "$t")
+  cat >"$work/shim/$t" <<EOF
+#!/bin/sh
+n=\$((\$(cat "$work/shim.count") + 1))
+echo "\$n" >"$work/shim.count"
+[ "\$n" != "\$(cat "$work/shim.at")" ] || kill -KILL 0
+exec $real "\$@"
+EOF
+  chmod 0755 "$work/shim/$t"
+done
+# clean_state <other file>...: prints what is wrong with the machine.
+clean_state() {
+  for _o in "$@"; do
+    [ -f "$_o" ] || echo "$_o is not at its path"
+  done
+  for _p in /usr/local/bin/alloy /usr/local/bin/alloyd /etc/systemd/system/alloyd.service \
+    /usr/local/share/alloy/manifest /usr/local/share/alloy/uninstall.sh /usr/local/share/alloy/licenses; do
+    if [ -e "$_p" ]; then echo "$_p is still there"; fi
+  done
+  for _p in /usr/local/bin/* /usr/local/share/* /etc/systemd/system/*; do
+    case $_p in *.alloy-new | *.alloy-old) echo "$_p is still there" ;; esac
+  done
+}
+# trial <name> <then> <other file>...: <then> is uninstall or install.
+trial() {
+  _tname=$1
+  _then=$2
+  shift 2
+  _k=1
+  _bad=0
+  while :; do
+    sh "$I1" >/dev/null 2>&1 || { fail "$_tname: the install before k=$_k failed"; return; }
+    for _o in "$@"; do echo other >"$_o"; done
+    echo 0 >"$work/shim.count"
+    echo "$_k" >"$work/shim.at"
+    PATH="$work/shim:$PATH" setsid -w sh "$U" >"$work/out" 2>&1 </dev/null
+    _calls=$(cat "$work/shim.count")
+    if [ "$_then" = install ]; then
+      sh "$I1" >"$work/out" 2>&1 </dev/null
+      _rc=$?
+      if [ "$_rc" = 5 ] && grep '^  /' "$work/out" | grep -qv '^  /usr/local/share/alloy$'; then
+        fail "$_tname, k=$_k: the install names more than another product's directory"
+        sed 's/^/      /' "$work/out"
+        _bad=1
+      elif [ "$_rc" != 0 ] && [ "$_rc" != 5 ]; then
+        fail "$_tname, k=$_k: the install exits $_rc"
+        sed 's/^/      /' "$work/out"
+        _bad=1
+      fi
+    fi
+    sh "$I1" --uninstall >"$work/out" 2>&1 </dev/null || {
+      fail "$_tname, k=$_k: the uninstall exits $?"
+      sed 's/^/      /' "$work/out"
+      _bad=1
+    }
+    _wrong=$(clean_state "$@")
+    if [ -n "$_wrong" ]; then
+      fail "$_tname, k=$_k: $_wrong"
+      _bad=1
+    fi
+    if ! sh "$I1" --uninstall >"$work/out" 2>&1 </dev/null || ! grep -q 'not installed' "$work/out"; then
+      fail "$_tname, k=$_k: a second uninstall did not say not installed"
+      _bad=1
+    fi
+    # The other file's directory goes too, so that the next install creates
+    # it again.
+    for _o in "$@"; do
+      rm -f "$_o"
+      rmdir "${_o%/*}" 2>/dev/null
+    done
+    [ "$_k" -le "$_calls" ] || break
+    _k=$((_k + 1))
+  done
+  [ "$_bad" = 1 ] || pass "$_tname: $((_k - 1)) interruption points"
+}
+if command -v setsid >/dev/null 2>&1; then
+  trial "uninstall interrupted, then uninstall" uninstall
+  trial "uninstall interrupted with another file in /usr/local/share/alloy, then uninstall" uninstall /usr/local/share/alloy/other.txt
+  trial "uninstall interrupted with another file in /usr/local/share/alloy, then install" install /usr/local/share/alloy/other.txt
+  if [ "$bin_made" = 1 ]; then
+    rmdir /usr/local/bin
+    trial "uninstall interrupted with another file in a created /usr/local/bin, then uninstall" uninstall /usr/local/bin/other-tool
+  fi
+else
+  fail "setsid is not installed, so the interrupted uninstalls were not checked"
+fi
+mkdir -p /usr/local/bin
 
 echo "== Conflicts"
 printf '#!/bin/sh\necho someone else\n' >/usr/local/bin/alloy

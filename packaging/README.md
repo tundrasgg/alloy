@@ -15,6 +15,7 @@ pushed.
 | `make-archive.sh` | Assembles one archive in the layout of clause 3.13 |
 | `stamp.sh` | Writes the digests into the install scripts and writes `SHA256SUMS` |
 | `check.sh`, `check.ps1` | Checks the scripts: syntax, shellcheck, the PowerShell parser, that a cut script runs nothing, usage errors |
+| `check-removal.ps1` | Checks the uninstall's removal of directories that hold other files, and its recovery of an interrupted move, against a temporary directory. `check.sh` runs it |
 | `sync-shared.sh` | Copies the shared block of each install script into its uninstall script |
 | `dry-run.sh` | Test only: installs and uninstalls for real against locally built archives, on a disposable Linux machine |
 

@@ -50,6 +50,7 @@ ALLOY_PURGE=0
 ALLOY_FORCE=0
 ALLOY_YES=0
 ALLOY_HAVE_MANIFEST=0
+ALLOY_DISPLACED=''
 ALLOY_M_VERSION=''
 ALLOY_M_KIND=''
 ALLOY_M_STATE=''
@@ -179,30 +180,77 @@ alloy_manifest_valid() {
   ' "$1"
 }
 
-# Reads the manifest into $ALLOY_TMP/manifest.old. Exits 1 when the manifest
-# cannot be read, parsed, or trusted.
+# An uninstall moves a directory of the manifest chain to its .alloy-old name
+# only when it holds nothing but the chain and the manifest, and moves it back
+# when something else appeared in it in the meantime. Interrupted between
+# those two moves, it leaves the manifest in a directory under its .alloy-old
+# name that is not a marker. Prints that directory of the chain, if any.
+alloy_displaced() {
+  for _dc in $ALLOY_MANIFEST_CHAIN; do
+    _o="$_dc.alloy-old"
+    ! alloy_exists "$_dc" || continue
+    if [ ! -d "$_o" ] || [ -L "$_o" ] || alloy_is_marker "$_o"; then
+      continue
+    fi
+    _dm="$_o${ALLOY_MANIFEST#"$_dc"}"
+    if [ ! -f "$_dm" ] || [ -L "$_dm" ]; then
+      continue
+    fi
+    printf '%s\n' "$_dc"
+    return 0
+  done
+  return 0
+}
+
+# Moves the directory that alloy_displaced found back to its path, so that the
+# manifest is where it belongs again.
+alloy_restore_displaced() {
+  [ -n "$ALLOY_DISPLACED" ] || return 0
+  if alloy_exists "$ALLOY_DISPLACED" || ! alloy_root mv -- "$ALLOY_DISPLACED.alloy-old" "$ALLOY_DISPLACED"; then
+    alloy_fail 1 "Could not move $ALLOY_DISPLACED.alloy-old, left by an interrupted uninstall, back to $ALLOY_DISPLACED." "run this again"
+  fi
+  alloy_step 'done' "moved $ALLOY_DISPLACED.alloy-old, left by an interrupted uninstall, back to $ALLOY_DISPLACED"
+  ALLOY_DISPLACED=''
+}
+
+# Reads the manifest into $ALLOY_TMP/manifest.old, from where an interrupted
+# uninstall left it when it is not at its path (alloy_displaced). Exits 1 when
+# the manifest cannot be read, parsed, or trusted.
 alloy_read_manifest() {
   ALLOY_HAVE_MANIFEST=0
+  ALLOY_DISPLACED=''
+  _rm=$ALLOY_MANIFEST
+  _rd=$ALLOY_SHARE_DIR
   if ! alloy_exists "$ALLOY_MANIFEST"; then
-    return 0
+    ALLOY_DISPLACED=$(alloy_displaced)
+    [ -n "$ALLOY_DISPLACED" ] || return 0
+    _rm="$ALLOY_DISPLACED.alloy-old${ALLOY_MANIFEST#"$ALLOY_DISPLACED"}"
+    _rd="$ALLOY_DISPLACED.alloy-old${ALLOY_SHARE_DIR#"$ALLOY_DISPLACED"}"
   fi
-  _mo=$(alloy_mode_owner "$ALLOY_MANIFEST")
+  _mo=$(alloy_mode_owner "$_rm")
   case $_mo in
     -????-??-?' 0' | -????-??-?[.+]' 0') ;;
-    *) alloy_fail 1 "The install manifest $ALLOY_MANIFEST is not a regular file owned by root that only root can write, so it cannot be trusted." ;;
+    *) alloy_fail 1 "The install manifest $_rm is not a regular file owned by root that only root can write, so it cannot be trusted." ;;
   esac
-  if ! alloy_root_only_writable "$ALLOY_SHARE_DIR"; then
-    alloy_fail 1 "The directory $ALLOY_SHARE_DIR is not owned by root or can be written by others, so the install manifest in it cannot be trusted."
+  if ! alloy_root_only_writable "$_rd"; then
+    alloy_fail 1 "The directory $_rd is not owned by root or can be written by others, so the install manifest in it cannot be trusted."
   fi
-  if ! cat "$ALLOY_MANIFEST" >"$ALLOY_TMP/manifest.old" 2>/dev/null; then
-    alloy_fail 1 "Could not read the install manifest $ALLOY_MANIFEST."
+  if ! cat "$_rm" >"$ALLOY_TMP/manifest.old" 2>/dev/null; then
+    alloy_fail 1 "Could not read the install manifest $_rm."
   fi
   if ! alloy_manifest_valid "$ALLOY_TMP/manifest.old"; then
-    alloy_fail 1 "The install manifest $ALLOY_MANIFEST is damaged: its format is not one this script reads. Nothing was changed."
+    alloy_fail 1 "The install manifest $_rm is damaged: its format is not one this script reads. Nothing was changed."
+  fi
+  if [ -n "$ALLOY_DISPLACED" ] && ! grep -qxF "dir $ALLOY_DISPLACED" "$ALLOY_TMP/manifest.old"; then
+    alloy_fail 1 "The install manifest $_rm does not list $ALLOY_DISPLACED, so it was not left there by an uninstall and cannot be trusted. Nothing was changed."
   fi
   ALLOY_M_VERSION=$(sed -n '2s/^version //p' "$ALLOY_TMP/manifest.old")
   ALLOY_M_KIND=$(sed -n '3s/^kind //p' "$ALLOY_TMP/manifest.old")
   ALLOY_M_STATE=$(sed -n '4s/^state //p' "$ALLOY_TMP/manifest.old")
+  if [ -n "$ALLOY_DISPLACED" ]; then
+    # An uninstall was under way, so the install it records is not complete.
+    ALLOY_M_STATE=pending
+  fi
   ALLOY_HAVE_MANIFEST=1
 }
 
@@ -234,10 +282,14 @@ alloy_manifest_holders() {
 # that into place, and an uninstall removes them the same way through
 # <dir>.alloy-old. Such a directory is a marker: it holds nothing but the
 # directories that lead to the manifest and, at most, the manifest. Every
-# install and uninstall recognizes and removes it.
+# install and uninstall recognizes and removes it. An uninstall moves a
+# directory to its .alloy-old name only when it already holds nothing else, so
+# that no interruption leaves another product's file away from its path.
 
 # True when $1 (a temporary name of a directory of the manifest chain) is a
-# marker.
+# marker. With $2, a directory of the chain, $1 is checked as if it were $2:
+# alloy_is_marker <dir> <dir> is true when <dir> holds nothing but the
+# directories that lead to the manifest and, at most, the manifest.
 alloy_is_marker() {
   _mk=$1
   [ -d "$_mk" ] && [ ! -L "$_mk" ] || return 1
@@ -245,17 +297,21 @@ alloy_is_marker() {
     d*' 0') ;;
     *) return 1 ;;
   esac
-  _base=${_mk%.alloy-new}
-  _base=${_base%.alloy-old}
+  if [ -n "${2:-}" ]; then
+    _base=$2
+  else
+    _base=${_mk%.alloy-new}
+    _base=${_base%.alloy-old}
+  fi
   # The allowed relative paths inside the marker.
   _allowed=''
   _seen=0
-  for _c in $ALLOY_MANIFEST_CHAIN; do
-    if [ "$_c" = "$_base" ]; then
+  for _mc in $ALLOY_MANIFEST_CHAIN; do
+    if [ "$_mc" = "$_base" ]; then
       _seen=1
     fi
     if [ "$_seen" = 1 ]; then
-      _allowed="$_allowed ${_c#"$_base"}"
+      _allowed="$_allowed ${_mc#"$_base"}"
     fi
   done
   [ "$_seen" = 1 ] || return 1
@@ -578,7 +634,9 @@ alloy_daemon_reload() {
 }
 
 # Removes one manifest entry with its temporary names. Returns 1 when the entry
-# could not be removed.
+# could not be removed, and 2 for a directory left in place because it holds
+# files the install did not place (clause 3.16 step 7 removes directories that
+# are empty).
 alloy_remove_entry() {
   _k=$1
   _p=$2
@@ -598,6 +656,10 @@ alloy_remove_entry() {
       if [ -d "$_p" ] && [ ! -L "$_p" ]; then
         if alloy_root rmdir -- "$_p" 2>/dev/null; then
           alloy_step 'done' "removed $_p"
+        elif [ -n "$(alloy_root ls -A -- "$_p" 2>/dev/null | head -n 1)" ]; then
+          alloy_remove_temps "$_p"
+          alloy_step warn "left $_p in place: it holds files the install did not place"
+          return 2
         else
           return 1
         fi
@@ -623,29 +685,33 @@ alloy_remove_entry() {
 }
 
 # Removes the manifest and the directories that hold it, which the install
-# created. When nothing else is left in them, they go in one rename, so that an
-# interruption leaves a marker that the next run recognizes.
+# created. The outermost of them that holds nothing but the others and the
+# manifest goes in one rename, so that an interruption leaves a marker that the
+# next run recognizes. A directory that holds anything else is never moved: the
+# manifest is removed from it, and it is left in place.
 alloy_remove_manifest() {
   _holders=$(alloy_manifest_holders "$ALLOY_TMP/manifest.old")
   alloy_remove_temps "$ALLOY_MANIFEST"
-  _top=''
+  _gone=''
   for _h in $_holders; do
-    _top=$_h
+    alloy_is_marker "$_h" "$_h" || continue
+    alloy_remove_temp "$_h.alloy-old" || break
+    alloy_root mv -- "$_h" "$_h.alloy-old" 2>/dev/null || break
+    if alloy_is_marker "$_h.alloy-old"; then
+      alloy_root rm -rf -- "$_h.alloy-old"
+      alloy_step 'done' "removed $_h"
+      _gone=$_h
+    elif ! alloy_root mv -- "$_h.alloy-old" "$_h"; then
+      # Another file appeared in it after the check. alloy_displaced finds
+      # it on the next run.
+      alloy_fail 1 "Could not move $_h.alloy-old back to $_h." "run this uninstall again"
+    fi
     break
   done
-  if [ -n "$_top" ] && alloy_exists "$_top"; then
-    alloy_remove_temp "$_top.alloy-old"
-    if alloy_root mv -- "$_top" "$_top.alloy-old" 2>/dev/null; then
-      if alloy_is_marker "$_top.alloy-old"; then
-        alloy_root rm -rf -- "$_top.alloy-old"
-        alloy_step 'done' "removed $_top"
-        return 0
-      fi
-      alloy_root mv -- "$_top.alloy-old" "$_top"
-    fi
+  if [ -z "$_gone" ]; then
+    alloy_root rm -f -- "$ALLOY_MANIFEST"
+    alloy_step 'done' "removed $ALLOY_MANIFEST"
   fi
-  alloy_root rm -f -- "$ALLOY_MANIFEST"
-  alloy_step 'done' "removed $ALLOY_MANIFEST"
   for _h in $(printf '%s\n' "$_holders" | awk '{ a[NR] = $0 } END { for (i = NR; i >= 1; i--) print a[i] }'); do
     if [ -d "$_h" ] && ! alloy_root rmdir -- "$_h" 2>/dev/null; then
       alloy_step warn "left $_h in place: it holds files the install did not place"
@@ -780,6 +846,7 @@ alloy_uninstall() {
   # Step 7.
   if [ "$ALLOY_HAVE_MANIFEST" = 1 ]; then
     alloy_say "Removing installed files"
+    alloy_restore_displaced
     _holders=$(alloy_manifest_holders "$ALLOY_TMP/manifest.old")
     alloy_manifest_entries "$ALLOY_TMP/manifest.old" |
       awk '{ a[NR] = $0 } END { for (i = NR; i >= 1; i--) print a[i] }' >"$ALLOY_TMP/reverse"
@@ -790,7 +857,10 @@ alloy_uninstall() {
       if [ "$_k" = dir ] && printf '%s\n' "$_holders" | grep -qxF -- "$_p"; then
         continue
       fi
-      alloy_remove_entry "$_k" "$_p" || _left=1
+      alloy_remove_entry "$_k" "$_p"
+      if [ "$?" = 1 ]; then
+        _left=1
+      fi
     done 3<"$ALLOY_TMP/reverse"
     if [ "$_left" = 1 ]; then
       alloy_fail 1 "Some installed files could not be removed, so the install manifest $ALLOY_MANIFEST is kept." "run this uninstall again"
@@ -1313,6 +1383,7 @@ alloy_place() {
     { key = $1 " " $0; if ($1 == "file") { k = $0; sub(/^file [0-9a-f]+ /, "", k); key = "file " k } }
     NR <= 4 || !(key in seen) { seen[key] = 1; print }
   ' >"$ALLOY_TMP/manifest.pending"
+  alloy_restore_displaced
   alloy_write_manifest "$ALLOY_TMP/manifest.pending"
   ALLOY_CHANGED=0
   while IFS= read -r _e <&3; do

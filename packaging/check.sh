@@ -27,7 +27,7 @@ skip() { printf 'skip  %s\n' "$*"; }
 
 cd "$here" || exit 1
 sh_scripts='install.sh uninstall.sh check.sh collect-licenses.sh dry-run.sh make-archive.sh set-version.sh stamp.sh sync-shared.sh'
-ps_scripts='install.ps1 uninstall.ps1 check.ps1'
+ps_scripts='install.ps1 uninstall.ps1 check.ps1 check-removal.ps1'
 placeholders='VERSION SHA256_LINUX_X86_64 SHA256_LINUX_AARCH64 SHA256_MACOS_X86_64 SHA256_MACOS_AARCH64 SHA256_WINDOWS_X86_64 SHA256_WINDOWS_AARCH64'
 
 # ASCII text with LF line ends, so that every shell and both PowerShell
@@ -179,8 +179,9 @@ prefix_check() {
 prefix_check install.sh --uninstall --purge --yes
 prefix_check uninstall.sh --purge --yes
 
-# PowerShell: the parser, the prefix check of check.ps1, and how the install
-# script ends when it runs as a file and through Invoke-Expression.
+# PowerShell: the parser, the prefix check of check.ps1, the removal checks of
+# check-removal.ps1, and how the install script ends when it runs as a file
+# and through Invoke-Expression.
 native_path() {
   if command -v cygpath >/dev/null 2>&1; then
     cygpath -w "$1"
@@ -199,6 +200,14 @@ for ps in pwsh powershell; do
     cat "$work/ps"
     bad "check.ps1 with $ps"
   fi
+  for target in install.ps1 uninstall.ps1; do
+    if "$ps" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File check-removal.ps1 "$target" >"$work/ps" 2>&1; then
+      cat "$work/ps"
+    else
+      cat "$work/ps"
+      bad "check-removal.ps1 $target with $ps"
+    fi
+  done
   expect "install.ps1, a template, refuses ($ps)" 1 'template' \
     "$ps" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File install.ps1
   expect "install.ps1 -Bogus is a usage error ($ps)" 2 'Unknown argument -Bogus' \
