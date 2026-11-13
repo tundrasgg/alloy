@@ -140,7 +140,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0114 | build | developer | queued | T-0107 | Add the Node kind, status messages, and node state to alloy-state |
 | T-0115 | spec | architect | active | none | Specify how crossed rekey handshakes resolve in ARFC 0003 |
 | T-0116 | build | developer | queued | T-0115 | Implement the crossed rekey rule in alloy-link |
-| T-0117 | spec | architect | active | none | Give disk-io the ownership and access operations data needs |
+| T-0117 | spec | architect | review | none | Give disk-io the ownership and access operations data needs |
 
 ## First dispatch
 
