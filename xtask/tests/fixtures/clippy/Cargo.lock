@@ -19,6 +19,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "alloyd"
+version = "0.0.0"
+
+[[package]]
 name = "demo"
 version = "0.0.0"
 dependencies = [

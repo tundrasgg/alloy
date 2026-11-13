@@ -148,6 +148,14 @@ pub fn timed_waits(
     Some(received && *guard)
 }
 
+/// Ending the process, and its id, outside a binary's `main.rs`.
+pub fn ends() -> u32 {
+    if std::process::id() == 0 {
+        std::process::abort();
+    }
+    std::process::exit(1)
+}
+
 #[cfg(test)]
 mod tests {
     #[tokio::test]
