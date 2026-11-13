@@ -114,7 +114,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0088 | spec | architect | done | none | Specify install, uninstall, and the Windows client node |
 | T-0089 | build | developer | done | none | Let binary crates set their exit code |
 | T-0090 | spec | architect | done | none | Keep path checks apart from probe-set challenges |
-| T-0091 | build | developer | active | none | Create the alloy and alloyd binaries |
+| T-0091 | build | developer | review | none | Create the alloy and alloyd binaries |
 | T-0092 | build | developer | active | none | Build the release workflow and the install scripts |
 | T-0093 | verify | verifier | active | none | Write the M11 rung 1 install and uninstall check |
 | T-0094 | build | developer | active | none | Build the alloy-sim mem disk-io model |
