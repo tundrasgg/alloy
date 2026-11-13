@@ -12,7 +12,7 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 | Series | Next |
 |---|---|
 | Task `T-` | T-0046 |
-| Decision `D-` | D-0016 |
+| Decision `D-` | D-0017 |
 | ADR | 0052 |
 | Research `R-` | R-0008 |
 | Brief `PB-` | PB-0002 |
@@ -59,7 +59,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0051, R-0001 to R-0007, and PB-0001 are allo
 | T-0034 | research | researcher | done | none | Research browser support for Ed25519 TLS certificates |
 | T-0035 | research | researcher | done | none | Research generating the console's TypeScript API client |
 | T-0036 | build | developer | done | none | Keep check-repo green on main with plan files in flight |
-| T-0037 | build | developer | review | none | Run the check-repo path lock in CI |
+| T-0037 | build | developer | done | none | Run the check-repo path lock in CI |
 | T-0038 | spec | architect | active | none | Specify probe bytes and probe replay protection in ARFC 0003 |
 | T-0039 | spec | architect | cancelled | none | Bound probe sets and return path moves in ARFC 0004 |
 | T-0040 | spec | architect | done | none | Bound lineage state and close gaps in ARFC 0007 section 3.9 |
