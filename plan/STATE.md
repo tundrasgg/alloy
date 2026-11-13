@@ -11,20 +11,20 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0034 |
-| Decision `D-` | D-0011 |
+| Task `T-` | T-0038 |
+| Decision `D-` | D-0013 |
 | ADR | 0046 |
-| Research `R-` | R-0006 |
+| Research `R-` | R-0008 |
 | Brief `PB-` | PB-0002 |
 
-ADR 0036, ADR 0040 to ADR 0043, ADR 0045, R-0001 to R-0005, and PB-0001 are allocated to the tasks below.
+ADR 0036, ADR 0040 to ADR 0043, ADR 0045, R-0001 to R-0007, and PB-0001 are allocated to the tasks below.
 
 ## Board
 
 | Task | Type | Role | Status | Waits on | Title |
 |---|---|---|---|---|---|
 | T-0001 | build | developer | done | none | Bootstrap the Cargo workspace and the CI gate |
-| T-0002 | build | developer | active | none | Implement repository policy lints in check-repo |
+| T-0002 | build | developer | blocked | T-0036 | Implement repository policy lints in check-repo |
 | T-0003 | research | researcher | done | none | Research deterministic simulation options in Rust |
 | T-0004 | research | researcher | done | none | Research Cloud Hypervisor against ARFC 0011 |
 | T-0005 | research | researcher | done | none | Research NAT behaviors and define lab presets |
@@ -40,7 +40,7 @@ ADR 0036, ADR 0040 to ADR 0043, ADR 0045, R-0001 to R-0005, and PB-0001 are allo
 | T-0015 | spec | architect | done | none | Record repository hosting and CI runners in ADR 0037 |
 | T-0016 | build | developer | done | none | Run cargo xtask ci in GitHub Actions |
 | T-0017 | process | architect | done | none | Adopt Conventional Commits for commits on main |
-| T-0018 | build | developer | queued | T-0002 | Check commit messages on main in xtask |
+| T-0018 | build | developer | queued | T-0036 | Check commit messages on main in xtask |
 | T-0019 | research | researcher | done | none | Research licenses inside the Cloud Hypervisor UEFI images |
 | T-0020 | spec | architect | done | none | Resolve the per-guest seccomp clause in ARFC 0011 |
 | T-0021 | spec | architect | blocked | T-0031 | Resolve NAT spec issues found by R-0003 |
@@ -56,6 +56,10 @@ ADR 0036, ADR 0040 to ADR 0043, ADR 0045, R-0001 to R-0005, and PB-0001 are allo
 | T-0031 | spec | architect | active | none | Fix the review findings on the T-0021 NAT spec changes |
 | T-0032 | process | architect | done | none | Define the inputs of a second round for every role |
 | T-0033 | build | developer | done | none | Never cancel CI runs on main |
+| T-0034 | research | researcher | active | none | Research browser support for Ed25519 TLS certificates |
+| T-0035 | research | researcher | active | none | Research generating the console's TypeScript API client |
+| T-0036 | build | developer | active | none | Keep check-repo green on main with plan files in flight |
+| T-0037 | build | developer | queued | T-0036 | Run the check-repo path lock in CI |
 
 ## First dispatch
 
@@ -79,11 +83,10 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 - Spec: ARFC 0011 section 3.5 says live migration crosses the VMM sandbox only through a Unix socket in the guest directory (T-0020 follow-up).
 - Verify: `tests/conformance/hypervisor` cases for ARFC 0011 clauses 2.1 to 2.7, placed so the `mem` implementation can pass them or is exempt by stated rule (T-0020 review F5). Clause 2.5 tests check the thread that applies the rule set and the threads it starts afterwards, not every TID (T-0028).
 - Research: unpack the `ch-97eeb7b09` CLOUDHV images to confirm their module lists, and read the LZMA SDK and `Logo.bmp` licenses (R-0005, Unknown).
-- The next research task adds the R-0005 row to `research/README.md` in its `touches`.
 
 ## Still to cut for M1 and M2
 
-- From `plan/reports/T-0022.architect.1.md` (cut after T-0022 and T-0023 merge): ARFC 0007 accepts client-generated access key secrets from `ExchangeLoginCode`; T-0024 adds the API CA chain for clients that connect by address; research whether browsers accept Ed25519 TLS certificates; ARFC 0006 heartbeat interval under the 30 s `unreachable` rule; ARFC 0017 next minor release across 0.x to 1.0; PB-0001 wording for unreachable and revoked; a command that removes a one-node cluster; proto definitions for the new calls in the first `alloy-proto` task.
+- From `plan/reports/T-0022.architect.1.md` (cut after T-0022 and T-0023 merge): ARFC 0007 accepts client-generated access key secrets from `ExchangeLoginCode`; T-0024 adds the API CA chain for clients that connect by address; ARFC 0006 heartbeat interval under the 30 s `unreachable` rule; ARFC 0017 next minor release across 0.x to 1.0; PB-0001 wording for unreachable and revoked; a command that removes a one-node cluster; proto definitions for the new calls in the first `alloy-proto` task.
 - From `plan/reports/T-0023.architect.1.md` (cut after T-0022 merges and T-0023 review): the issues on ARFC 0008, 0002, 0019, 0006, and 0020, the last `cloud-admin` binding, PB-0001 local admin errors, the `SO_PEERCRED` research question, glossary terms, and `tests/conformance/authn` cases.
 
 - Verify: a fixed `IKpsk2` handshake vector for ARFC 0003 sections 3.1 and 3.3 (keys, psk, message bytes, `i2r`, `r2i`, `salt`) in the ARFC 0003 conformance suite (T-0026 follow-up).
