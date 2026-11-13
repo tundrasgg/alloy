@@ -7,9 +7,9 @@ use crate::transport::Transport;
 /// The message types this crate decodes, by their `type` byte (ARFC 0003
 /// sections 3.1 and 3.4).
 ///
-/// Probe messages (type 5), relay envelopes (type 6) and stream framing are
-/// outside the scope of T-0054, which built this crate; a message of type 5 or
-/// 6 decodes to [`DecodeError::UnknownType`].
+/// [`Message::decode`] refuses every other first byte with
+/// [`DecodeError::UnknownType`]: probe messages (type 5), relay envelopes
+/// (type 6), and the reserved values 0 and 7 to 255.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MessageType {
     /// Handshake initiation, type 1.
@@ -120,11 +120,11 @@ mod tests {
     #[test]
     fn unknown_types_are_refused() {
         assert_eq!(Message::decode(&[]), Err(DecodeError::Empty));
-        for ty in [0, 5, 6, 255] {
-            assert_eq!(
-                Message::decode(&[ty, 1, 0, 0]),
-                Err(DecodeError::UnknownType(ty))
-            );
+        for ty in std::iter::once(0).chain(5..=255) {
+            let mut bytes = [0; 64];
+            bytes[0] = ty;
+            bytes[1] = 1;
+            assert_eq!(Message::decode(&bytes), Err(DecodeError::UnknownType(ty)));
         }
     }
 }

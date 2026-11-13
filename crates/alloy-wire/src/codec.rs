@@ -136,18 +136,3 @@ pub(crate) fn exact_header(bytes: &[u8], ty: u8, len: usize) -> Result<Reader<'_
     r.array::<2>()?;
     Ok(r)
 }
-
-/// Checks the type, the version, and the least length `minimum` of a message,
-/// and returns a reader positioned after the version.
-pub(crate) fn min_header(bytes: &[u8], ty: u8, minimum: usize) -> Result<Reader<'_>, DecodeError> {
-    check_type_version(bytes, ty)?;
-    if bytes.len() < minimum {
-        return Err(DecodeError::TooShort {
-            minimum,
-            found: bytes.len(),
-        });
-    }
-    let mut r = Reader::new(bytes);
-    r.array::<2>()?;
-    Ok(r)
-}

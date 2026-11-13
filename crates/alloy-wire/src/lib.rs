@@ -2,8 +2,10 @@
 //!
 //! This crate covers the messages whose bytes ARFC 0003 sections 3.1, 3.4 and
 //! 3.5 fix: the handshake initiation (type 1), response (type 2) and cookie
-//! reply (type 3), the transport packet (type 4), the inner frame carried inside
-//! a transport packet, and the fragment header of an inner frame of kind 4.
+//! reply (type 3), the transport packet (type 4), and the inner frame carried
+//! inside a transport packet, with its keepalive, control, fragment and IP
+//! kinds. It also reconstructs a transport packet's full counter from the 32
+//! bits on the wire ([`reconstruct_counter`]).
 //!
 //! It is sans-I/O and performs no cryptography. Ephemeral keys, ciphertexts,
 //! MACs, nonces and AEAD tags are opaque byte arrays: computing and checking
@@ -22,22 +24,27 @@
 #![forbid(unsafe_code)]
 
 mod codec;
+mod counter;
 mod error;
 mod handshake;
 mod message;
 mod transport;
 mod types;
 
+pub use counter::reconstruct_counter;
 pub use error::{DecodeError, EncodeError};
 pub use handshake::{CookieReply, Initiation, InitiationPayload, Response, ResponsePayload};
 pub use message::{Message, MessageType};
-pub use transport::{Fragment, FragmentKind, InnerBody, InnerFrame, Transport, TransportHeader};
+pub use transport::{
+    Control, Fragment, FrameKind, InnerFrame, IpPacket, IpVersion, Transport, TransportHeader,
+};
 pub use types::{
-    FragmentCount, FragmentId, HandshakeCounter, PacketCounter, QueueCount, QueueId, SessionIndex,
-    Vni,
+    FragmentCount, FragmentId, HandshakeCounter, PacketCounter, QueueCount, SessionIndex, Vni,
+    WireCounter,
 };
 
-/// The protocol version every message of this crate carries in its second byte.
+/// The protocol version a handshake message carries in its second byte, and
+/// the version of the sessions whose transport packets have type 4.
 pub const VERSION: u8 = 1;
 
 /// Length of a MAC field (`mac1`, `mac2`), in bytes.
@@ -49,29 +56,30 @@ pub const TAG_LEN: usize = 16;
 /// Length of an X25519 public key, such as the `ephemeral` field, in bytes.
 pub const KEY_LEN: usize = 32;
 
-/// Length of the transport header that precedes the ciphertext (ARFC 0003
-/// section 3.4): type, version, queue, receiver index and counter.
-pub const TRANSPORT_HEADER_LEN: usize = 16;
+/// Length of the transport header that precedes the ciphertext: type, receiver
+/// index and counter, 1 + 4 + 4 bytes (ARFC 0003 section 3.4). Its bytes are
+/// the AEAD associated data.
+pub const TRANSPORT_HEADER_LEN: usize = 9;
 
-/// Length of the inner frame header: kind and VNI (ARFC 0003 section 3.4).
-pub const INNER_HEADER_LEN: usize = 4;
+/// Fixed overhead per transport packet, not counting UDP and IP: the header and
+/// the AEAD tag, 9 + 16 = 25 bytes (ARFC 0003 section 3.4).
+pub const TRANSPORT_OVERHEAD: usize = TRANSPORT_HEADER_LEN + TAG_LEN;
 
-/// Fixed overhead per transport packet, not counting UDP and IP: header, inner
-/// frame header and AEAD tag, 16 + 4 + 16 bytes (ARFC 0003 section 3.4).
-pub const TRANSPORT_OVERHEAD: usize = TRANSPORT_HEADER_LEN + INNER_HEADER_LEN + TAG_LEN;
+/// Length of a fragment frame before its data: kind, `frag_id`, `index` and
+/// `count`, 1 + 4 + 1 + 1 bytes (ARFC 0003 section 3.5).
+pub const FRAGMENT_HEADER_LEN: usize = 7;
 
-/// Length of the fragment header at the start of the body of an inner frame of
-/// kind 4: fragment id, index, count, inner kind and reserved (ARFC 0003
-/// section 3.4).
-pub const FRAGMENT_HEADER_LEN: usize = 8;
-
-/// Fewest fragments a fragmented packet is split into (ARFC 0003 section 3.5).
+/// Fewest fragments a frame is split into (ARFC 0003 section 3.5).
 pub const MIN_FRAGMENTS: u8 = 2;
 
-/// Most fragments a fragmented packet is split into (ARFC 0003 sections 3.5
-/// and 7).
+/// Most fragments a frame is split into (ARFC 0003 sections 3.5 and 7).
 pub const MAX_FRAGMENTS: u8 = 16;
 
 /// Most sending queues a node may announce in a handshake payload (ARFC 0003
 /// sections 3.1 and 7).
 pub const MAX_QUEUES: u16 = 64;
+
+/// The bound on transport counters: a sender never seals a transport packet
+/// with a counter of `COUNTER_LIMIT` (2^31) or more on a queue in a session
+/// (ARFC 0003 section 3.4). [`reconstruct_counter`] is exact because of it.
+pub const COUNTER_LIMIT: u64 = 1 << 31;
