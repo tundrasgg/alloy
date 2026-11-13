@@ -202,7 +202,9 @@ and never repeats one. A responder stores the highest counter seen per initiator
 static key and must drop an initiation whose counter is not higher. No wall clock
 is involved. Across a process handover that table travels with the sessions, and
 a process that resumes after a failed handover raises it to the counters its
-successor accepted (3.9).
+successor accepted (3.9). The node channel takes its request ids from the same
+counter (ARFC 0002 section 3.13), so each value is used once, by one initiation
+or by one request, and initiation counters still only grow.
 
 ### 3.3 Session keys
 
@@ -266,7 +268,9 @@ transport counter of 2^31 or more (3.4), so every session stays below 2^31
 transport packets per queue, well below the 2^32 that the 32-bit counter on the
 wire distinguishes. Keys must be discarded 180 seconds after the handshake that
 made them. The previous session's receive key stays valid for 10 seconds after a
-rekey. Its probe keys follow 3.6.
+rekey. Its probe keys follow 3.6. A rekey makes a new session, so state above AL
+that lasts across rekeys is kept per peer mesh key, not per session, as the
+node channel's is (ARFC 0002 section 3.13).
 
 ### 3.4 Transport (type 4)
 
