@@ -5,14 +5,14 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 ## Now
 
 - Milestone: M11, First deployment (`plan/milestones.md`, D-0034), above M0 and M1, which continue in parallel
-- M11 rung: 1, install. Waiting on: pilot to give the Ubuntu node passwordless sudo and to add an SSH alias for the Proxmox VE node
+- M11 rung: 1, install. First real run of v0.0.1-preview.1: 22 passed, 3 failed (driver could not run scripts on the Linux nodes; Windows uninstall exited 1 after removing everything). T-0097 and T-0098 fix them
 - Milestones exited: none
 
 ## Next free ids
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0097 |
+| Task `T-` | T-0099 |
 | Decision `D-` | D-0045 |
 | ADR | 0063 |
 | Research `R-` | R-0009 |
@@ -120,6 +120,8 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0094 | build | developer | done | none | Build the alloy-sim mem disk-io model |
 | T-0095 | build | developer | done | none | Fix the os direct read across end of file on Linux |
 | T-0096 | process | architect | done | none | Cut process overhead in reports, reads, and research |
+| T-0097 | verify | verifier | active | none | Run the rung 1 driver's remote scripts over SSH stdin |
+| T-0098 | build | developer | active | none | Fix the Windows uninstall's empty path failure |
 
 ## First dispatch
 
