@@ -94,7 +94,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0060, R-0001 to R-0008
 | T-0069 | build | developer | done | none | Property-test the seam config codec and tidy the crates |
 | T-0070 | spec | architect | done | none | State plainly that root on a control node reads all tenant data |
 | T-0071 | process | architect | done | none | Record the NCSA exception for libfuzzer-sys in ADR 0060 |
-| T-0072 | build | developer | active | none | Run the commit message check in CI from the current cut |
+| T-0072 | build | developer | review | none | Run the commit message check in CI from the current cut |
 
 ## First dispatch
 
