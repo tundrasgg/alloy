@@ -44,7 +44,7 @@ ADR 0036, ADR 0040 to ADR 0043, ADR 0045, R-0001 to R-0005, and PB-0001 are allo
 | T-0019 | research | researcher | done | none | Research licenses inside the Cloud Hypervisor UEFI images |
 | T-0020 | spec | architect | done | none | Resolve the per-guest seccomp clause in ARFC 0011 |
 | T-0021 | spec | architect | blocked | T-0031 | Resolve NAT spec issues found by R-0003 |
-| T-0022 | spec | architect | active | none | Apply PB-0001 to ARFC 0002 and ARFC 0019 |
+| T-0022 | spec | architect | review | none | Apply PB-0001 to ARFC 0002 and ARFC 0019 |
 | T-0023 | spec | architect | active | none | Specify user access keys and the local admin path |
 | T-0024 | spec | architect | queued | T-0021 | Fix the default mesh port and TCP 443 sharing |
 | T-0025 | process | architect | done | none | Let parallel tasks share append-only index files |
@@ -83,6 +83,7 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 
 ## Still to cut for M1 and M2
 
+- From `plan/reports/T-0022.architect.1.md` (cut after T-0022 and T-0023 merge): ARFC 0007 accepts client-generated access key secrets from `ExchangeLoginCode`; T-0024 adds the API CA chain for clients that connect by address; research whether browsers accept Ed25519 TLS certificates; ARFC 0006 heartbeat interval under the 30 s `unreachable` rule; ARFC 0017 next minor release across 0.x to 1.0; PB-0001 wording for unreachable and revoked; a command that removes a one-node cluster; proto definitions for the new calls in the first `alloy-proto` task.
 - From `plan/reports/T-0023.architect.1.md` (cut after T-0022 merges and T-0023 review): the issues on ARFC 0008, 0002, 0019, 0006, and 0020, the last `cloud-admin` binding, PB-0001 local admin errors, the `SO_PEERCRED` research question, glossary terms, and `tests/conformance/authn` cases.
 
 - Verify: a fixed `IKpsk2` handshake vector for ARFC 0003 sections 3.1 and 3.3 (keys, psk, message bytes, `i2r`, `r2i`, `salt`) in the ARFC 0003 conformance suite (T-0026 follow-up).
