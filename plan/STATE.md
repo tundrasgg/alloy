@@ -5,14 +5,14 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 ## Now
 
 - Milestone: M11, First deployment (`plan/milestones.md`, D-0034), above M0 and M1, which continue in parallel
-- M11 rung: 1, install. Run 2 of v0.0.1-preview.2: 78 passed, 3 failed, all three the digest of Proxmox's self-updating `lrm_status` timestamp; T-0100 normalizes it
+- M11 rung: 1, install. Run 2 of v0.0.1-preview.2: 78 passed, 3 failed, all three the digest of Proxmox's self-updating `lrm_status` timestamp; T-0100 normalizes it (merged); a bridge FDB counter in `ip -d link` also changes between snapshots, T-0101
 - Milestones exited: none
 
 ## Next free ids
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0101 |
+| Task `T-` | T-0102 |
 | Decision `D-` | D-0046 |
 | ADR | 0063 |
 | Research `R-` | R-0009 |
@@ -123,7 +123,8 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0097 | verify | verifier | cancelled | none | Run the rung 1 driver's remote scripts over SSH stdin |
 | T-0098 | build | developer | done | none | Fix the Windows uninstall's empty path failure |
 | T-0099 | verify | verifier | done | none | Run the rung 1 driver's remote scripts over SSH stdin |
-| T-0100 | verify | verifier | active | none | Drop Proxmox status timestamps from the host snapshot |
+| T-0100 | verify | verifier | done | none | Drop Proxmox status timestamps from the host snapshot |
+| T-0101 | verify | verifier | active | none | Drop live link counters from the host snapshot |
 
 ## First dispatch
 
