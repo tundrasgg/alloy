@@ -106,19 +106,19 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0080 | spec | architect | done | none | Replace path-move heuristics with verify-before-move |
 | T-0081 | build | developer | done | none | Update the alloy-wire fuzz targets to the compact layout |
 | T-0082 | build | developer | done | none | Make xtask output parsing independent of terminal color |
-| T-0083 | build | developer | review | none | Build the os implementations of the runtime seams |
-| T-0084 | verify | verifier | queued | T-0083 | Run the runtime conformance suites against os |
+| T-0083 | build | developer | done | none | Build the os implementations of the runtime seams |
+| T-0084 | verify | verifier | active | none | Run the runtime conformance suites against os |
 | T-0085 | build | developer | done | none | Build the AL handshake and transport crypto in alloy-crypto |
 | T-0086 | verify | verifier | done | none | Write fixed IKpsk2 handshake vectors for ARFC 0003 |
 | T-0087 | product | product | done | none | Set the design standard for the CLI, console, and APIs |
 | T-0088 | spec | architect | done | none | Specify install, uninstall, and the Windows client node |
 | T-0089 | build | developer | done | none | Let binary crates set their exit code |
 | T-0090 | spec | architect | review | none | Keep path checks apart from probe-set challenges |
-| T-0091 | build | developer | queued | T-0095 | Create the alloy and alloyd binaries |
+| T-0091 | build | developer | active | none | Create the alloy and alloyd binaries |
 | T-0092 | build | developer | active | none | Build the release workflow and the install scripts |
 | T-0093 | verify | verifier | active | none | Write the M11 rung 1 install and uninstall check |
 | T-0094 | build | developer | queued | T-0076 | Build the alloy-sim mem disk-io model |
-| T-0095 | build | developer | active | none | Fix the os direct read across end of file on Linux |
+| T-0095 | build | developer | done | none | Fix the os direct read across end of file on Linux |
 
 ## First dispatch
 
@@ -191,9 +191,10 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 
 ## M11 notes
 
+- From T-0083 re-review (note): on Windows, 8.3 short names and case variants alias long names in `os` `disk-io`, so `list` omits names `open` accepts; fold into the next `alloy-rt` task.
+
 - From T-0088 re-review (fold into the next ARFC 0002 or 0017 task): F1, the Windows data directory has no rule for its ancestors; F2, nothing records a non-default data directory for the unit or the uninstall. F3 and F4 are in T-0092.
 
-- T-0083 round 2 on Linux (8059f64): `cargo test -p alloy-rt` gives 65 passed, 1 failed, `os::disk::tests::a_direct_read_across_the_end_returns_the_bytes_before_it` panics at `crates/alloy-rt/src/os/disk/tests.rs:406`. It passes on Windows. T-0083 cannot merge until it passes on Linux.
 - Naming (D-0041): a product task maps the public names onto the glossary, CLI help, and console. "Underlay Mesh" names the overlay, while the glossary's "underlay" means the networks beneath it; that task resolves the wording.
 
 - From T-0086 (fold into the next ARFC 0003 task): the handshake nonce is always 24 zero bytes in `IKpsk2`, so its byte order is unobservable; section 3.3 erasure can only be checked by proxies; add probe key vectors once section 3.6 sealing exists.
