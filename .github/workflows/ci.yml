@@ -29,8 +29,11 @@ jobs:
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # The path lock in `check-repo` diffs against the merge base with the
+        # base ref, so the whole history and every branch are fetched.
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       # rustup reads rust-toolchain.toml and installs that toolchain with its
       # profile and components. The runner image's rustup is used as is.
@@ -50,5 +53,30 @@ jobs:
       - name: Install cargo-deny
         run: cargo install --locked cargo-deny@0.20.2
 
+      # `--base` turns on the path lock in `check-repo`. A pull request is
+      # judged against its base branch; its checkout is a detached merge
+      # commit, so the head branch is named. A push to main is judged against
+      # the commit before it, and the branch is named so the verdict does not
+      # depend on how the checkout left HEAD. A push with no previous commit
+      # has nothing to diff. Event values reach the shell only through the
+      # environment, never through expressions in the script.
       - name: Run the quality gate
-        run: cargo xtask ci
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          case "$GITHUB_EVENT_NAME" in
+            pull_request)
+              cargo xtask ci --base "origin/$GITHUB_BASE_REF" --branch "$GITHUB_HEAD_REF"
+              ;;
+            push)
+              if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+                cargo xtask ci
+              else
+                cargo xtask ci --base "$BEFORE" --branch "$GITHUB_REF_NAME"
+              fi
+              ;;
+            *)
+              echo "ci: unexpected event $GITHUB_EVENT_NAME" >&2
+              exit 1
+              ;;
+          esac
