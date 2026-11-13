@@ -431,7 +431,10 @@ certificate (ARFC 0002 section 2). One that does not presents a self-signed
 certificate whose key and signature follow ARFC 0002 section 2, with the
 fields of an API server certificate except that its issuer is its own subject
 and it carries no authority key identifier, renewed when 10 days of its 30
-remain. `stream` is used only for the home session and relayed traffic, and only after 3 seconds without a
+remain. Its key counts as an API server certificate key (`agent/eng/crypto.md`):
+`alloyd` generates it from the `alloy-rt` randomness trait when it starts and at
+each renewal, holds it in memory only, and never writes it to the data
+directory (ARFC 0002 section 3.14). `stream` is used only for the home session and relayed traffic, and only after 3 seconds without a
 UDP reply from any anchor, counted from the node's first UDP packet to an anchor.
 Such a node must then be reachable through a relay within 5 seconds of joining
 (section 3.2). A node on `stream` retries UDP every 5 minutes. On `stream` the

@@ -91,9 +91,9 @@ or supersede it.
 | ADR | Decision |
 |---|---|
 | [0026](0026-the-native-api-is-the-source-of-truth-ec2-and-s3-are-compati.md) | The native API is the source of truth, EC2 and S3 are compatibility surfaces |
+| [0042](0042-nodes-talk-to-the-control-plane-over-al-clients-to-the-api-o.md) | Nodes talk to the control plane over AL, clients to the API over gRPC |
 | [0048](0048-the-api-ca-and-api-server-certificates-use-ecdsa-p-256.md) | The API CA and API server certificates use ECDSA P-256 |
 | [0053](0053-p-256-signs-through-rustcrypto-and-rustls-uses-aws-lc-rs.md) | P-256 signs through RustCrypto, and rustls uses aws-lc-rs |
-| [0042](0042-nodes-talk-to-the-control-plane-over-al-clients-to-the-api-o.md) | Nodes talk to the control plane over AL, clients to the API over gRPC |
 
 ## Network
 

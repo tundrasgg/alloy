@@ -253,12 +253,14 @@ at the same point.
    validly signed by the current key and unexpired; and that its `mesh_pub` is
    the key the AL session authenticated. If any check fails it closes the
    session and sends nothing more.
-6. The joiner sends `join_request`: `{token_id, secret, identity_pub, mesh_pub,
-   name, name_is_default, roles, zone, advertise, mesh_port, api_port, facts}`,
-   with `roles` and `zone` empty when not given, and `facts` being operating
-   system, architecture, cores, memory, virtualization support, and disks. It
-   waits at most 10 seconds for the answer. The control plane checks, in this
-   order:
+6. The joiner sends `join_request`: `{token_id, secret, identity_pub, name,
+   name_is_default, roles, zone, advertise, mesh_port, api_port, facts}`, with
+   `roles` and `zone` empty when not given, and `facts` being operating system,
+   architecture, cores, memory, virtualization support, and disks. The request
+   names no mesh key: the joiner's mesh key, in the record it may be issued and
+   in every check below, is the key the AL session authenticated, as a
+   `forwarded` carries it (section 3.13). It waits at most 10 seconds for the
+   answer. The control plane checks, in this order:
    1. The secret, as below. An unknown `token_id` or a wrong secret is refused
       with `token_refused`.
    2. The joiner. When a node or a `pending` request exists whose `identity_pub`
@@ -582,9 +584,11 @@ state, and its host file (ARFC 0017 section 4.2), as section 3.14 lists. Its
 path is fixed: `/var/lib/alloyd` on Linux, and on Windows `Alloy` in the folder
 Windows reports as `%ProgramData%`. No flag, setting, or file changes it, so
 `alloyd` started by the service manager, the install, and the uninstall (ARFC
-0017 clauses 3.15 and 3.16) all find it at that path. A cloud admin who wants
-it on another disk mounts that disk at the path, which `init` and `join` adopt
-as below. An **Alloy data directory** meets all of these:
+0017 clauses 3.15 and 3.16) all find it at that path. On Linux, a cloud admin
+who wants it on another disk mounts that disk at the path, which `init` and
+`join` adopt as below. On Windows a mounted folder is a reparse point, which the
+rule below refuses, so the data directory stays on the volume that holds
+`%ProgramData%`. An **Alloy data directory** meets all of these:
 
 - On Linux, it is not a symbolic link, is owned by user id 0, and has mode
   `0700`. Every directory above it is owned by user id 0 and is not writable by
@@ -641,7 +645,11 @@ reports of ARFC 0006. It runs inside AL sessions (ARFC 0003) and needs no `al0`
 interface and no path but the session's own.
 
 **Carriage.** A node message is one `NodeMessage` below, encoded as Protocol
-Buffers (proto3), at most 16,384 bytes. It is the payload of one UDP datagram
+Buffers (proto3). One that holds a `forwarded` is at most 16,512 bytes, and
+every other at most 16,384, so that a `forwarded` holds any request or reply,
+since its other fields take at most 77 bytes. The bounds that the definitions
+below state on strings and lists keep every message this section defines
+within 16,384 bytes. It is the payload of one UDP datagram
 (RFC 768) in one IPv6 packet (RFC 8200), sealed as an IPv6 frame on VNI 0 of an
 AL session (ARFC 0003 section 3.4), and split by AL when it exceeds the payload
 budget (ARFC 0003 section 3.5). The IPv6 header has traffic class 0, flow label
@@ -651,23 +659,59 @@ the sender's infrastructure address and the destination the receiver's (section
 8.1 says. A receiver accepts a node message only when its source address is the
 infrastructure address that the mesh key the session authenticated has in the
 receiver's cluster, its destination is the receiver's own infrastructure
-address, both ports are 7477, the checksum verifies, and the payload decodes.
-It drops anything else silently. A joiner takes the `cluster_id` for both
-addresses from its token.
+address, both ports are 7477, the checksum verifies, and the payload decodes
+and is within the bounds of this section. It drops anything else silently. A
+joiner takes the `cluster_id` for both addresses from its token.
 
 **Who speaks.** A node sends node messages only on its home session (ARFC 0004
-section 3.1.2), and a joiner, or a node renewing an expired record, only on the
-session it opened to an anchor as an unregistered initiator. The node sends
-requests and the anchor sends replies. The anchor sends on the session only at
-the node's current endpoint (ARFC 0004 section 3.1.2), a session from an
-unregistered initiator included. An anchor that holds `control` handles a
-request itself. One that does not sends it on to a control node as `forwarded`,
-with the mesh key its session authenticated and the source address and port of
-the request's underlay packet, over a session it holds with that control node,
-and returns the reply under the node's `request_id`. A control node accepts
-`forwarded` only on a session whose peer holds a valid record with `anchor`, and
-treats the mesh key it names as the one the session authenticated. A
-`forwarded` that holds a `forwarded` is dropped.
+section 3.1.2), an anchor without `control` only on its control session below,
+and a joiner, or a node renewing an expired record, only on the session it
+opened to an anchor as an unregistered initiator. A home session and a session
+from an unregistered initiator are each an **origin session** at that anchor. The node sends requests and the anchor sends
+replies. The anchor sends on an origin session only at the node's current
+endpoint (ARFC 0004 section 3.1.2), a session from an unregistered initiator
+included. An anchor that holds `control` handles a request itself. One that
+does not forwards it on its control session, as below.
+
+**Control session.** An anchor that does not hold `control` keeps, while it is
+`joined`, one AL session with a control node, its **control session**. It opens
+it to the first control node of its latest view (the bootstrap view of section
+3.3 step 7 or a later one), in the view's order, that answers within 3 seconds,
+at the advertise addresses and the mesh port of that control node's record. A
+control node sends on the session only at an advertise address and the mesh
+port of the anchor's record, and the anchor only at those of the control
+node's: neither ever sends on it at an address learned from a packet. It is
+kept open with keepalives as a home session is (ARFC 0004 section 3.4) and is
+never closed for being idle (ARFC 0004 section 3.8). When it closes, the anchor
+opens a new one within 5 seconds, by the same rule, and while no control node
+answers it retries with backoff from 1 to 60 seconds (ARFC 0004 section 6). It
+carries the anchor's own node messages, as a home session would, and the
+`forwarded` messages below, and no other node message.
+
+**Forwarding.** The anchor numbers its origin sessions from 1 in the order they
+open, and never gives one number to two sessions while `alloyd` runs. It sends a
+request that arrives on an origin session to the control plane as a `forwarded`
+on its control session: the request's `NodeMessage` unchanged, its
+`request_id` included, with the mesh key the origin session authenticated, the
+origin session's number, and the source address and port of the request's
+underlay packet. The `NodeMessage` that holds a `forwarded` has `request_id` 0.
+The control node answers with a `forwarded` on the same control session, under
+`request_id` 0, that holds the same mesh key and origin session number, no
+source address, source port 0, and the reply under the wrapped request's
+`request_id`. The anchor sends that reply on the origin session the number
+names, when that session is still open and authenticated that mesh key, and
+drops it otherwise. The anchor keeps nothing per forwarded request and holds no
+queue: a request that arrives while its control session is not open is dropped,
+and the node's resend 1 second later carries it once the session is open. An
+anchor forwards at most 2,000 requests per second, and drops the rest, which
+their resends carry later.
+
+A control node accepts a `forwarded` only on a session whose peer holds a valid
+record with `anchor`, and treats the mesh key it names as the one an origin
+session authenticated and the source address and port as the request's. An
+anchor accepts a `forwarded` only on its control session. A `NodeMessage` that
+holds a `forwarded` and has a `request_id` other than 0, and a `forwarded` whose
+wrapped message holds a `forwarded`, are dropped.
 
 **Join service.** On a session from an unregistered initiator an anchor accepts
 only keepalives, probe messages (ARFC 0004 section 3.1), and node messages
@@ -675,7 +719,9 @@ whose body is `join_hello`, `join_request`, `join_state`, `renew`, or
 `withdraw`. It drops every other frame and message silently. It takes at most
 1 new request per second per such session and 100 per second over all such
 sessions. A request beyond that is dropped, and its resend is taken later. `leave` and the status messages of ARFC
-0006 are accepted only on a session whose peer holds a valid record. A
+0006 are accepted only on a session whose peer holds a valid record, so an
+anchor forwards them only from such a session, and a control node takes them
+in a `forwarded` only when the mesh key it names is in a valid record. A
 `withdraw` deletes the `pending` request, or the `joining` node, that the
 session's mesh key names, and is answered `DONE_CODE_OK` whether or not one
 existed.
@@ -684,13 +730,21 @@ existed.
 one with each new request. A node has at most one request outstanding per
 session. It sends the same request again, byte for byte, every 1 second until a
 reply with its `request_id` arrives or the time limit of the step that sent it
-passes. Per session the answering side keeps the highest `request_id` it has
-taken and, once it exists, that request's reply. A request with that id gets
-the kept reply again, or nothing while the reply does not yet exist, and is
-never handled twice. A lower id is dropped. A higher id is handled, and its
-reply replaces the kept one. A request is therefore handled at most once per
-session: a resend counts no second token use and writes no second audit record.
-The control plane replies within 10 seconds of first taking a request.
+passes. No step's time limit is over 10 seconds, so no request is sent more
+than 10 seconds after it was first sent. The answering side keeps, per session,
+and for a forwarded request per pair of control session and origin session
+number, the highest `request_id` it has taken and, once it exists, that
+request's reply. A request with that id gets the kept reply again, or nothing
+while the reply does not yet exist, and is never handled twice. A lower id is
+dropped. A higher id is handled, and its reply replaces the kept one. A request
+is therefore handled at most once per origin session: a resend, direct or
+forwarded, counts no second token use and writes no second audit record. A
+control node forgets a pair when its control session closes, or 30 seconds
+after the last request for it arrived,
+when no resend of a request it took can still come, and keeps at most 8,192
+pairs per control session: a `forwarded` that would add a pair beyond that is
+dropped, and a resend adds it once a pair has been forgotten. The control plane
+replies within 10 seconds of first taking a request.
 
 ```proto
 syntax = "proto3";
@@ -708,7 +762,7 @@ message NodeMessage {
     Withdraw withdraw = 8;             // node to anchor
     Leave leave = 9;                   // node to anchor
     Done done = 10;                    // answers withdraw, leave
-    Forwarded forwarded = 11;          // anchor to control node
+    Forwarded forwarded = 11;          // anchor to control node, and the reply back
     // Numbers 16 to 31 are the status messages of ARFC 0006.
   }
 }
@@ -739,16 +793,22 @@ message ClusterProof {
   bytes previous_cluster_pub = 3;    // empty outside a rotation overlap
   bytes cross_signature = 4;         // section 3.6, empty outside a rotation overlap
 }
-message Disk { string path = 1; uint64 size_bytes = 2; }
-message Facts { string os = 1; string arch = 2; uint32 cores = 3;
-                uint64 memory_bytes = 4; bool virtualization = 5; repeated Disk disks = 6; }
+message Disk { string path = 1; uint64 size_bytes = 2; }   // path at most 255 bytes
+message Facts { string os = 1;                  // at most 64 bytes
+                string arch = 2;                // at most 32 bytes
+                uint32 cores = 3; uint64 memory_bytes = 4; bool virtualization = 5;
+                repeated Disk disks = 6; }      // at most 32
 message JoinRequest {
   bytes token_id = 1;                // 8 bytes
   bytes secret = 2;                  // 16 bytes
-  bytes identity_pub = 3; bytes mesh_pub = 4;
-  string name = 5; bool name_is_default = 6;
-  repeated Role roles = 7; string zone = 8;
-  repeated bytes advertise = 9; uint32 mesh_port = 10; uint32 api_port = 11;
+  bytes identity_pub = 3;            // 32 bytes
+  reserved 4;                        // the mesh key is the session's (section 3.3 step 6)
+  string name = 5;                   // at most 63 bytes
+  bool name_is_default = 6;
+  repeated Role roles = 7;
+  string zone = 8;                   // at most 63 bytes
+  repeated bytes advertise = 9;      // as in NodeRecord
+  uint32 mesh_port = 10; uint32 api_port = 11;
   Facts facts = 12;
 }
 message JoinState {}
@@ -770,8 +830,13 @@ message Withdraw {}
 message Leave { bytes node_id = 1; bytes signature = 2; }  // section 3.9
 enum DoneCode { DONE_CODE_UNSPECIFIED = 0; DONE_CODE_OK = 1; DONE_CODE_CONFLICT = 2; }
 message Done { DoneCode code = 1; string reason = 2; }
-message Forwarded { bytes mesh_pub = 1; bytes source_address = 2; uint32 source_port = 3;
-                    NodeMessage message = 4; }
+message Forwarded {
+  bytes mesh_pub = 1;                // 32 bytes, the key the origin session authenticated
+  bytes source_address = 2;          // 4 or 16 bytes; empty in a reply
+  uint32 source_port = 3;            // 0 in a reply
+  NodeMessage message = 4;           // request_id 1 or more
+  uint64 origin_session = 5;         // the anchor's number for the origin session, from 1
+}
 ```
 
 The bootstrap view holds the cluster's current public key and the records of
@@ -779,9 +844,10 @@ its anchors and control nodes, at most 16, those holding `control` first, then
 by name. A node takes its homes from them (ARFC 0004 section 3.1.2).
 
 **This version.** Before the mesh of ARFC 0004 runs (M11 rung 3), the node
-channel on each node's home session is the only traffic between nodes. It goes
-directly over UDP, or `stream`, to an anchor's published address on the
-underlay. Relay envelopes, signaling, probe sets and direct paths between nodes,
+channel on each node's home session and on each anchor's control session is
+the only traffic between nodes. It goes directly over the underlay: over UDP,
+or `stream`, to an anchor's published address, and over UDP between the
+published addresses of an anchor and a control node. Relay envelopes, signaling, probe sets and direct paths between nodes,
 `al0` with the infrastructure address on hosts (section 3.4), and every other
 use of the infrastructure network wait for the mesh. The API is never reached
 over the mesh (ARFC 0008 section 3.8). Once `al0` exists, node messages to and
@@ -791,13 +857,22 @@ packet on VNI 0, with the same bytes.
 ### 3.14 Stored data
 
 Each node keeps these files in its data directory (section 3.12), each written
-whole: Alloy writes `<name>.new`, flushes it to disk, and renames it over
-`<name>`. Readers ignore `.new` files.
+whole: Alloy writes `<name>.new`, flushes it to disk, renames it over `<name>`,
+and makes the rename durable before it writes any other file: on Linux by
+`fsync` of the data directory, since `fsync` of a file "does not necessarily
+ensure that the entry in the directory containing the file has also reached
+disk" (https://man7.org/linux/man-pages/man2/fsync.2.html), and on Windows by
+renaming with `MoveFileExW` and the flags `MOVEFILE_REPLACE_EXISTING` and
+`MOVEFILE_WRITE_THROUGH`, which returns only once the file is moved on the disk
+(https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw).
+So after a crash each file holds either its last durable content or its
+content before that write, and the writes reach the disk in the order they
+were made. Readers ignore `.new` files.
 
 | File | Content | Present |
 |---|---|---|
 | `alloy-host` | The host file (ARFC 0017 section 4.2) | Always, written first |
-| `at-rest.key` | 32 bytes from the `alloy-rt` randomness trait, the node's at-rest key (ARFC 0020 clause 3.7) | From the first key generation until `leave` |
+| `at-rest.key` | 32 bytes from the `alloy-rt` randomness trait, the node's at-rest key (ARFC 0020 clause 3.7). During an at-rest key rotation, 64 bytes: the old key, then the new | From the first key generation until `leave` |
 | `secrets` | A 24-byte nonce, then the XChaCha20-Poly1305 encryption under the at-rest key, with that nonce and the 24 ASCII bytes `alloy/at-rest/secrets/v1` as associated data, of `NodeSecrets` below | With `at-rest.key` |
 | `handshake-counter` | 8 bytes, little endian: the end of the highest block of handshake counter values reserved (ARFC 0003 section 3.2) | With `at-rest.key` |
 | `node` | `NodeState` below, not secret | While `joining` or `joined` |
@@ -806,8 +881,28 @@ whole: Alloy writes `<name>.new`, flushes it to disk, and renames it over
 Each write of `secrets` draws a new nonce from the `alloy-rt` randomness trait.
 A 192-bit random nonce repeats under one key with probability below 2^-128 for
 fewer than 2^32 writes, and a node writes `secrets` only when what it holds
-changes. A `secrets` file that does not open is not read, and `alloyd` then
-logs that the data directory is damaged and serves nothing.
+changes. When `at-rest.key` holds 32 bytes, `secrets` opens under that key.
+When it holds 64, `alloyd` opens `secrets` under whichever of the two keys
+authenticates it, and finishes the rotation below before it does anything
+else. A `secrets` file that opens under no key `at-rest.key` holds, or an
+`at-rest.key` of any other length, is not read, and `alloyd` then logs that the
+data directory is damaged and serves nothing.
+
+**At-rest key rotation.** `alloy node rotate` replaces the at-rest key in three
+writes, each made durable before the next:
+
+1. `at-rest.key` becomes the old key followed by the new key, 64 bytes.
+2. `secrets` is written under the new key.
+3. `at-rest.key` becomes the new key, 32 bytes.
+
+A crash before write 1 leaves the old key and `secrets` under it. A crash after
+write 1 and before write 2 leaves both keys and `secrets` under the old one. A
+crash after write 2 and before write 3 leaves both keys and `secrets` under the
+new one. A crash after write 3 leaves the new key and `secrets` under it. In
+each case `secrets` opens. When `alloyd` starts with 64 bytes in
+`at-rest.key`, it finishes the rotation: from write 2 when `secrets` opened
+under the old key, else from write 3. The old key is gone from the data
+directory once write 3 is durable.
 
 ```proto
 message NodeSecrets {
@@ -839,9 +934,12 @@ the host file, and removes `node`. `leave` removes every file but the host
 file.
 
 Key lifetimes: the node identity and mesh keys last until `alloy node rotate`
-or `leave`, the at-rest key until `leave`, and `alloy node rotate` replaces it
-too, writing `secrets` under the new key before it removes the old. The cluster
-key lasts until rotated (section 3.6). The API server key lasts as long as its
+or `leave`, the at-rest key until `leave` or the next `alloy node rotate`,
+which replaces it as above. The cluster key lasts until rotated (section 3.6).
+The key of the self-signed `stream` certificate of an anchor without `control`
+(ARFC 0004 section 3.6) is in no file: it is held in memory from its generation,
+when `alloyd` starts or the certificate is renewed, until the next renewal or
+until `alloyd` stops. The API server key lasts as long as its
 certificate, at most 30 days (section 2). The API CA key lasts as long as its
 certificate, 10 years.
 
@@ -898,12 +996,18 @@ deleted first at the bound. `ExchangeLoginCode`: 10 calls per second per source
 address or IPv6 /64, and 100 per second in total, then `RateLimited` (section
 3.7).
 
-Node channel (section 3.13): 16,384 bytes per node message. One outstanding
-request per session at the node, and one kept `request_id` with its reply per
-session at the answering side, so at most 4,096 kept replies per node (ARFC
-0004 section 7). On sessions from unregistered initiators, 1 new request per
-second per session and 100 per second per anchor, the rest dropped. 16 records
-in a bootstrap view.
+Node channel (section 3.13): 16,384 bytes per node message, and 16,512 for one
+that holds a `forwarded`. In `Facts`, 64 bytes of `os`, 32 of `arch`, and 32
+disks with paths of at most 255 bytes. One outstanding request per session at
+the node. At the answering side, one kept `request_id` with its reply per
+session, so at most 4,096 per node (ARFC 0004 section 7), and per pair of
+control session and origin session, at most 8,192 pairs per control session,
+each forgotten 30 seconds after its last request; a `forwarded` that would add
+a pair beyond the bound is dropped. One control session per anchor without
+`control`. 2,000 forwarded requests per second per anchor, the rest dropped.
+On sessions from unregistered initiators, 1 new request per second per session
+and 100 per second per anchor, the rest dropped. 16 records in a bootstrap
+view.
 
 ## 8. Security
 
@@ -931,7 +1035,9 @@ Unauthenticated exchange calls are bounded per source and in total before they
 reach the store or the audit log, and so are join service requests (section
 3.13). A node message is accepted only from the infrastructure address of the
 mesh key its AL session authenticated, so no node can speak for another, and a
-`forwarded` message is believed only from an anchor's session. The node channel
+`forwarded` request is believed only from an anchor's session, and a
+`forwarded` reply only on the anchor's own control session, which it opened to
+a control node's published address. The node channel
 reaches no endpoint that the anchor has not seen echo a challenge (ARFC 0004
 section 3.1.2), so a spoofed or copied packet cannot point the bootstrap view or
 any other reply at a third party. Secrets at rest are sealed under the node's

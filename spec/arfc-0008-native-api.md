@@ -141,15 +141,22 @@ certificate's own signature and the rest of its chain are the issuer's, and only
 its key is Alloy's choice.
 
 3.8.1 TLS randomness. Under the `os` runtime the `rustls` provider (`aws-lc-rs`,
-ADR 0053) draws the TLS hello randoms and ephemeral key shares from its own
-generator, as `agent/eng/crypto.md` rule 4 allows for TLS alone (ADR 0042).
-Under any other implementation of the `net` seam (ARFC 0005 section 2.3), the
-simulator's included, no TLS runs: the API server, its clients, the `stream`
-underlay, and the ACME client exchange in the clear the bytes they would carry
-inside TLS, and the server tells the API from `stream` by the HTTP/2 connection
-preface (RFC 9113 section 3.4), which an API client sends first and `stream`
-never does. So no byte of a simulated run comes from a generator outside
-`alloy-rt` (I-20). Certificate verification and ALPN are tested under `os`.
+ADR 0053) draws from its own generator the values that live inside one TLS 1.3
+handshake and that neither side keeps after it, and nothing else: the
+ClientHello and ServerHello randoms, the client's legacy session id and
+extension order seed, and the ephemeral secrets of the key shares, as
+`agent/eng/crypto.md` rule 4 lists them and allows for TLS alone (ADR 0042).
+Session tickets, resumption, early data, and Encrypted Client Hello are off, on
+the server and on every client. Under the `mem` implementation of the `net`
+seam (ARFC 0005 section 2.3), where no byte leaves the process, no TLS runs:
+the API server, its clients, the `stream` underlay, and the ACME client
+exchange in the clear the bytes they would carry inside TLS, and the server
+tells the API from `stream` by the HTTP/2 connection preface (RFC 9113 section
+3.4), which an API client sends first and `stream` never does. So no byte of a
+simulated run comes from a generator outside `alloy-rt` (I-20). Under any other
+`net` implementation the API and `stream` run on TLS as under `os`, or are not
+served, so no API call and no `stream` byte crosses a network in the clear.
+Certificate verification and ALPN are tested under `os`.
 
 3.9 Rate limits apply per principal, default 100 requests per second with a burst
 of 200, and return `RateLimited` with a retry delay.
@@ -202,11 +209,12 @@ labels per resource, keys and values up to 63 and 255 characters.
 
 The API is reached only over TLS 1.3 to a certificate that chains to the pinned
 API CA or to the web PKI (section 3.8), so an underlay attacker reads and
-changes nothing. A SigV4 signature covers the method, the server name, the
+changes nothing. Only under the `mem` `net` implementation, inside one process,
+does it run without TLS (clause 3.8.1). A SigV4 signature covers the method, the server name, the
 body, and the time, so a signed call cannot be moved to another method or given
 another body, and is refused 5 minutes after it was made. The local admin socket
 carries no credential and is reached only by user id 0 (ARFC 0007 clause
 3.10.2). Port sharing by ALPN gives a `stream` client no API access and an API
 client no AL session: each protocol authenticates on its own. The provider's
-own randomness reaches only TLS handshake values, never a key or nonce Alloy
-keeps (ADR 0042). Upholds I-02, I-15, I-20, I-22.
+own randomness reaches only the TLS handshake values of clause 3.8.1, which
+neither side keeps, never a key or nonce Alloy keeps (ADR 0042). Upholds I-02, I-15, I-20, I-22.
