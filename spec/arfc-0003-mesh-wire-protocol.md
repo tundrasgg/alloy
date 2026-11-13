@@ -3,7 +3,7 @@
 - Status: accepted
 - Depends on: 0000
 - Crates: alloy-wire, alloy-link, alloy-crypto
-- Decisions: 0010, 0011, 0012, 0013, 0030, 0043, 0046, 0057
+- Decisions: 0010, 0011, 0012, 0013, 0030, 0043, 0046, 0057, 0058
 
 ## 1. Purpose
 
@@ -17,10 +17,14 @@ ARFC 0004.
 A **session** exists between two node mesh keys. It is created by a two-message
 handshake and holds one sending key and one receiving key per direction. A session
 is independent of paths: any packet that authenticates belongs to the session
-whatever underlay address it came from.
+whatever underlay address it came from. At each node, a session's transport
+packets arrive on receiver indexes, one per sending queue of the peer and VPC
+carried (3.4).
 
-All integers are little endian. All messages start with a 1-byte `type` and a
-1-byte `version`, currently `1`.
+All integers are little endian. All messages start with a 1-byte `type`. Every
+message except a transport packet then carries a 1-byte `version`, currently
+`1`. A transport packet has no `version` byte: its session's version is fixed by
+the handshake, and its `type` names the version (3.4).
 
 ## 3. Behavior
 
@@ -101,10 +105,17 @@ Cookie reply (type 3), 64 bytes:
 | nonce | 24 |
 | encrypted cookie | 16 + 16 |
 
-Indices: a node chooses its `sender_index` so that it is unique among its
-pending handshakes and live sessions. The peer copies it, unchanged and opaque,
-into the `receiver_index` of every response, cookie reply and transport packet
-(3.4) it sends to that node.
+Indices: a node chooses the `sender_index` of each initiation and response it
+sends so that the 64 values `sender_index + q` (mod 2^32), `q` from 0 to 63, are
+all free at that node: none of them is in a block (3.4) of a pending handshake
+or of a session the node holds. The block stays reserved while the initiation is
+pending and, once the handshake makes a session, for as long as the node holds
+that session. The peer copies `sender_index`, unchanged, into the
+`receiver_index` of every response and cookie reply it sends to that node and of
+every probe message (3.6) it seals in the session. Transport packets use the
+indexes of the block, and of further blocks, as 3.4 defines. A node that has no
+free block when it must reserve one does not send that initiation or response,
+and counts it.
 
 Fixed values: in version 1, `version` is 1, the header `reserved` bytes are
 zero, every flag bit is zero, and the initiation payload `reserved` is zero. A
@@ -249,49 +260,216 @@ or the payloads. Once the values above are erased, a later compromise of either
 static key or of the pre-shared key does not recover the session keys (forward
 secrecy, section 8).
 
-A session is rekeyed by a new handshake after 120 seconds of use or 2^48 packets
-on any queue, whichever comes first. Keys must be discarded 180 seconds after the
-handshake that made them. The previous session's receive key stays valid for 10
-seconds after a rekey. Its probe keys follow 3.6.
+A session is rekeyed by a new handshake after 120 seconds of use or 2^30
+transport packets on any queue, whichever comes first. A sender never uses a
+transport counter of 2^31 or more (3.4), so every session stays below 2^31
+transport packets per queue, well below the 2^32 that the 32-bit counter on the
+wire distinguishes. Keys must be discarded 180 seconds after the handshake that
+made them. The previous session's receive key stays valid for 10 seconds after a
+rekey. Its probe keys follow 3.6.
 
 ### 3.4 Transport (type 4)
 
 | Field | Size | Notes |
 |---|---|---|
-| type, version | 1, 1 | |
-| queue | 2 | Sender's queue id |
-| receiver_index | 4 | |
-| counter | 8 | Per session, per queue, starts at 0 |
-| ciphertext | n + 16 | AEAD over the inner frame, header as associated data |
+| type | 1 | 4 |
+| receiver_index | 4 | Names the session, the VNI and the sending queue at the receiver |
+| counter | 4 | The low 32 bits of the packet's counter |
+| ciphertext | n + 16 | AEAD over the inner frame, the 9 header bytes as associated data |
 
-Nonce: `salt (14) || queue (2) || counter (8)`. Each queue has its own counter, so
-sending threads share nothing. Because counters are per queue and keys are per
-session, a nonce cannot repeat (I-07). Across a process handover the counters
-travel with `send_key`, and a process that resumes after a failed handover seals
-nothing under a session its successor used (3.9).
+Type and version: type 4 is a transport packet under a version 1 session. A
+session's version is the one its handshake carried (3.1), so a transport packet
+does not repeat it. First byte values 0 and 7 to 255 are reserved: a later
+version that changes this layout takes its type value from them. A version 1
+receiver must drop, without reply, a message whose first byte is a reserved
+value.
 
-The receiver keeps a sliding replay window of 2,048 packets per session per queue
-and must drop anything older or already seen. The windows travel with `recv_key`
-across a process handover, under the same rules (3.9).
+Fixed overhead per packet: 9 header + 16 tag = 25 bytes. With UDP (8 bytes) that
+is 53 bytes over IPv4 (20) and 73 bytes over IPv6 (40). A relay envelope (3.7)
+adds 32 more.
 
-Inner frame, after decryption:
+Blocks: at a node, a **block** is 64 index values `base + q` (mod 2^32), `q` from
+0 to 63, held for one session and **bound** to one VNI. The value `base + q`
+names that session, that VNI and the peer's sending queue `q`: it is the
+`receiver_index` of every transport packet the peer seals on queue `q` for that
+VNI in that session. Queues are numbered from 0 to `queues` - 1, where `queues`
+is the count the peer sent in its handshake payload (3.1). A value `base + q`
+with `q` at or above that count names nothing.
 
-| Field | Size | Notes |
+- A session's first block is the one its handshake reserved: its `base` is the
+  `sender_index` the node sent in the initiation or response that made the
+  session (3.1), and it is bound to VNI 0, the infrastructure network.
+- Every other block of the session is bound to one VNI from 1 to 2^24 - 1 by a
+  bind (below).
+- Within a session a block's VNI never changes, and a VNI is bound to at most
+  one block. A node holds at most 1,024 blocks per session, VNI 0 and up to 1,023
+  others, so at most 65,536 indexes per session.
+- A node holds at most 4 sessions with one peer, counting each initiation it has
+  pending to that peer as one. Before it sends an initiation or a response that
+  would make a fifth, it discards the oldest of the four (3.3), a pending
+  initiation by abandoning it. A node therefore holds at most 4,096 blocks,
+  262,144 indexes, per peer.
+- A node frees a session's blocks when it discards the session (3.3), and reuses
+  their values only after that. A packet that names a reused value is opened
+  with the key of the new session, does not open, and is dropped.
+
+Counters: each session has, in each direction, one 64-bit counter per sending
+queue. It starts at 0 and grows by one with every transport packet sealed on
+that queue in the session, whatever its VNI. The header carries its low 32 bits.
+A sender never seals a transport packet with a counter of 2^31 or more: a queue
+whose counter reaches 2^31 seals nothing more under that session, and its
+packets are dropped and counted until a newer session exists. Rekeying at 2^30
+packets (3.3) makes that session long before.
+
+Nonce: `salt (14) || queue (2) || counter (8)`, where `queue` is the sending queue
+that `receiver_index` names and `counter` is the full 64-bit counter. Each queue
+has its own counter, so sending threads share nothing. Every block of a session
+numbers the same queues and a queue's counter is shared by all the VNIs it
+carries, so `queue || counter` never repeats under one `send_key`. Keys are per
+session and per direction, so a nonce cannot repeat (I-07). Across a process
+handover the counters travel with `send_key`, and a process that resumes after a
+failed handover seals nothing under a session its successor used (3.9).
+
+Replay window and counter reconstruction: the receiver keeps, per session and per
+sending queue of the peer, a sliding replay window of 2,048 counters: the highest
+counter `H` accepted on that queue in the session, and which of the 2,048
+counters up to `H` were accepted. Every block of the session that names the queue
+shares its window. The receiver reconstructs a packet's full counter `c` from the
+32-bit value `w` in its header: with `e` equal to `H + 1`, or to 0 when nothing
+has been accepted on the queue, `c` is the one integer such that
+`c = w + k * 2^32` for some integer `k` and `e - 2^31 < c <= e + 2^31`. The
+receiver must drop the packet if `c` is negative, is more than 2,047 below `H`,
+or has been accepted already. Otherwise it opens the ciphertext with the nonce
+built from `c`. Only a packet that opens changes the window: `c` is marked
+accepted, and `H` becomes `c` when `c` is higher. The windows travel with
+`recv_key` across a process handover, under the same rules (3.9).
+
+The reconstruction is exact: every counter a sender uses is below 2^31, so the
+interval holds the true counter of every packet that is not more than 2,047
+below `H`. A packet reconstructed to any other counter does not open, because
+the full counter is in the nonce, so the reconstruction can drop a packet but
+never accept one. The reorder limit is therefore the window alone: a packet is
+accepted however late it arrives, while its key is held and its counter is at
+most 2,047 below the highest accepted on its queue.
+
+Receive checks: before any cryptographic operation, a receiver must drop a
+transport packet shorter than 26 bytes (the header, the tag and a 1-byte frame),
+whose `receiver_index` is not an index of a session it holds (a value `base + q`
+of one of its blocks, with `q` below the peer's `queues`), or that fails the
+checks on `c` above.
+
+Inner frame, after decryption: the plaintext is one frame of at least 1 byte.
+Its **kind** is the high 4 bits of its first byte. An IP packet is recognized by
+its own version field, and the other kinds use values that no IPv4 or IPv6
+packet has there:
+
+| Kind | Frame | Carried on |
 |---|---|---|
-| kind | 1 | 0 keepalive, 1 IPv4, 2 IPv6, 3 control, 4 fragment |
-| vni | 3 | 0 means the infrastructure network |
-| body | rest | For kind 4: `frag_id (4), index (1), count (1), inner kind (1), reserved (1)`, then data |
+| 0 | Keepalive: the single byte `0x00` | VNI 0 only |
+| 1 | Control: `0x10`, `control type` (1), then the body of that type | VNI 0 only |
+| 2 | Fragment (3.5): `0x20`, `frag_id` (4), `index` (1), `count` (1), then data | Any VNI |
+| 4 | An IPv4 packet: the whole frame | Any VNI |
+| 6 | An IPv6 packet: the whole frame | Any VNI |
 
-Fixed overhead per packet: 16 header + 4 inner + 16 tag = 36 bytes, plus UDP and
-IP.
+"Carried on" is the VNI of the block that `receiver_index` names. After opening,
+a receiver must drop a packet whose frame has a kind not in the table, has a kind
+not carried on that VNI, or does not match the table: a keepalive that is not
+exactly `0x00`, a control or fragment frame whose first byte is not exactly
+`0x10` or `0x20`, a control frame that breaks the rules below, or a fragment
+that breaks 3.5. An IPv4 or IPv6 frame is handed, with the VNI of its block, to
+the virtual switch (ARFC 0009 section 3.2), or to the infrastructure network for
+VNI 0. AL does not parse it further. A sender seals on a block of a VNI other
+than 0 only IP packets and fragments of them: a packet handed to it for such a
+VNI whose first 4 bits are not 4 or 6 is dropped and counted, so no guest packet
+is ever read as a keepalive, a control frame or a fragment.
+
+Control frames: the `control type` byte selects the body. Version 1 defines two
+types, and a receiver must drop a control frame of any other type, or whose
+length is not the one shown:
+
+| Control type | Body | Frame length |
+|---|---|---|
+| 1, bind request | `vni` (3) | 5 |
+| 2, bind | `vni` (3), `base` (4) | 9 |
+
+Binding a VNI: VNI 0 is bound in every session without a bind, and each node
+holds a binding for it in every session it holds: it seals its VNI 0 packets on
+queue `q` with `receiver_index` `s + q`, where `s` is the `sender_index` the peer
+sent in the handshake. For any other VNI `v`:
+
+- A node that has a transport packet for `v` to a peer sends a bind request for
+  `v` when it holds no binding for `v` in the session it would seal a VNI 0
+  packet under (session choice, below). It sends it under that session, and
+  again at most once per second while it has packets for `v` and still holds no
+  binding for `v` there.
+- A node that accepts a bind request for `v` under a session binds `v` in that
+  session, to the block already bound to `v` if there is one and otherwise to a
+  free block, and replies with a bind carrying `v` and that block's `base`. It
+  seals the bind under the session the request came under, whatever the session
+  choice below. It binds only when `v` is not 0, a VPC with VNI `v` has a port on
+  it (ARFC 0009 section 3.3), and the session already binds `v` or holds fewer
+  than 1,024 blocks with a free block to take. Otherwise it drops the request and
+  counts it. It replies to every bind request it accepts, so a lost bind is
+  recovered by the next request.
+- A node that accepts a bind for `v` under a session, after it sent a bind
+  request for `v` under that session, keeps it as its **binding** for `v` in
+  that session when it holds none for `v` and fewer than 1,023 bindings for
+  VNIs other than 0 there. From then on it seals that session's packets for `v`
+  on queue `q` with `receiver_index` `base + q`. A bind that repeats the binding
+  it holds changes nothing. Any other bind is dropped and counted.
+
+Session choice: a node seals a transport packet for VNI `v` to a peer under the
+newest session with that peer that is confirmed at the node (3.6) and in which it
+holds a binding for `v`. For VNI 0 only, when no session with the peer is
+confirmed, it seals under the newest session it holds with the peer. A packet for
+which no session qualifies is held, up to 16 packets per VNI per peer and for at
+most 1 second, and sealed once a binding exists; a packet it cannot hold, and a
+packet held for 1 second, is dropped and counted. A node therefore goes on
+sealing a VNI's packets under the previous session after a rekey until the new
+session binds that VNI. An initiator seals a keepalive under a session as soon
+as it makes it, so that the responder confirms the session at once (3.6).
 
 ### 3.5 Fragmentation
 
-When an inner packet does not fit the path's payload budget, the sender must split
-it into 2 to 16 fragments, each sent as its own transport packet. Fragments are
-reassembled before delivery. A reassembly is abandoned after 2 seconds. A sender
-must never emit an underlay packet larger than the path MTU, and must set the
-don't-fragment bit on IPv4 (I-10).
+Payload budget: the largest inner frame that one transport packet carries on a
+path is the path MTU (ARFC 0004 section 3.5) minus the IP and UDP headers (28
+bytes over IPv4, 48 over IPv6), minus the 25 bytes of 3.4, minus 32 more when the
+packet travels inside a relay envelope (3.7).
+
+When an IPv4, IPv6 or control frame does not fit the path's payload budget, the
+sender must split it into 2 to 16 fragments, each sent as its own transport
+packet whose frame fits the budget. A keepalive is never split, and a fragment
+is never split again. A frame that would need more than 16 fragments is dropped
+and counted.
+
+Fragment frame (kind 2), 7 bytes before its data:
+
+| Field | Size | Content |
+|---|---|---|
+| kind | 1 | `0x20`: kind 2, low 4 bits zero |
+| frag_id | 4 | Names the frame that was split |
+| index | 1 | This fragment's position, from 0 to `count` - 1 |
+| count | 1 | Number of fragments, 2 to 16 |
+| data | rest | At least 1 byte |
+
+The split frame is the data of its fragments concatenated in `index` order. A
+sender seals every fragment of one frame under the same session with the same
+`receiver_index`, so they share a VNI and a queue, and gives each frame it splits
+on one `receiver_index` of a session a `frag_id` it has not used on that index in
+that session.
+
+A receiver reassembles by session, `receiver_index` and `frag_id`. It must drop
+a fragment frame shorter than 8 bytes, whose first byte is not `0x20`, whose
+`count` is outside 2 to 16, whose `index` is not below `count`, whose `count`
+differs from that of a fragment it holds with the same `frag_id`, or whose
+`index` it already holds. Once it holds all `count` fragments, it concatenates
+their data and handles the result as a frame received on that block, except that
+it must drop it unless its kind is 4 or 6, or 1 on a block of VNI 0. A reassembly
+not complete 2 seconds after its first fragment arrived is abandoned and its
+fragments are dropped. Reassembly memory is bounded as section 7 states.
+
+A sender must never emit an underlay packet larger than the path MTU, and must
+set the don't-fragment bit on IPv4 (I-10).
 
 ### 3.6 Probe (type 5)
 
@@ -344,8 +522,10 @@ Probe message (type 5), 88 bytes unless padded:
 | counter | 8 |
 | encrypted body | 56 + p + 16 |
 
-`receiver_index` names the session at the receiver, as in a transport packet
-(3.1, 3.4). `counter` is the sender's probe counter in that session: it starts at
+`receiver_index` is the `sender_index` the receiver sent in the handshake that
+made the session (3.1), the `base` of the session's VNI 0 block (3.4). A probe
+message's `receiver_index` names a session only when it is that value: any other
+index of the session names none, for probe messages. `counter` is the sender's probe counter in that session: it starts at
 0 and grows by one with every probe message the sender seals in the session. It
 is separate from the transport counters. A sender sends no probe message with a
 `counter` of 2^48 or more in a session; it rekeys (3.3) first.
@@ -479,7 +659,9 @@ the session, the relay envelope `counter` (3.7) and any replay state kept for
 relay envelopes included, goes with the key it is used with. A key is never
 passed without that state. With each session goes whether it is confirmed
 (3.6), so the successor seals probe messages under the same session the old
-process would have. With its sessions the old process passes its table of the
+process would have, and its blocks and bindings (3.4): the VNI each of its
+blocks is bound to, and the `base` of every binding the old process holds in
+it, so the successor reads every index as the old process did. With its sessions the old process passes its table of the
 highest initiation counter seen per initiator static key (3.2).
 
 Exclusive use: from the moment the old process passes its sessions, it seals no
@@ -512,7 +694,8 @@ processes at once. Before it seals or accepts any message after resuming, it
 must:
 
 1. Discard every consumed session: erase its keys, counters and windows as 3.3
-   erases discarded keys, and never seal or accept under it again.
+   erases discarded keys, free its blocks (3.4), and never seal or accept under
+   it again.
 2. For every initiator in the record, raise the highest counter it holds for that
    initiator (3.2) to the highest counter recorded for it, when that is higher.
 3. Reserve a new block of handshake counter values (3.2) and not use what was
@@ -560,6 +743,7 @@ Every other message is authenticated when its authentication tag verifies.
 | Response | One `mac1` check. Then, only if `receiver_index` names an initiation the receiver has pending: two DH (`ee`, `se`) and the AEAD open of the encrypted payload |
 | Cookie reply | Only if `receiver_index` names an initiation the receiver has pending: the AEAD open of the encrypted cookie |
 | Probe message | Only if it passes the checks that 3.6 makes before any cryptographic operation, which include that `receiver_index` names a session whose `probe_recv_key` the receiver holds: the replay check and one AEAD open of the encrypted body with that key. No DH, under load or not |
+| Transport packet | Only if it passes the receive checks of 3.4, which include that `receiver_index` is an index of a session the receiver holds: the counter reconstruction, the replay check and one AEAD open with that session's `recv_key`. No DH, under load or not |
 | Any other type | One MAC check, or one DH when not under load |
 
 The responder computes the two DH that build the response (`ee`, `se`) only
@@ -574,6 +758,15 @@ costs none, and a completed handshake costs each side four DH in total, as
 64 queues per session. 16 fragments per packet. 4 MiB of reassembly memory per
 peer, 256 MiB per node, oldest dropped first. 65,535 bytes per stream frame. Under
 load is defined as more than 1,000 pending handshakes.
+
+Receiver indexes (3.4): blocks of 64 indexes, at most 1,024 blocks per session
+(VNI 0 and up to 1,023 other VNIs), so 65,536 indexes per session. At most 4
+sessions per peer, pending initiations included, so 4,096 blocks and 262,144
+indexes per peer. Beyond the 1,024 blocks a bind request is dropped; a fifth
+session discards the oldest. A sender holds at most 1,023 bindings per session
+and, while it waits for one, at most 16 packets per VNI per peer for at most 1
+second, dropping the rest. Transport counters stay below 2^31 per queue per
+session.
 
 ## 8. Security
 
