@@ -125,7 +125,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0099 | verify | verifier | done | none | Run the rung 1 driver's remote scripts over SSH stdin |
 | T-0100 | verify | verifier | done | none | Drop Proxmox status timestamps from the host snapshot |
 | T-0101 | verify | verifier | done | none | Drop live link counters from the host snapshot |
-| T-0102 | spec | architect | active | none | Specify rung 2 identity, join, API transport, and ports |
+| T-0102 | spec | architect | review | none | Specify rung 2 identity, join, API transport, and ports |
 | T-0103 | spec | architect | review | none | Specify the rung 2 control plane, heartbeats, and node list |
 
 ## First dispatch
