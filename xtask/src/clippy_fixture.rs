@@ -142,16 +142,48 @@ fn parse(output: &str) -> (BTreeSet<String>, BTreeSet<String>) {
     (found, unresolved)
 }
 
+/// What a run over the fixture sets `CARGO_TERM_COLOR` to for cargo.
+#[derive(Debug, Clone, Copy)]
+enum TermColor {
+    /// Leaves it as the caller set it, or unset.
+    Inherit,
+    /// Removes it.
+    Unset,
+    /// Sets it to this value.
+    Set(&'static str),
+}
+
 /// Runs `cargo <cargo_args>` over the fixture, with Clippy's short message
 /// format and the fixture target directory, then `-- <lint_args>`.
-fn run(cargo_args: &[&str], lint_args: &[&str], tag: &str) -> Report {
+///
+/// `--color never` keeps escape codes out of the output whatever the caller's
+/// `CARGO_TERM_COLOR` or `term.color` says, since a colored `error[E0453]`
+/// does not match what [`parse`] reads.
+fn run(cargo_args: &[&str], lint_args: &[&str], tag: &str, color: TermColor) -> Report {
     let conf = ConfDir::create(tag);
     let cargo = env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
-    let result = Command::new(cargo)
+    let mut command = Command::new(cargo);
+    match color {
+        TermColor::Inherit => {}
+        TermColor::Unset => {
+            command.env_remove("CARGO_TERM_COLOR");
+        }
+        TermColor::Set(value) => {
+            command.env("CARGO_TERM_COLOR", value);
+        }
+    }
+    let result = command
         .current_dir(fixture())
         .env("CLIPPY_CONF_DIR", &conf.0)
         .args(cargo_args)
-        .args(["--keep-going", "--message-format", "short", "--target-dir"])
+        .args([
+            "--color",
+            "never",
+            "--keep-going",
+            "--message-format",
+            "short",
+        ])
+        .arg("--target-dir")
         .arg(repo_root().join("target/xtask-fixtures"))
         .arg("--")
         .args(lint_args)
@@ -177,7 +209,7 @@ fn forbid_report() -> &'static Report {
     static REPORT: OnceLock<Report> = OnceLock::new();
     REPORT.get_or_init(|| {
         let (cargo_args, lint_args) = step_args("clippy-forbid");
-        run(&cargo_args, &lint_args, "forbid")
+        run(&cargo_args, &lint_args, "forbid", TermColor::Inherit)
     })
 }
 
@@ -196,7 +228,7 @@ fn runtime_report() -> &'static Report {
             "--all-features",
             "--locked",
         ];
-        run(&cargo_args, &lint_args, "runtime")
+        run(&cargo_args, &lint_args, "runtime", TermColor::Inherit)
     })
 }
 
@@ -300,6 +332,29 @@ fn clippy_fixture_every_configured_path_resolves() {
         "\n{}",
         report.output
     );
+}
+
+/// The `clippy-forbid` run reads the same with `CARGO_TERM_COLOR=always` as
+/// without it.
+#[test]
+fn clippy_fixture_output_ignores_the_callers_color() {
+    let (cargo_args, lint_args) = step_args("clippy-forbid");
+    let plain = run(&cargo_args, &lint_args, "color-unset", TermColor::Unset);
+    let colored = run(
+        &cargo_args,
+        &lint_args,
+        "color-always",
+        TermColor::Set("always"),
+    );
+    assert!(
+        !colored.output.contains('\u{1b}'),
+        "escape codes in the output\n{}",
+        colored.output
+    );
+    assert!(!plain.found.is_empty(), "\n{}", plain.output);
+    assert_eq!(colored.success, plain.success, "\n{}", colored.output);
+    assert_eq!(colored.found, plain.found, "\n{}", colored.output);
+    assert_eq!(colored.unresolved, plain.unresolved, "\n{}", colored.output);
 }
 
 /// Every package in the fixture's lockfile is a path in the fixture, so the
