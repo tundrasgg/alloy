@@ -19,9 +19,11 @@ const HALF_SPAN: i128 = 1 << 31;
 /// 3.4).
 ///
 /// Returns `None` when that `c` is negative, which the receiver must drop, or
-/// does not fit in 64 bits, which no window below `u64::MAX` produces. The
-/// result is not checked against the window: dropping a counter more than
-/// 2,047 below `H` or already accepted is the receiver's replay check.
+/// above `u64::MAX`. Since `c` is at most `H + 1 + 2^31`, it can exceed
+/// `u64::MAX` only when `H` is within 2^31 of `u64::MAX`, that is `H` at least
+/// `u64::MAX - 2^31`. The result is not checked against the window: dropping a
+/// counter more than 2,047 below `H` or already accepted is the receiver's
+/// replay check.
 ///
 /// The result is exact: for every true counter below
 /// [`COUNTER_LIMIT`](crate::COUNTER_LIMIT) and not more than 2,047 below `H`,
@@ -87,5 +89,20 @@ mod tests {
         assert_eq!(rebuild(u32::MAX, Some(u64::MAX - 1)), Some(u64::MAX));
         assert_eq!(rebuild(0, Some(u64::MAX)), None);
         assert_eq!(rebuild(u32::MAX, Some(u64::MAX)), Some(u64::MAX));
+    }
+
+    #[test]
+    fn overflow_only_within_2_31_of_the_top() {
+        let half = 1u64 << 31;
+        // The highest H at which no c exceeds u64::MAX: e + 2^31 is u64::MAX.
+        let h = u64::MAX - half - 1;
+        assert_eq!(rebuild(u32::MAX, Some(h)), Some(u64::MAX));
+        for wire in [0, 1, 0x7fff_ffff, 0x8000_0000, 0xffff_fffe, u32::MAX] {
+            assert!(rebuild(wire, Some(h)).is_some(), "wire {wire:#x}");
+        }
+        // The lowest H at which a c exceeds u64::MAX: e + 2^31 is 2^64.
+        assert_eq!(rebuild(0, Some(u64::MAX - half)), None);
+        // Review finding F1 of T-0064: H below u64::MAX, c is 2^64.
+        assert_eq!(rebuild(0, Some(u64::MAX - 1)), None);
     }
 }

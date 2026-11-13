@@ -19,9 +19,9 @@ use std::io;
 use std::path::Path;
 
 use alloy_wire::{
-    CookieReply, Fragment, FragmentCount, FragmentId, FragmentKind, HandshakeCounter, Initiation,
-    InitiationPayload, InnerBody, InnerFrame, Message, PacketCounter, QueueCount, QueueId,
-    Response, ResponsePayload, SessionIndex, Transport, TransportHeader, Vni,
+    Control, CookieReply, Fragment, FragmentCount, FragmentId, HandshakeCounter, Initiation,
+    InitiationPayload, InnerFrame, IpPacket, Message, QueueCount, Response, ResponsePayload,
+    SessionIndex, Transport, TransportHeader, Vni, WireCounter,
 };
 
 /// `N` bytes counting up from `start`, as the unit tests build their fields.
@@ -78,13 +78,12 @@ fn message_seeds() -> Vec<(&'static str, Vec<u8>)> {
         encrypted_cookie: ramp(0x40),
     };
     let header = TransportHeader {
-        queue: QueueId(0x0201),
-        receiver_index: SessionIndex(0x0605_0403),
-        counter: PacketCounter(0x0e0d_0c0b_0a09_0807),
+        receiver_index: SessionIndex(0x0403_0201),
+        counter: WireCounter(0x0807_0605),
     };
-    let shortest: Vec<u8> = (0x40..0x40 + 20).collect();
+    let shortest: Vec<u8> = (0x40..0x40 + 17).collect();
     let longer: Vec<u8> = (0x40..0x40 + 84).collect();
-    // Both ciphertexts are at least `Transport::MIN_CIPHERTEXT_LEN`, 20 bytes.
+    // Both ciphertexts are at least `Transport::MIN_CIPHERTEXT_LEN`, 17 bytes.
     let transport = |c| Transport::new(header, c).expect("ciphertext long enough");
     vec![
         (
@@ -107,32 +106,50 @@ fn message_seeds() -> Vec<(&'static str, Vec<u8>)> {
     ]
 }
 
+/// An `inner_frame` input: the 3 little-endian bytes of the VNI the frame
+/// arrives on, then the frame.
+fn frame_on(vni: Vni, frame: &InnerFrame<'_>) -> Vec<u8> {
+    let mut out = vni.get().to_le_bytes()[..3].to_vec();
+    out.extend(encode_frame(frame));
+    out
+}
+
 fn inner_frame_seeds() -> Vec<(&'static str, Vec<u8>)> {
-    let data = [9, 8, 7];
+    let vni_0 = Vni::INFRASTRUCTURE;
     // 0x12_3456 fits the 24 bits of a VNI.
     let vni = Vni::new(0x0012_3456).expect("VNI fits 24 bits");
-    let frame = |body| encode_frame(&InnerFrame { vni, body });
-    // 16 is the largest fragment count, and index 15 is below it.
+    let ipv4 = [0x45, 0x00, 0x00, 0x14, 9, 8, 7];
+    let ipv6 = [0x60, 0x00, 0x00, 0x00, 9, 8, 7];
+    // Both start with a version nibble of 4 or 6.
+    let ip = |bytes| InnerFrame::Ip(IpPacket::new(bytes).expect("IPv4 or IPv6 first byte"));
+    // 16 is the largest fragment count, index 15 is below it, and the data is
+    // not empty.
     let fragment = Fragment::new(
         FragmentId(0x0403_0201),
         15,
         FragmentCount::new(16).expect("fragment count in range"),
-        FragmentKind::Ipv6,
         &[0xaa, 0xbb],
     )
-    .expect("fragment index below count");
+    .expect("fragment index below count, data not empty");
     vec![
-        ("keepalive", frame(InnerBody::Keepalive(&[]))),
-        ("ipv4", frame(InnerBody::Ipv4(&data))),
-        ("ipv6", frame(InnerBody::Ipv6(&data))),
-        ("control", frame(InnerBody::Control(&data))),
+        ("keepalive", frame_on(vni_0, &InnerFrame::Keepalive)),
         (
-            "fragment",
-            encode_frame(&InnerFrame {
-                vni: Vni::INFRASTRUCTURE,
-                body: InnerBody::Fragment(fragment),
-            }),
+            "bind_request",
+            frame_on(vni_0, &InnerFrame::Control(Control::BindRequest { vni })),
         ),
+        (
+            "bind",
+            frame_on(
+                vni_0,
+                &InnerFrame::Control(Control::Bind {
+                    vni,
+                    base: SessionIndex(0x0807_0605),
+                }),
+            ),
+        ),
+        ("fragment", frame_on(vni, &InnerFrame::Fragment(fragment))),
+        ("ipv4", frame_on(vni, &ip(&ipv4))),
+        ("ipv6", frame_on(vni_0, &ip(&ipv6))),
     ]
 }
 
@@ -169,6 +186,10 @@ fn main() -> io::Result<()> {
     ];
     for (target, seeds) in targets {
         let dir = root.join(target);
+        // Start from an empty directory, so no seed of an older format remains.
+        if dir.exists() {
+            fs::remove_dir_all(&dir)?;
+        }
         fs::create_dir_all(&dir)?;
         for (name, bytes) in seeds {
             fs::write(dir.join(name), bytes)?;

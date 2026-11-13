@@ -7,7 +7,7 @@ and that an input that decodes encodes back to exactly the same bytes.
 | Target | Decoder |
 |---|---|
 | `message` | `Message::decode`, and through it the initiation, response, cookie reply and transport decoders |
-| `inner_frame` | `InnerFrame::decode`, fragment header included |
+| `inner_frame` | `InnerFrame::decode` and `InnerFrame::decode_reassembled`, fragment header included. The first 3 bytes of an input are the VNI, little endian |
 | `initiation_payload` | `InitiationPayload::decode` |
 | `response_payload` | `ResponsePayload::decode` |
 
