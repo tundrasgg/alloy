@@ -24,7 +24,7 @@ ADR 0036, ADR 0040 to ADR 0043, ADR 0045, R-0001 to R-0007, and PB-0001 are allo
 | Task | Type | Role | Status | Waits on | Title |
 |---|---|---|---|---|---|
 | T-0001 | build | developer | done | none | Bootstrap the Cargo workspace and the CI gate |
-| T-0002 | build | developer | blocked | T-0036 | Implement repository policy lints in check-repo |
+| T-0002 | build | developer | review | none | Implement repository policy lints in check-repo |
 | T-0003 | research | researcher | done | none | Research deterministic simulation options in Rust |
 | T-0004 | research | researcher | done | none | Research Cloud Hypervisor against ARFC 0011 |
 | T-0005 | research | researcher | done | none | Research NAT behaviors and define lab presets |
@@ -58,7 +58,7 @@ ADR 0036, ADR 0040 to ADR 0043, ADR 0045, R-0001 to R-0007, and PB-0001 are allo
 | T-0033 | build | developer | done | none | Never cancel CI runs on main |
 | T-0034 | research | researcher | active | none | Research browser support for Ed25519 TLS certificates |
 | T-0035 | research | researcher | active | none | Research generating the console's TypeScript API client |
-| T-0036 | build | developer | active | none | Keep check-repo green on main with plan files in flight |
+| T-0036 | build | developer | review | none | Keep check-repo green on main with plan files in flight |
 | T-0037 | build | developer | queued | T-0036 | Run the check-repo path lock in CI |
 
 ## First dispatch
