@@ -84,7 +84,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0058, R-0001 to R-0008
 | T-0059 | spec | architect | review | none | Discard sessions a failed handover's successor touched |
 | T-0060 | spec | architect | cancelled | none | Settle the open fragment and queue details in ARFC 0003 |
 | T-0061 | build | developer | active | none | Add fuzz targets for every alloy-wire decoder |
-| T-0062 | build | developer | active | none | Allow thiserror and proptest in the dependency allowlist |
+| T-0062 | build | developer | review | none | Allow thiserror and proptest in the dependency allowlist |
 | T-0063 | spec | architect | queued | T-0059 | Shrink the AL transport header to 25 bytes of overhead |
 | T-0064 | build | developer | queued | T-0063 | Rework alloy-wire for the compact transport header |
 
