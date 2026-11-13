@@ -76,17 +76,17 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0058, R-0001 to R-0008
 | T-0051 | build | developer | blocked | T-0053 | Run the commit message check in CI |
 | T-0052 | spec | architect | review | none | Make the local admin a full break-glass administrator |
 | T-0053 | build | developer | queued | T-0046 | Parse commit trailers only from the last paragraph |
-| T-0054 | build | developer | review | none | Build alloy-wire for AL handshake and transport messages |
+| T-0054 | build | developer | done | none | Build alloy-wire for AL handshake and transport messages |
 | T-0055 | verify | verifier | queued | T-0064 | Write conformance vectors for AL handshake and transport bytes |
 | T-0056 | process | architect | done | none | Let parallel tasks add crates to the shared workspace files |
 | T-0057 | spec | architect | review | none | Keep stored seam configuration readable across releases |
 | T-0058 | process | architect | done | none | Align core and lead rules with shared workspace files |
 | T-0059 | spec | architect | review | none | Discard sessions a failed handover's successor touched |
 | T-0060 | spec | architect | cancelled | none | Settle the open fragment and queue details in ARFC 0003 |
-| T-0061 | build | developer | queued | T-0054 | Add fuzz targets for every alloy-wire decoder |
+| T-0061 | build | developer | active | none | Add fuzz targets for every alloy-wire decoder |
 | T-0062 | build | developer | active | none | Allow thiserror and proptest in the dependency allowlist |
 | T-0063 | spec | architect | queued | T-0059 | Shrink the AL transport header to 25 bytes of overhead |
-| T-0064 | build | developer | queued | T-0054, T-0063 | Rework alloy-wire for the compact transport header |
+| T-0064 | build | developer | queued | T-0063 | Rework alloy-wire for the compact transport header |
 
 ## First dispatch
 
