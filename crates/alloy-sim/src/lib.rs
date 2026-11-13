@@ -39,12 +39,21 @@
     reason = "alloy-sim implements the runtime seams and writes the trace file"
 )]
 
+mod core;
+mod disk;
 mod exec;
+mod fault;
+mod history;
+mod hook;
+mod host;
 mod run;
 mod stream;
 mod trace;
 mod world;
 
+pub use fault::{DiskTarget, Fault, Ppm, Unsynced};
+pub use history::{Call, ClientId, Entry, History};
+pub use host::{Boot, DeviceConfig, HostBoot, HostConfig, HostState};
 pub use run::{Failure, RunConfig, RunResult, RunSummary, run};
 pub use trace::{Observer, Record};
 pub use world::{HostId, World, WorldError};

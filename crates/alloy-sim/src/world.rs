@@ -1,24 +1,26 @@
-//! The world of one run: world time, world timers, the scenario's random
-//! stream, and the calls of ARFC 0005 section 2.7 that use them.
+//! The world of one run and the calls of ARFC 0005 section 2.7: world time,
+//! world timers, the scenario's random stream, notes, observers, hosts,
+//! faults, and histories.
 
-use std::collections::BTreeMap;
 use std::fmt;
 use std::future::{Future, pending};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, Waker};
+use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
-use alloy_rt::BoxFuture;
+use alloy_rt::{BoxFuture, Runtime};
 use alloy_seam::Detail;
 
+use crate::core::{After, MAX_NANOS, Shared};
+use crate::disk::Disk;
 use crate::exec::lock;
+use crate::fault::Fault;
+use crate::history::History;
+use crate::hook;
+use crate::host::{Host, HostConfig, HostState, MAX_HOSTS, MAX_PPM};
 use crate::stream::Stream;
-use crate::trace::{Hook, KIND_NOTE, Observer, Trace, text_field};
-
-/// The latest world time, 2^63 - 1 nanoseconds (section 7).
-pub(crate) const MAX_NANOS: u64 = (1 << 63) - 1;
+use crate::trace::{KIND_NOTE, Observer, text_field};
 
 /// Identifies a host of a world. Ids are given in creation order from 0, and
 /// a `HostId` is the `host` field of trace records.
@@ -41,8 +43,8 @@ pub enum WorldError {
     /// A bound of section 7 was reached.
     #[error("limit reached: {0}")]
     Limit(Detail),
-    /// The call was made from inside an observer or a middlebox, and changed
-    /// nothing (clause 3.2.9).
+    /// The call was made from inside an observer or a middlebox, of this
+    /// world or another, and changed nothing (clause 3.2.9).
     #[error("called from an observer or a middlebox")]
     Busy,
     /// The run has ended.
@@ -50,145 +52,23 @@ pub enum WorldError {
     Ended,
 }
 
-/// World timers by deadline, then by creation, each with the waker of the
-/// future that waits for it.
-#[derive(Debug, Default)]
-struct Timers {
-    next: u64,
-    by_deadline: BTreeMap<(u64, u64), Waker>,
-}
-
-/// The state of one run that world handles share.
-///
-/// No lock is held while user code runs, except `trace` while observers run.
-/// A world call made from an observer takes only the hook's own lock and
-/// returns, so the only other lock taken under `trace` is `timers`, when an
-/// observer drops a world sleep. Nothing takes `trace` while holding another
-/// lock.
-pub(crate) struct Shared {
-    seed: u64,
-    /// The threads that are running an observer of this world.
-    hook: Hook,
-    /// True once the run has ended or is ending.
-    ended: AtomicBool,
-    now: AtomicU64,
-    timers: Mutex<Timers>,
-    scenario: Mutex<Stream>,
-    pub(crate) trace: Mutex<Trace>,
-}
-
-impl Shared {
-    /// The state of a new run of `seed`, at world time 0, with the trace
-    /// header written.
-    pub(crate) fn new(seed: u64) -> Shared {
-        Shared {
-            seed,
-            hook: Hook::default(),
-            ended: AtomicBool::new(false),
-            now: AtomicU64::new(0),
-            timers: Mutex::default(),
-            scenario: Mutex::new(Stream::new(seed, b"scenario", &[])),
-            trace: Mutex::new(Trace::new(seed)),
-        }
-    }
-
-    pub(crate) fn seed(&self) -> u64 {
-        self.seed
-    }
-
-    pub(crate) fn now_nanos(&self) -> u64 {
-        self.now.load(Ordering::Acquire)
-    }
-
-    pub(crate) fn set_now(&self, nanos: u64) {
-        self.now.store(nanos, Ordering::Release);
-    }
-
-    pub(crate) fn has_ended(&self) -> bool {
-        self.ended.load(Ordering::Acquire)
-    }
-
-    /// Ends the run: from now on, world calls that return a `Result` return
-    /// `Ended`.
-    pub(crate) fn end(&self) {
-        self.ended.store(true, Ordering::Release);
-    }
-
-    pub(crate) fn hook(&self) -> &Hook {
-        &self.hook
-    }
-
-    /// True when the calling thread is inside an observer or a middlebox of
-    /// this world, whatever thread that is.
-    fn in_hook(&self) -> bool {
-        self.hook.is_current()
-    }
-
-    /// `Busy` inside a hook, `Ended` after the run.
-    fn check(&self) -> Result<(), WorldError> {
-        if self.in_hook() {
-            Err(WorldError::Busy)
-        } else if self.has_ended() {
-            Err(WorldError::Ended)
-        } else {
-            Ok(())
-        }
-    }
-
-    /// Writes one record at the current world time. An observer panic ends
-    /// the run.
-    pub(crate) fn record(&self, host: Option<HostId>, kind: u16, body: &[u8], data: &[u8]) {
-        let panicked =
-            lock(&self.trace).write(&self.hook, self.now_nanos(), host, kind, body, data);
-        if panicked {
-            self.end();
-        }
-    }
-
-    /// The earliest world timer deadline.
-    pub(crate) fn next_deadline(&self) -> Option<u64> {
-        lock(&self.timers)
-            .by_deadline
-            .first_key_value()
-            .map(|((deadline, _), _)| *deadline)
-    }
-
-    /// Removes the world timers due at `deadline` and returns their wakers in
-    /// creation order.
-    pub(crate) fn take_due(&self, deadline: u64) -> Vec<Waker> {
-        let mut timers = lock(&self.timers);
-        let later = timers
-            .by_deadline
-            .split_off(&(deadline.saturating_add(1), 0));
-        std::mem::replace(&mut timers.by_deadline, later)
-            .into_values()
-            .collect()
-    }
-
-    /// Removes every world timer and returns the wakers, to be dropped once
-    /// no lock is held.
-    pub(crate) fn clear_timers(&self) -> Vec<Waker> {
-        std::mem::take(&mut lock(&self.timers).by_deadline)
-            .into_values()
-            .collect()
-    }
-}
-
 /// One run's world. Clones share it.
 ///
 /// World calls may be made from the control task, from any task that holds a
 /// `World`, and from any thread. Once the run has ended, every method that
-/// returns a `Result` returns [`WorldError::Ended`]. Inside an observer they
-/// return [`WorldError::Busy`] and change nothing (clause 3.2.9).
+/// returns a `Result` returns [`WorldError::Ended`]. Inside an observer of
+/// any world they return [`WorldError::Busy`] and change nothing (clause
+/// 3.2.9).
 #[derive(Clone)]
 pub struct World(Arc<Shared>);
 
 impl fmt::Debug for World {
     /// The world time and the host count.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let hosts = lock(&self.0.core).hosts.len();
         f.debug_struct("World")
             .field("now", &self.now())
-            .field("hosts", &0u32)
+            .field("hosts", &hosts)
             .finish()
     }
 }
@@ -212,7 +92,7 @@ impl World {
     /// awaits it.
     pub fn sleep_until(&self, t: Duration) -> BoxFuture<'static, ()> {
         match u64::try_from(t.as_nanos()) {
-            Ok(deadline) if deadline <= MAX_NANOS && !self.0.in_hook() => Box::pin(Sleep {
+            Ok(deadline) if deadline <= MAX_NANOS && !hook::inside() => Box::pin(Sleep {
                 shared: Arc::clone(&self.0),
                 deadline,
                 timer: None,
@@ -231,10 +111,10 @@ impl World {
     /// or link shares. Inside an observer it returns 0 and does not advance
     /// the stream.
     pub fn random_u64(&self) -> u64 {
-        if self.0.in_hook() {
+        if hook::inside() {
             return 0;
         }
-        lock(&self.0.scenario).next_u64()
+        self.0.scenario_u64()
     }
 
     /// Writes a `note` record with `text`, cut to 1,024 bytes at a character
@@ -246,8 +126,113 @@ impl World {
     /// after the run.
     pub fn note(&self, text: &str) -> Result<(), WorldError> {
         self.0.check()?;
-        self.0.record(None, KIND_NOTE, &text_field(text), &[]);
+        self.0.push(None, KIND_NOTE, &text_field(text));
+        self.0.flush();
         Ok(())
+    }
+
+    /// Creates a host with its devices and starts it at the current world
+    /// time: it writes `host-start` and the `task-spawn` of its `boot` task,
+    /// whose future `config.boot` builds before this returns (clause 3.3.4).
+    ///
+    /// # Errors
+    ///
+    /// [`WorldError::Invalid`] for a `clock_ppm` outside -500,000 to 500,000,
+    /// a `block_size` other than 512 or 4,096, more than 64 devices, and a
+    /// device that clause 3.3.7 rejects: one with a length outside its
+    /// range, or whose path is the root, another device's, or below one.
+    /// [`WorldError::Limit`] when the world holds 10,000 hosts,
+    /// [`WorldError::Busy`] inside an observer, and [`WorldError::Ended`]
+    /// after the run.
+    pub fn add_host(&self, config: HostConfig) -> Result<HostId, WorldError> {
+        self.0.check()?;
+        if !(-MAX_PPM..=MAX_PPM).contains(&config.clock_ppm) {
+            return Err(WorldError::Invalid(Detail::new(
+                "clock_ppm must be -500,000 to 500,000",
+            )));
+        }
+        let mut after = After::default();
+        let id = {
+            let mut core = lock(&self.0.core);
+            if core.hosts.len() >= MAX_HOSTS {
+                return Err(WorldError::Limit(Detail::new("10000 hosts")));
+            }
+            // At most 10,000 hosts, so the id fits a u32.
+            let id = HostId(core.hosts.len() as u32);
+            let reads = Stream::new(self.0.seed(), b"disk-read", &[u64::from(id.0)]);
+            let disk = Disk::new(config.block_size, config.capacity, &config.devices, reads)?;
+            let host = Host::new(config, disk, self.0.now_nanos(), self.0.wall_start());
+            core.hosts.push(host);
+            core.start(&self.0, id, None, &mut after);
+            id
+        };
+        self.0.settle(after);
+        Ok(id)
+    }
+
+    /// The state of `host`.
+    ///
+    /// # Errors
+    ///
+    /// [`WorldError::Unknown`] for a host the world does not have,
+    /// [`WorldError::Busy`] inside an observer, and [`WorldError::Ended`]
+    /// after the run.
+    pub fn host_state(&self, host: HostId) -> Result<HostState, WorldError> {
+        self.0.check()?;
+        let core = lock(&self.0.core);
+        Ok(core.host(host)?.state(self.0.now_nanos()))
+    }
+
+    /// The runtime of the host's current start.
+    ///
+    /// # Errors
+    ///
+    /// [`WorldError::State`] while the host is crashed,
+    /// [`WorldError::Unknown`] for a host the world does not have,
+    /// [`WorldError::Busy`] inside an observer, and [`WorldError::Ended`]
+    /// after the run.
+    pub fn runtime(&self, host: HostId) -> Result<Runtime, WorldError> {
+        self.0.check()?;
+        let core = lock(&self.0.core);
+        core.host(host)?
+            .runtime
+            .clone()
+            .ok_or_else(|| WorldError::State(Detail::new("the host has crashed")))
+    }
+
+    /// Applies `fault` now (clause 3.3.8).
+    ///
+    /// # Errors
+    ///
+    /// [`WorldError::Unknown`] for a host the world does not have,
+    /// [`WorldError::Invalid`] for a value out of range, and
+    /// [`WorldError::State`] when the fault does not fit the host's state:
+    /// a `Crash` of a crashed host, a `Restart` of a running host, a `Stall`
+    /// of a crashed host. [`WorldError::Busy`] inside an observer and
+    /// [`WorldError::Ended`] after the run. On an error nothing changes.
+    pub fn apply(&self, fault: Fault) -> Result<(), WorldError> {
+        self.0.check()?;
+        let mut after = After::default();
+        let applied = lock(&self.0.core).apply_fault(&self.0, fault, &mut after);
+        self.0.settle(after);
+        applied
+    }
+
+    /// Applies `fault` at world time `at`, at or after now. What does not
+    /// depend on state is checked at once; a fault whose state check fails
+    /// at `at` is skipped, and a `fault` record says so (clause 3.3.8).
+    ///
+    /// # Errors
+    ///
+    /// [`WorldError::Invalid`] for an `at` before now or above 2^63 - 1 ns,
+    /// or a value out of range, [`WorldError::Unknown`] for a host the world
+    /// does not have, [`WorldError::Limit`] when 1,048,576 faults are
+    /// scheduled, [`WorldError::Busy`] inside an observer, and
+    /// [`WorldError::Ended`] after the run.
+    pub fn schedule(&self, at: Duration, fault: Fault) -> Result<(), WorldError> {
+        self.0.check()?;
+        let now = self.0.now_nanos();
+        lock(&self.0.core).schedule_fault(now, at, fault)
     }
 
     /// Adds an observer, which from then on receives every record in trace
@@ -261,6 +246,15 @@ impl World {
     pub fn observe(&self, observer: Box<dyn Observer>) -> Result<(), WorldError> {
         self.0.check()?;
         lock(&self.0.trace).add_observer(observer)
+    }
+
+    /// A new, empty history (clause 3.6.2).
+    pub fn history<Op, Ret>(&self) -> History<Op, Ret>
+    where
+        Op: Clone + Send + 'static,
+        Ret: Clone + Send + 'static,
+    {
+        History::new(Arc::clone(&self.0))
     }
 }
 
@@ -283,21 +277,23 @@ impl Future for Sleep {
             return Poll::Pending;
         }
         let shared = Arc::clone(&self.shared);
-        let mut timers = lock(&shared.timers);
-        let id = match self.timer {
-            Some(id) => id,
-            None => {
-                let id = timers.next;
-                timers.next += 1;
-                self.timer = Some(id);
-                id
+        // The waker is cloned, and what is left of it dropped, with no lock
+        // held (module `core`).
+        let waker = cx.waker().clone();
+        let mut core = lock(&shared.core);
+        let waker = match self.timer {
+            Some(id) => core.touch_timer(id, waker),
+            None => Err(waker),
+        };
+        let left = match waker {
+            Ok(left) => Some(left),
+            Err(waker) => {
+                self.timer = Some(core.add_timer(Some(self.deadline), waker, None));
+                None
             }
         };
-        timers
-            .by_deadline
-            .entry((self.deadline, id))
-            .and_modify(|waker| waker.clone_from(cx.waker()))
-            .or_insert_with(|| cx.waker().clone());
+        drop(core);
+        drop(left);
         Poll::Pending
     }
 }
@@ -305,9 +301,7 @@ impl Future for Sleep {
 impl Drop for Sleep {
     fn drop(&mut self) {
         if let Some(id) = self.timer {
-            let waker = lock(&self.shared.timers)
-                .by_deadline
-                .remove(&(self.deadline, id));
+            let waker = lock(&self.shared.core).remove_timer(id);
             drop(waker);
         }
     }
@@ -315,63 +309,50 @@ impl Drop for Sleep {
 
 #[cfg(test)]
 mod tests {
-    use std::thread;
+    use std::task::Waker;
 
     use super::*;
 
     #[test]
-    fn due_timers_are_taken_in_creation_order() {
-        let shared = Shared::new(1);
-        {
-            let mut timers = lock(&shared.timers);
-            for (deadline, id) in [(5, 2), (5, 0), (9, 1), (5, 3)] {
-                timers
-                    .by_deadline
-                    .insert((deadline, id), Waker::noop().clone());
-            }
-        }
-        assert_eq!(shared.next_deadline(), Some(5));
-        assert_eq!(shared.take_due(5).len(), 3);
-        assert_eq!(shared.next_deadline(), Some(9));
-        assert_eq!(shared.take_due(9).len(), 1);
-        assert_eq!(shared.next_deadline(), None);
-    }
-
-    #[test]
     fn a_dropped_sleep_removes_its_timer() {
-        let shared = Arc::new(Shared::new(1));
+        let shared = Arc::new(Shared::new(1, 0));
         let world = World::new(Arc::clone(&shared));
         let mut sleep = world.sleep(Duration::from_nanos(10));
         let mut cx = Context::from_waker(Waker::noop());
         assert!(sleep.as_mut().poll(&mut cx).is_pending());
         assert!(sleep.as_mut().poll(&mut cx).is_pending());
-        assert_eq!(lock(&shared.timers).by_deadline.len(), 1);
+        assert_eq!(shared.next_event(), Some(10));
         drop(sleep);
-        assert_eq!(shared.next_deadline(), None);
+        assert_eq!(shared.next_event(), None);
     }
 
     #[test]
     fn sleeps_past_the_end_of_time_hold_no_timer() {
-        let shared = Arc::new(Shared::new(1));
+        let shared = Arc::new(Shared::new(1, 0));
         let world = World::new(Arc::clone(&shared));
         let mut cx = Context::from_waker(Waker::noop());
         let mut never = world.sleep_until(Duration::from_nanos(MAX_NANOS + 1));
         assert!(never.as_mut().poll(&mut cx).is_pending());
         let mut last = world.sleep_until(Duration::from_nanos(MAX_NANOS));
         assert!(last.as_mut().poll(&mut cx).is_pending());
-        assert_eq!(shared.next_deadline(), Some(MAX_NANOS));
+        assert_eq!(shared.next_event(), Some(MAX_NANOS));
         let mut now = world.sleep(Duration::ZERO);
         assert!(now.as_mut().poll(&mut cx).is_ready());
     }
 
     #[test]
     fn calls_from_a_hook_are_busy_and_after_the_end_ended() {
-        let shared = Arc::new(Shared::new(1));
+        let shared = Arc::new(Shared::new(1, 0));
         let world = World::new(Arc::clone(&shared));
+        let other = World::new(Arc::new(Shared::new(2, 0)));
         let first = world.random_u64();
-        let inside = shared.hook.enter();
+        let inside = hook::enter();
         assert_eq!(world.note("x"), Err(WorldError::Busy));
+        assert_eq!(other.note("x"), Err(WorldError::Busy));
         assert_eq!(world.random_u64(), 0);
+        assert_eq!(other.random_u64(), 0);
+        assert_eq!(world.host_state(HostId(0)), Err(WorldError::Busy));
+        assert!(world.history::<u8, u8>().entries().is_empty());
         let mut cx = Context::from_waker(Waker::noop());
         assert!(
             world
@@ -380,12 +361,9 @@ mod tests {
                 .poll(&mut cx)
                 .is_pending()
         );
-        // Another thread is outside the hook while this one is inside it.
-        let other = thread::scope(|scope| scope.spawn(|| world.random_u64()).join());
         drop(inside);
         let mut expected = Stream::new(1, b"scenario", &[]);
         assert_eq!(first, expected.next_u64());
-        assert_eq!(other.ok(), Some(expected.next_u64()));
         assert_eq!(world.random_u64(), expected.next_u64());
         shared.end();
         assert_eq!(world.note("x"), Err(WorldError::Ended));

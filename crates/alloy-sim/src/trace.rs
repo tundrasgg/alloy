@@ -7,16 +7,37 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
-use std::sync::Mutex;
-use std::thread::{self, ThreadId};
 use std::time::Duration;
 
 use alloy_seam::Detail;
 
-use crate::exec::{drop_quietly, lock, panic_text};
+use crate::exec::{drop_quietly, panic_text};
+use crate::hook;
 use crate::run::RunResult;
 use crate::world::{HostId, WorldError};
 
+/// Kind `host-start`.
+pub(crate) const KIND_HOST_START: u16 = 0x0001;
+/// Kind `host-crash`.
+pub(crate) const KIND_HOST_CRASH: u16 = 0x0002;
+/// Kind `host-stall`: the stall length.
+pub(crate) const KIND_HOST_STALL: u16 = 0x0003;
+/// Kind `task-spawn`: the task and its name.
+pub(crate) const KIND_TASK_SPAWN: u16 = 0x0010;
+/// Kind `task-poll`: the task.
+pub(crate) const KIND_TASK_POLL: u16 = 0x0011;
+/// Kind `task-end`: the task and how it ended.
+pub(crate) const KIND_TASK_END: u16 = 0x0012;
+/// Kind `timer-fire`: the task woken and the deadline.
+pub(crate) const KIND_TIMER_FIRE: u16 = 0x0020;
+/// Kind `clock-fault`: the rate offset after the fault and the wall step.
+pub(crate) const KIND_CLOCK_FAULT: u16 = 0x0021;
+/// Kind `disk-op`: one operation of a disk call.
+pub(crate) const KIND_DISK_OP: u16 = 0x0050;
+/// Kind `rng`: the bytes one `fill` filled.
+pub(crate) const KIND_RNG: u16 = 0x0060;
+/// Kind `fault`: a text describing the fault.
+pub(crate) const KIND_FAULT: u16 = 0x0070;
 /// Kind `note`: text from the scenario.
 pub(crate) const KIND_NOTE: u16 = 0x00F0;
 /// Kind `run-end`: the result of the run.
@@ -33,56 +54,17 @@ const KEPT_RECORDS: usize = 200;
 /// Observers per world (section 7).
 const MAX_OBSERVERS: usize = 64;
 
-/// The threads that are running an observer of one world (clause 3.2.9).
-///
-/// A world call is a hook call exactly when the calling thread is in this
-/// list, whatever another thread is doing. Observers run under the trace
-/// lock, so the list holds at most one thread for them. Its lock is never
-/// held while another lock is taken or while user code runs.
-#[derive(Debug, Default)]
-pub(crate) struct Hook(Mutex<Vec<ThreadId>>);
-
-impl Hook {
-    /// True when the calling thread is running an observer of this world.
-    pub(crate) fn is_current(&self) -> bool {
-        let me = thread::current().id();
-        lock(&self.0).contains(&me)
-    }
-
-    /// Marks the calling thread as running a hook until the guard drops.
-    pub(crate) fn enter(&self) -> HookGuard<'_> {
-        let me = thread::current().id();
-        lock(&self.0).push(me);
-        HookGuard { hook: self, me }
-    }
-}
-
-/// Removes its thread from a [`Hook`] when dropped.
-pub(crate) struct HookGuard<'a> {
-    hook: &'a Hook,
-    me: ThreadId,
-}
-
-impl Drop for HookGuard<'_> {
-    fn drop(&mut self) {
-        let mut threads = lock(&self.hook.0);
-        if let Some(at) = threads.iter().rposition(|t| *t == self.me) {
-            threads.swap_remove(at);
-        }
-    }
-}
-
 /// The name of a record kind in section 4.1, or `unknown`.
 pub(crate) fn kind_name(kind: u16) -> &'static str {
     match kind {
-        0x0001 => "host-start",
-        0x0002 => "host-crash",
-        0x0003 => "host-stall",
-        0x0010 => "task-spawn",
-        0x0011 => "task-poll",
-        0x0012 => "task-end",
-        0x0020 => "timer-fire",
-        0x0021 => "clock-fault",
+        KIND_HOST_START => "host-start",
+        KIND_HOST_CRASH => "host-crash",
+        KIND_HOST_STALL => "host-stall",
+        KIND_TASK_SPAWN => "task-spawn",
+        KIND_TASK_POLL => "task-poll",
+        KIND_TASK_END => "task-end",
+        KIND_TIMER_FIRE => "timer-fire",
+        KIND_CLOCK_FAULT => "clock-fault",
         0x0030 => "udp-send",
         0x0031 => "udp-deliver",
         0x0032 => "packet-drop",
@@ -90,9 +72,9 @@ pub(crate) fn kind_name(kind: u16) -> &'static str {
         0x0040 => "stream-open",
         0x0041 => "stream-data",
         0x0042 => "stream-close",
-        0x0050 => "disk-op",
-        0x0060 => "rng",
-        0x0070 => "fault",
+        KIND_DISK_OP => "disk-op",
+        KIND_RNG => "rng",
+        KIND_FAULT => "fault",
         KIND_NOTE => "note",
         KIND_RUN_END => "run-end",
         _ => "unknown",
@@ -117,8 +99,9 @@ pub(crate) fn text_field(text: &str) -> Vec<u8> {
 ///
 /// An observer is called synchronously, on the run's thread, before the
 /// simulator does anything else. A world call made from inside
-/// [`Observer::record`] changes nothing: every [`World`](crate::World) method
-/// that returns a `Result` returns [`WorldError::Busy`] (clause 3.2.9). An
+/// [`Observer::record`], on any world, changes nothing: every
+/// [`World`](crate::World) method that returns a `Result` returns
+/// [`WorldError::Busy`] (clause 3.2.9). An
 /// observer that panics is removed and ends the run with `fail`, unless the
 /// record is `run-end`.
 pub trait Observer: Send {
@@ -285,7 +268,6 @@ impl Trace {
     /// every record but `run-end`.
     pub(crate) fn write(
         &mut self,
-        hook: &Hook,
         time: u64,
         host: Option<HostId>,
         kind: u16,
@@ -295,7 +277,7 @@ impl Trace {
         if !self.open {
             return false;
         }
-        match self.emit(hook, time, host, kind, body, data) {
+        match self.emit(time, host, kind, body, data) {
             Some(text) => {
                 self.outcome
                     .fail(Detail::new(&format!("an observer panicked: {text}")));
@@ -310,7 +292,6 @@ impl Trace {
     /// observer. Returns the message of the first observer panic.
     fn emit(
         &mut self,
-        hook: &Hook,
         time: u64,
         host: Option<HostId>,
         kind: u16,
@@ -348,7 +329,7 @@ impl Trace {
             data,
         };
         let mut first = None;
-        let inside = hook.enter();
+        let inside = hook::enter();
         let mut index = 0;
         while index < self.observers.len() {
             let observer = &mut self.observers[index];
@@ -388,7 +369,7 @@ impl Trace {
 
     /// Writes `run-end` at `time` and closes the trace. The result is fixed
     /// before the record is written, so nothing after it changes the result.
-    pub(crate) fn finish(&mut self, hook: &Hook, time: u64) -> Closed {
+    pub(crate) fn finish(&mut self, time: u64) -> Closed {
         // Buffered records reach the file before the result is fixed, so a
         // write error among them makes this run `fail`.
         if let Some(file) = self.file.as_mut()
@@ -403,7 +384,7 @@ impl Trace {
         };
         // An observer that panics on `run-end` is removed like any other, but
         // the result is already fixed.
-        let _ = self.emit(hook, time, None, KIND_RUN_END, &[result.code()], &[]);
+        let _ = self.emit(time, None, KIND_RUN_END, &[result.code()], &[]);
         self.open = false;
         if let Some(mut file) = self.file.take() {
             // The result is fixed, so an error here can no longer change it.
@@ -453,11 +434,10 @@ mod tests {
 
     #[test]
     fn the_hash_covers_the_header_and_every_record() {
-        let hook = Hook::default();
         let mut trace = Trace::new(0x0102_0304_0506_0708);
-        trace.write(&hook, 5, None, KIND_NOTE, &text_field("hi"), &[]);
-        trace.write(&hook, 9, Some(HostId(3)), 0x0011, &7u64.to_le_bytes(), &[]);
-        let closed = trace.finish(&hook, 9);
+        trace.write(5, None, KIND_NOTE, &text_field("hi"), &[]);
+        trace.write(9, Some(HostId(3)), 0x0011, &7u64.to_le_bytes(), &[]);
+        let closed = trace.finish(9);
         let mut bytes = Vec::new();
         bytes.extend_from_slice(b"ALTR\x01\x00\x00\x00");
         bytes.extend_from_slice(&0x0102_0304_0506_0708u64.to_le_bytes());
@@ -487,12 +467,11 @@ mod tests {
 
     #[test]
     fn the_last_200_records_are_kept() {
-        let hook = Hook::default();
         let mut trace = Trace::new(1);
         for t in 0..250 {
-            trace.write(&hook, t, None, KIND_NOTE, &text_field("x"), &[]);
+            trace.write(t, None, KIND_NOTE, &text_field("x"), &[]);
         }
-        let closed = trace.finish(&hook, 250);
+        let closed = trace.finish(250);
         assert_eq!(closed.events, 251);
         assert_eq!(closed.kept.len(), 200);
         assert_eq!(closed.kept.front().map(|k| k.time), Some(51));
@@ -509,7 +488,6 @@ mod tests {
 
     #[test]
     fn observers_see_records_and_a_panic_removes_only_the_panicking_one() {
-        let hook = Hook::default();
         let seen: Seen = Arc::default();
         let mut trace = Trace::new(1);
         trace
@@ -520,11 +498,11 @@ mod tests {
         trace
             .add_observer(Box::new(Collect(Arc::clone(&after))))
             .expect("room");
-        assert!(trace.write(&hook, 1, None, KIND_NOTE, &text_field("a"), &[]));
-        assert!(!hook.is_current());
+        assert!(trace.write(1, None, KIND_NOTE, &text_field("a"), &[]));
+        assert!(!hook::inside());
         // Closed to everything but `run-end`.
-        assert!(!trace.write(&hook, 2, None, KIND_NOTE, &text_field("b"), &[]));
-        let closed = trace.finish(&hook, 2);
+        assert!(!trace.write(2, None, KIND_NOTE, &text_field("b"), &[]));
+        let closed = trace.finish(2);
         assert_eq!(closed.events, 2);
         assert_eq!(closed.result, RunResult::Fail);
         assert_eq!(

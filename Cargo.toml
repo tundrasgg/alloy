@@ -1,11 +1,13 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/alloy",
     "crates/alloy-crypto",
     "crates/alloy-rt",
     "crates/alloy-seam",
     "crates/alloy-sim",
     "crates/alloy-wire",
+    "crates/alloyd",
     "tests/conformance/rt",
     "tests/conformance/wire",
     "xtask",
@@ -14,6 +16,9 @@ members = [
 exclude = ["fuzz"]
 
 [workspace.package]
+# The release version that `alloy version` and `alloyd version` print (ARFC
+# 0017 clause 3.13). The release workflow sets it from the tag.
+version = "0.0.0"
 edition = "2024"
 rust-version = "1.100"
 license = "MIT OR Apache-2.0"
@@ -45,6 +50,35 @@ hmac = { version = "=0.13.0", default-features = false }
 # wall clock reads in tests, so only `std` is enabled.
 proptest = { version = "=1.12.0", default-features = false, features = ["std"] }
 thiserror = "=2.0.21"
+# The standing choice for logging (agent/eng/deps.md), used by `alloyd`. The
+# `attributes` feature, a procedural macro tree, is off.
+tracing = { version = "=0.1.44", default-features = false, features = ["std"] }
+# The Windows service control manager interface of `alloyd` (ARFC 0017 clause
+# 3.15 step 7), on Windows only.
+windows-service = "=0.8.1"
+# Only alloy-rt depends on the crates below. They serve its `os` runtime
+# implementations (ARFC 0005 section 2.6), the only code outside alloy-sim that
+# calls the operating system for time, network, storage, randomness, or
+# concurrency.
+#
+# The platform's cryptographically secure generator, for the `os` rng seam.
+getrandom = "=0.4.3"
+# System calls and option constants of Unix platforms.
+libc = "=0.2.191"
+# Batched UDP send and receive with segmentation offload, packet information,
+# and the don't fragment options (ARFC 0005 clause 3.1.2). Its default features
+# only add logging.
+quinn-udp = { version = "=0.5.16", default-features = false }
+# Socket creation and options before a socket is handed to tokio.
+socket2 = { version = "=0.6.5", features = ["all"] }
+# The standing async runtime (agent/eng/deps.md). No macros: the multi-thread
+# scheduler, timers, sockets, and `Notify` only. `alloyd` also uses it, with the
+# `signal` feature added, to watch the stop signals of its process, which no
+# runtime seam carries.
+tokio = { version = "=1.54.1", default-features = false, features = ["net", "rt-multi-thread", "sync", "time"] }
+# Interface enumeration, and a write handle for `sync` on a read handle, on
+# Windows.
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_Storage", "Win32_Storage_FileSystem"] }
 
 [workspace.lints.rust]
 missing_docs = "warn"

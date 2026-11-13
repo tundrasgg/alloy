@@ -668,3 +668,76 @@ fn an_observer_on_another_thread_leaves_calls_on_the_run_thread_alone() {
         Some((plain, true, Ok(())))
     );
 }
+
+/// On every `note` record, waits for the other world's observer at `meet`,
+/// then calls the other world and keeps what the calls returned.
+struct CallOther {
+    other: World,
+    meet: Arc<Barrier>,
+    calls: Arc<Mutex<Vec<String>>>,
+}
+
+impl Observer for CallOther {
+    fn record(&mut self, record: &Record<'_>) {
+        if record.kind == NOTE {
+            self.meet.wait();
+            let calls = format!(
+                "{:?} {:?} {}",
+                self.other.note("from the other world"),
+                self.other.host_state(HostId(0)),
+                self.other.random_u64()
+            );
+            self.calls
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(calls);
+        }
+    }
+}
+
+#[test]
+fn observers_of_two_worlds_that_call_each_other_are_busy_and_never_deadlock() {
+    let worlds: Arc<Mutex<[Option<World>; 2]>> = Arc::default();
+    let start = Arc::new(Barrier::new(2));
+    let meet = Arc::new(Barrier::new(2));
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let runs: Vec<mpsc::Receiver<RunSummary>> = (0..2usize)
+        .map(|side| {
+            let (worlds, start, meet, calls) = (
+                Arc::clone(&worlds),
+                Arc::clone(&start),
+                Arc::clone(&meet),
+                Arc::clone(&calls),
+            );
+            let (done, ended) = mpsc::channel();
+            thread::spawn(move || {
+                let summary = run(RunConfig::new(40 + side as u64), move |world| async move {
+                    worlds.lock().unwrap_or_else(PoisonError::into_inner)[side] =
+                        Some(world.clone());
+                    start.wait();
+                    let other = worlds.lock().unwrap_or_else(PoisonError::into_inner)[1 - side]
+                        .clone()
+                        .expect("both worlds are stored before the barrier");
+                    let observer = CallOther { other, meet, calls };
+                    world.observe(Box::new(observer)).expect("room");
+                    start.wait();
+                    world.note("x").expect("note");
+                    Ok(())
+                });
+                done.send(summary).ok();
+            });
+            ended
+        })
+        .collect();
+    for ended in runs {
+        let summary = ended
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the run ends within 10 s");
+        assert_eq!(summary.result, RunResult::Pass);
+        assert_eq!(summary.events, 2);
+    }
+    assert_eq!(
+        *calls.lock().unwrap_or_else(PoisonError::into_inner),
+        ["Err(Busy) Err(Busy) 0", "Err(Busy) Err(Busy) 0"]
+    );
+}

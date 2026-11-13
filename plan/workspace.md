@@ -37,8 +37,8 @@ Dependency rule: a crate may depend only on crates in rows above it, and on
 | `alloy-registry` | lib | 0015 | OCI registry |
 | `alloy-ec2` | lib | 0016 | EC2 translator |
 | `alloy-api` | lib | 0008 | API server |
-| `alloyd` | bin | 0000 | Node daemon |
-| `alloy` | bin | 0019 | CLI |
+| `alloyd` | lib, bin | 0000 | Node daemon |
+| `alloy` | lib, bin | 0019 | CLI |
 
 Other top-level directories:
 
