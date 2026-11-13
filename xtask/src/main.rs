@@ -6,28 +6,52 @@
 
 #![forbid(unsafe_code)]
 
+mod rules;
+mod text;
+mod tree;
+
 use std::env;
 use std::ffi::OsString;
 use std::fmt;
-use std::process::{Command, ExitCode};
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitCode, Stdio};
+
+use rules::BranchDiff;
+use tree::Tree;
 
 const USAGE: &str = "\
-usage: cargo xtask <task>
+usage: cargo xtask <task> [options]
 
 tasks:
   ci          run every check of the quality gate, stopping at the first failure
   check-repo  run the repository policy checks
-  help        print this message";
+  help        print this message
+
+options for ci and check-repo:
+  --base <ref>     also run the path lock on the changes since <ref>
+  --branch <name>  the branch the path lock judges, when HEAD is detached (needs --base)";
 
 /// Exit code for a command line that names no task or an unknown task.
 const EXIT_USAGE: u8 = 2;
 
+/// Files under this path are rule fixtures that break the rules on purpose.
+const FIXTURES: &str = "xtask/tests/fixtures/";
+
 /// A task that `cargo xtask` can run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Task {
-    Ci,
-    CheckRepo,
+    Ci(Options),
+    CheckRepo(Options),
     Help,
+}
+
+/// Options shared by `ci` and `check-repo`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Options {
+    /// The ref the path lock compares against. Without it the path lock is skipped.
+    base: Option<String>,
+    /// The branch the path lock judges. Defaults to the branch HEAD is on.
+    branch: Option<String>,
 }
 
 /// Why a command line could not be parsed into a [`Task`].
@@ -37,8 +61,14 @@ enum UsageError {
     Missing,
     /// The first argument is not a known task.
     Unknown(String),
-    /// A task was given more arguments than it accepts.
+    /// A task was given an argument it does not accept, or an option twice.
     Extra(String),
+    /// An option was given without its value.
+    MissingValue(&'static str),
+    /// An option value that is empty or that git would read as an option.
+    BadValue(&'static str, String),
+    /// `--branch` was given without `--base`.
+    BranchWithoutBase,
 }
 
 impl fmt::Display for UsageError {
@@ -47,6 +77,9 @@ impl fmt::Display for UsageError {
             Self::Missing => write!(f, "no task given"),
             Self::Unknown(task) => write!(f, "unknown task `{task}`"),
             Self::Extra(arg) => write!(f, "unexpected argument `{arg}`"),
+            Self::MissingValue(flag) => write!(f, "`{flag}` needs a value"),
+            Self::BadValue(flag, value) => write!(f, "`{flag}` cannot be `{value}`"),
+            Self::BranchWithoutBase => write!(f, "`--branch` needs `--base`"),
         }
     }
 }
@@ -60,27 +93,63 @@ where
 {
     let mut args = args.into_iter();
     let first = args.next().ok_or(UsageError::Missing)?;
-    let task = match first.to_str() {
-        Some("ci") => Task::Ci,
-        Some("check-repo") => Task::CheckRepo,
-        Some("help" | "-h" | "--help") => Task::Help,
-        _ => return Err(UsageError::Unknown(first.to_string_lossy().into_owned())),
-    };
-    match args.next() {
-        Some(extra) => Err(UsageError::Extra(extra.to_string_lossy().into_owned())),
-        None => Ok(task),
+    match first.to_str() {
+        Some("ci") => parse_options(args).map(Task::Ci),
+        Some("check-repo") => parse_options(args).map(Task::CheckRepo),
+        Some("help" | "-h" | "--help") => match args.next() {
+            Some(extra) => Err(UsageError::Extra(extra.to_string_lossy().into_owned())),
+            None => Ok(Task::Help),
+        },
+        _ => Err(UsageError::Unknown(first.to_string_lossy().into_owned())),
     }
+}
+
+/// Parses `--base <ref>` and `--branch <name>`, each at most once.
+fn parse_options<I>(mut args: I) -> Result<Options, UsageError>
+where
+    I: Iterator<Item = OsString>,
+{
+    let mut options = Options::default();
+    while let Some(arg) = args.next() {
+        let (flag, slot) = match arg.to_str() {
+            Some("--base") if options.base.is_none() => ("--base", &mut options.base),
+            Some("--branch") if options.branch.is_none() => ("--branch", &mut options.branch),
+            _ => return Err(UsageError::Extra(arg.to_string_lossy().into_owned())),
+        };
+        let value = args.next().ok_or(UsageError::MissingValue(flag))?;
+        let value = value.to_string_lossy().into_owned();
+        if value.is_empty() || value.starts_with('-') {
+            return Err(UsageError::BadValue(flag, value));
+        }
+        *slot = Some(value);
+    }
+    if options.branch.is_some() && options.base.is_none() {
+        return Err(UsageError::BranchWithoutBase);
+    }
+    Ok(options)
+}
+
+/// A cargo subcommand that is installed separately from cargo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Tool {
+    /// Arguments to cargo that succeed exactly when the tool can be started.
+    probe: &'static [&'static str],
+    /// Printed when the step fails and the probe fails too.
+    install: &'static str,
 }
 
 /// One step of the quality gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Step {
-    /// Runs `cargo` with the given arguments. The step passes when cargo exits 0.
+    /// Runs `cargo` with the given arguments from the repository root. The step
+    /// passes when cargo exits 0.
     Cargo {
         name: &'static str,
         args: &'static [&'static str],
         /// Printed when the step fails, to point at the usual cause.
         hint: Option<&'static str>,
+        /// The separately installed tool the step runs, if any.
+        tool: Option<Tool>,
     },
     /// Runs the repository policy checks in this process.
     CheckRepo,
@@ -101,6 +170,7 @@ const CI_STEPS: [Step; 5] = [
         name: "fmt",
         args: &["fmt", "--all", "--", "--check"],
         hint: Some("run `cargo fmt --all` to format the workspace"),
+        tool: None,
     },
     Step::Cargo {
         name: "clippy",
@@ -115,16 +185,22 @@ const CI_STEPS: [Step; 5] = [
             "warnings",
         ],
         hint: None,
+        tool: None,
     },
     Step::Cargo {
         name: "test",
         args: &["test", "--workspace", "--all-features", "--locked"],
         hint: None,
+        tool: None,
     },
     Step::Cargo {
         name: "deny",
-        args: &["deny", "--locked", "check"],
-        hint: Some("this step needs cargo-deny: `cargo install --locked cargo-deny`"),
+        args: &["deny", "--locked", "--workspace", "check"],
+        hint: None,
+        tool: Some(Tool {
+            probe: &["deny", "--version"],
+            install: "this step needs cargo-deny: `cargo install --locked cargo-deny`",
+        }),
     },
     Step::CheckRepo,
 ];
@@ -168,37 +244,105 @@ where
     Ok(())
 }
 
+/// The repository root: the parent of this crate's directory, fixed at build
+/// time, so that every task gives the same result from any working directory.
+fn repo_root() -> PathBuf {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    manifest
+        .parent()
+        .map_or_else(|| manifest.to_path_buf(), Path::to_path_buf)
+}
+
 /// Runs one step for real: cargo steps as child processes, check-repo in process.
-fn exec_step(step: &Step) -> Outcome {
+fn exec_step(step: &Step, root: &Path, options: &Options) -> Outcome {
     match step {
-        Step::Cargo { args, hint, .. } => run_cargo(args, *hint),
-        Step::CheckRepo => check_repo(),
+        Step::Cargo {
+            args, hint, tool, ..
+        } => run_cargo(root, args, *hint, *tool),
+        Step::CheckRepo => check_repo(root, options),
     }
 }
 
-/// Runs the cargo that invoked this program, so that every step uses the
-/// toolchain pinned in `rust-toolchain.toml`.
-fn run_cargo(args: &[&str], hint: Option<&str>) -> Outcome {
-    let cargo = env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+/// The cargo that invoked this program, so that every step uses the toolchain
+/// pinned in `rust-toolchain.toml`.
+fn cargo() -> Command {
+    Command::new(env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")))
+}
+
+/// Runs cargo with `args` in `root`. On failure, adds `hint`, and adds the
+/// install hint of `tool` only when the tool itself cannot be started.
+fn run_cargo(root: &Path, args: &[&str], hint: Option<&str>, tool: Option<Tool>) -> Outcome {
     let command = format!("cargo {}", args.join(" "));
-    let detail = match Command::new(&cargo).args(args).status() {
+    let mut detail = match cargo().current_dir(root).args(args).status() {
         Ok(status) if status.success() => return Outcome::Passed,
         Ok(status) => format!("`{command}` exited with {status}"),
         Err(err) => format!("could not start `{command}`: {err}"),
     };
-    match hint {
-        Some(hint) => Outcome::Failed(format!("{detail}; {hint}")),
-        None => Outcome::Failed(detail),
+    if let Some(hint) = hint {
+        detail = format!("{detail}; {hint}");
+    }
+    if let Some(tool) = tool {
+        let starts = cargo()
+            .current_dir(root)
+            .args(tool.probe)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        if !starts {
+            detail = format!("{detail}; {}", tool.install);
+        }
+    }
+    Outcome::Failed(detail)
+}
+
+/// The repository policy checks: every rule in [`rules`], over the files git
+/// would commit, leaving out the rule fixtures.
+fn check_repo(root: &Path, options: &Options) -> Outcome {
+    let tree = match Tree::from_git(root, &[FIXTURES]) {
+        Ok(tree) => tree,
+        Err(err) => return Outcome::Failed(err),
+    };
+    let diff = match &options.base {
+        Some(base) => match branch_diff(root, base, options.branch.as_deref()) {
+            Ok(diff) => Some(diff),
+            Err(err) => return Outcome::Failed(err),
+        },
+        None => {
+            eprintln!("xtask: path-lock skipped: no `--base` given");
+            None
+        }
+    };
+    let violations = rules::check_all(&tree, diff.as_ref());
+    for violation in &violations {
+        eprintln!("{violation}");
+    }
+    match violations.len() {
+        0 => Outcome::Passed,
+        n => Outcome::Failed(format!("{n} rule violation(s)")),
     }
 }
 
-/// The repository policy checks.
-///
-/// This is the stub T-0001 specifies: it defines no rules and passes. T-0002
-/// replaces it with the rules of `agent/core/4-evidence.md` and the path lock.
-fn check_repo() -> Outcome {
-    eprintln!("xtask: check-repo defines no rules yet (T-0002 adds them)");
-    Outcome::Passed
+/// The branch the path lock judges and the paths it changes since its merge
+/// base with `base`.
+fn branch_diff(root: &Path, base: &str, branch: Option<&str>) -> Result<BranchDiff, String> {
+    let branch = match branch {
+        Some(branch) => branch.to_owned(),
+        None => tree::git(root, &["symbolic-ref", "--short", "-q", "HEAD"])
+            .map(|name| name.trim().to_owned())
+            .map_err(|_| "HEAD is not on a branch; pass `--branch <name>`".to_owned())?,
+    };
+    let range = format!("{base}...HEAD");
+    let listing = tree::git(
+        root,
+        &["diff", "--name-only", "--no-renames", "-z", &range, "--"],
+    )?;
+    let changed = listing
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(str::to_owned)
+        .collect();
+    Ok(BranchDiff { branch, changed })
 }
 
 fn main() -> ExitCode {
@@ -209,13 +353,16 @@ fn main() -> ExitCode {
             return ExitCode::from(EXIT_USAGE);
         }
     };
+    let root = repo_root();
     let result = match task {
         Task::Help => {
             println!("{USAGE}");
             return ExitCode::SUCCESS;
         }
-        Task::Ci => run_steps(&CI_STEPS, exec_step),
-        Task::CheckRepo => run_steps(&[Step::CheckRepo], exec_step),
+        Task::Ci(options) => run_steps(&CI_STEPS, |step| exec_step(step, &root, &options)),
+        Task::CheckRepo(options) => {
+            run_steps(&[Step::CheckRepo], |step| exec_step(step, &root, &options))
+        }
     };
     match result {
         Ok(()) => {
@@ -237,13 +384,41 @@ mod tests {
         list.iter().map(OsString::from).collect()
     }
 
+    fn opts(base: Option<&str>, branch: Option<&str>) -> Options {
+        Options {
+            base: base.map(str::to_owned),
+            branch: branch.map(str::to_owned),
+        }
+    }
+
     #[test]
     fn parses_each_task() {
-        assert_eq!(parse(args(&["ci"])), Ok(Task::Ci));
-        assert_eq!(parse(args(&["check-repo"])), Ok(Task::CheckRepo));
+        assert_eq!(parse(args(&["ci"])), Ok(Task::Ci(Options::default())));
+        assert_eq!(
+            parse(args(&["check-repo"])),
+            Ok(Task::CheckRepo(Options::default()))
+        );
         assert_eq!(parse(args(&["help"])), Ok(Task::Help));
         assert_eq!(parse(args(&["--help"])), Ok(Task::Help));
         assert_eq!(parse(args(&["-h"])), Ok(Task::Help));
+    }
+
+    #[test]
+    fn parses_base_and_branch_options() {
+        assert_eq!(
+            parse(args(&["check-repo", "--base", "main"])),
+            Ok(Task::CheckRepo(opts(Some("main"), None)))
+        );
+        assert_eq!(
+            parse(args(&[
+                "ci",
+                "--branch",
+                "task/T-0002",
+                "--base",
+                "origin/main"
+            ])),
+            Ok(Task::Ci(opts(Some("origin/main"), Some("task/T-0002"))))
+        );
     }
 
     #[test]
@@ -257,6 +432,30 @@ mod tests {
             parse(args(&["ci", "--fast"])),
             Err(UsageError::Extra("--fast".to_owned()))
         );
+        assert_eq!(
+            parse(args(&["help", "ci"])),
+            Err(UsageError::Extra("ci".to_owned()))
+        );
+    }
+
+    #[test]
+    fn rejects_bad_option_use() {
+        assert_eq!(
+            parse(args(&["ci", "--base"])),
+            Err(UsageError::MissingValue("--base"))
+        );
+        assert_eq!(
+            parse(args(&["ci", "--base", "--output=x"])),
+            Err(UsageError::BadValue("--base", "--output=x".to_owned()))
+        );
+        assert_eq!(
+            parse(args(&["ci", "--base", "a", "--base", "b"])),
+            Err(UsageError::Extra("--base".to_owned()))
+        );
+        assert_eq!(
+            parse(args(&["check-repo", "--branch", "x"])),
+            Err(UsageError::BranchWithoutBase)
+        );
     }
 
     #[cfg(unix)]
@@ -264,7 +463,12 @@ mod tests {
     fn parse_is_total_over_non_utf8_arguments() {
         use std::os::unix::ffi::OsStringExt;
         let bad = OsString::from_vec(vec![0x66, 0xff, 0x6f]);
-        assert!(matches!(parse(vec![bad]), Err(UsageError::Unknown(_))));
+        assert!(matches!(
+            parse(vec![bad.clone()]),
+            Err(UsageError::Unknown(_))
+        ));
+        let opts = vec![OsString::from("ci"), bad];
+        assert!(matches!(parse(opts), Err(UsageError::Extra(_))));
     }
 
     #[cfg(windows)]
@@ -272,7 +476,12 @@ mod tests {
     fn parse_is_total_over_non_utf8_arguments() {
         use std::os::windows::ffi::OsStringExt;
         let bad = OsString::from_wide(&[0x66, 0xd800, 0x6f]);
-        assert!(matches!(parse(vec![bad]), Err(UsageError::Unknown(_))));
+        assert!(matches!(
+            parse(vec![bad.clone()]),
+            Err(UsageError::Unknown(_))
+        ));
+        let opts = vec![OsString::from("ci"), bad];
+        assert!(matches!(parse(opts), Err(UsageError::Extra(_))));
     }
 
     #[test]
@@ -294,7 +503,31 @@ mod tests {
         assert_eq!(cargo_args[1][0], "clippy");
         assert!(cargo_args[1].ends_with(&["--", "-D", "warnings"]));
         assert_eq!(cargo_args[2][..2], ["test", "--workspace"]);
-        assert_eq!(cargo_args[3], ["deny", "--locked", "check"]);
+        assert_eq!(cargo_args[3], ["deny", "--locked", "--workspace", "check"]);
+    }
+
+    #[test]
+    fn only_the_deny_step_has_an_install_hint_and_it_is_behind_a_probe() {
+        for step in CI_STEPS {
+            if let Step::Cargo {
+                name, hint, tool, ..
+            } = step
+            {
+                let mentions_install = hint.is_some_and(|h| h.contains("cargo install"));
+                assert!(
+                    !mentions_install,
+                    "{name} prints an install hint on every failure"
+                );
+                assert_eq!(tool.is_some(), name == "deny", "{name}");
+            }
+        }
+    }
+
+    #[test]
+    fn repo_root_holds_the_workspace_manifest_and_this_crate() {
+        let root = repo_root();
+        assert!(root.join("Cargo.toml").is_file());
+        assert!(root.join("xtask/src/main.rs").is_file());
     }
 
     #[test]
@@ -327,10 +560,5 @@ mod tests {
             })
         );
         assert_eq!(ran, ["fmt", "clippy"]);
-    }
-
-    #[test]
-    fn check_repo_passes() {
-        assert_eq!(check_repo(), Outcome::Passed);
     }
 }

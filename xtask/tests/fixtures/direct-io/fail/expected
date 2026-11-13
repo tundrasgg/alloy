@@ -1,0 +1,5 @@
+crates/demo/src/lib.rs:3: direct-io
+crates/demo/src/lib.rs:6: direct-io
+crates/demo/src/lib.rs:10: direct-io
+crates/demo/src/lib.rs:18: direct-io
+crates/demo/src/lib.rs:22: direct-io

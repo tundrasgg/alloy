@@ -1,0 +1,2 @@
+tests/conformance/rt/clock.rs: path-lock
+tests/natlab/matrix.toml: path-lock

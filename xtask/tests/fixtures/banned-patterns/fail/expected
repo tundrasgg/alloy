@@ -1,0 +1,7 @@
+crates/demo/src/lib.rs:4: banned-patterns
+crates/demo/src/lib.rs:8: banned-patterns
+crates/demo/src/lib.rs:14: banned-patterns
+crates/demo/src/lib.rs:19: banned-patterns
+crates/demo/src/lib.rs:25: banned-patterns
+crates/demo/src/lib.rs:31: banned-patterns
+crates/demo/src/lib.rs:34: banned-patterns

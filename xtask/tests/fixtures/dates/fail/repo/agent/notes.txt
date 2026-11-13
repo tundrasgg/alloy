@@ -1,0 +1,1 @@
+A file that is not Markdown has no fences to hide a date: 2026-02-03

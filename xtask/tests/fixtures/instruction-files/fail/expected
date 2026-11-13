@@ -1,0 +1,4 @@
+.cursorrules: instruction-files
+.github/copilot-instructions.md: instruction-files
+GEMINI.md: instruction-files
+crates/demo/AGENTS.md: instruction-files
