@@ -12,8 +12,8 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0118 |
-| Decision `D-` | D-0054 |
+| Task `T-` | T-0119 |
+| Decision `D-` | D-0055 |
 | ADR | 0066 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0002 |
@@ -129,10 +129,10 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0103 | spec | architect | done | none | Specify the rung 2 control plane, heartbeats, and node list |
 | T-0104 | build | developer | done | none | Build alloy-link handshake and session state machines |
 | T-0105 | spec | architect | done | none | Close the rung 2 node channel and heartbeat findings |
-| T-0106 | build | developer | active | none | Build alloy-id keys, records, tokens, and stored data |
+| T-0106 | build | developer | review | none | Build alloy-id keys, records, tokens, and stored data |
 | T-0107 | build | developer | active | none | Build alloy-state stores on openraft and redb |
 | T-0108 | verify | verifier | queued | T-0107 | Write the log-store and state-store conformance suites |
-| T-0109 | build | developer | review | none | Build alloy-proto and the alloy-api server for nodes |
+| T-0109 | build | developer | done | none | Build alloy-proto and the alloy-api server for nodes |
 | T-0110 | spec | architect | active | none | Bound what an anchor can do with forwarded join requests |
 | T-0111 | build | developer | queued | T-0104, T-0106, T-0109, T-0114 | Wire alloyd init, join, node channel, and heartbeats |
 | T-0112 | build | developer | queued | T-0109, T-0111 | Add alloy init, join, login, and node list to the CLI |
@@ -141,6 +141,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0115 | spec | architect | review | none | Specify how crossed rekey handshakes resolve in ARFC 0003 |
 | T-0116 | build | developer | queued | T-0115 | Implement the crossed rekey rule in alloy-link |
 | T-0117 | spec | architect | review | none | Give disk-io the ownership and access operations data needs |
+| T-0118 | build | developer | queued | T-0106 | Move API TLS behind alloy-crypto and bound idle callers |
 
 ## First dispatch
 
@@ -213,7 +214,6 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 
 ## M11 notes
 
-- D-0052: after T-0106 merges, a task holding `alloy-crypto` and `alloy-api` moves the `rustls`, `tokio-rustls`, and `rustls-webpki` dependencies behind `alloy-crypto` (T-0109 review F2).
 
 - `check-repo` validates each `reads` entry as a plain path, so the `path#section` form that T-0096 introduced turns main red. Until an `xtask` task strips the `#section` part before the check, task files list whole paths and name sections in Scope.
 
