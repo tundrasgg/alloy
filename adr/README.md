@@ -75,6 +75,7 @@ or supersede it.
 |---|---|
 | [0019](0019-the-control-plane-is-raft-groups-with-soft-state-outside-con.md) | The control plane is Raft groups, with soft state outside consensus |
 | [0028](0028-the-audit-log-is-hash-chained-and-commits-with-the-change.md) | The audit log is hash chained and commits with the change |
+| [0064](0064-consensus-runs-on-openraft-and-the-stores-on-redb.md) | Consensus runs on openraft, and the stores on redb |
 
 ## Tenancy
 

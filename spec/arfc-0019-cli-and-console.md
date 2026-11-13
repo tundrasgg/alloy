@@ -1,7 +1,7 @@
 # ARFC 0019: CLI and console
 
 - Status: draft
-- Depends on: 0002, 0007, 0008, 0017
+- Depends on: 0002, 0004, 0006, 0007, 0008, 0017
 - Crates: alloy (binary), ui/console
 - Decisions: 0002, 0040, 0041, 0044, 0062
 
@@ -84,7 +84,8 @@ safe. No endpoint answering within 10 seconds exits 6.
 
 | Command | Behavior |
 |---|---|
-| `alloy node list` | Columns `NAME`, `ROLES`, `ZONE`, `STATE`, `MESH`, `VERSION`. `STATE` is a node state from ARFC 0002 section 2. `MESH` is `direct` or `relay-only` (ARFC 0004 section 3.7), or `-` for a `pending` or `joining` node. `ROLES` lists roles in the order `anchor`, `control`, `compute`, `storage`, joined by commas, or `-` for a client node |
+| `alloy node list` | Prints every node as clause 3.1.15 says |
+| `alloy node get <name>` | Calls `GetNode` and prints the `Node` (ARFC 0006 section 2.6) as a view of one field per line, name and state first, then the other fields in the order of that section. Exits 3 when no node has the name |
 | `alloy node approve <name>` | Calls `ApproveNode` (ARFC 0002 section 3.3). Fails with `Conflict` for a node that is not `pending` |
 | `alloy node reject <name>` | Calls `RejectNode`. Fails with `Conflict` for a node that is not `pending` |
 | `alloy node update <name>` | Takes `--roles <list>` and `--advertise <addr>[,...]`, for any node. Adding `anchor` or `control` to a node with no advertise address fails as ARFC 0002 section 3.10 says unless `--advertise` is given in the same command |
@@ -110,6 +111,47 @@ through that socket as the local admin when it is one of:
 any other. A refusal through the socket exits 4. Any other command with no
 current context, and any of these three run by another user or on a machine
 without the socket, exits 4 as not logged in.
+
+3.1.15 Node list. `alloy node list` calls `ListNodes` (ARFC 0008 clause 3.4) and
+follows every page before it prints anything. It prints one row per `Node` (ARFC
+0006 section 2.6), sorted by name in ascending byte order, under these columns
+in this order:
+
+| Column | Value |
+|---|---|
+| `NAME` | The node's name |
+| `STATE` | `pending`, `joining`, `active`, or `unreachable` (ARFC 0006 clause 3.15) |
+| `ROLES` | Its roles in the order `anchor`, `control`, `compute`, `storage`, joined by commas with no space, or `-` for a client node |
+| `ZONE` | Its zone. The column is printed only when the listed nodes are in more than one zone |
+| `MESH` | `direct` or `relay-only` when the `Node` has `mesh` set, else `-` |
+| `RELEASE` | Its running release (ARFC 0017 clause 3.11), else `-` |
+| `ADDRESS` | Its first advertise address. For a node with none, as a client node often is, the first address of its latest heartbeat (ARFC 0006 clause 3.13). Else `-` |
+
+The header row is the column names. Each column is as wide as its widest value
+or name, values are left aligned, two spaces separate columns, and no line ends
+in a space. Nothing is shortened. The default columns fit T20's 100 columns in
+this reference case: every node name 20 characters long, one zone, a node with
+all four roles, state `active`, mesh `direct`, a five-character release, and a
+15-character IPv4 address, which gives lines of 94 columns. Each wider value
+widens its column: `unreachable` by 5, `relay-only` by 4, and, with more than
+one zone, the ZONE column adds 2 plus the width of the longest zone name, at
+least 4, so zone names of more than 4 characters pass 100 columns. A cluster
+always has a node, so the list is never empty. Standard output carries only the
+table. On a terminal, with color on, the header is bold, `unreachable` is red, and
+`pending` is yellow, and nothing else is colored. After the table the CLI prints
+the standing warnings that concern nodes on standard error (3.2.5). The table of
+a three-node cluster looks like this:
+
+```
+NAME     STATE   ROLES                           MESH  RELEASE          ADDRESS
+laptop   active  -                               -     0.0.1-preview.2  192.168.1.50
+linux-1  active  anchor,control,compute,storage  -     0.0.1-preview.2  192.168.1.20
+linux-2  active  compute,storage                 -     0.0.1-preview.2  192.168.1.21
+```
+
+With `--output json` or `yaml` it prints, on standard output, one array of every
+`Node` of every page in the API's representation (ARFC 0008 section 2), in the
+order `ListNodes` returned them, and no standing warning.
 
 ### 3.2 Console
 
