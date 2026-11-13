@@ -1,0 +1,67 @@
+# The dependency allowlist of the fuzz workspace in this directory. Rules:
+# agent/eng/deps.md.
+#
+# The root deny.toml checks the root workspace, and `cargo xtask ci` runs it.
+# This file checks only the fuzz graph, which is a workspace of its own:
+#
+#     cargo deny --manifest-path fuzz/Cargo.toml --locked --workspace check
+#
+# cargo-deny finds this file first because it searches from the manifest's
+# directory up. It is a separate file so that the NCSA exception and the
+# fuzz-only crates below never apply to the root graph (ADR 0060). Every other
+# setting matches the root deny.toml; keep the two in step.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+# The same list as the root deny.toml: the licenses compatible with
+# MIT OR Apache-2.0 that agent/eng/deps.md accepts.
+allow = [
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.93
+unused-allowed-license = "allow"
+# ADR 0060: libfuzzer-sys alone may carry NCSA, in the fuzz targets only. NCSA
+# never joins the list above, here or in the root deny.toml.
+exceptions = [
+    { crate = "libfuzzer-sys", allow = ["NCSA"] },
+]
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+allow-wildcard-paths = true
+# Every crate in the fuzz graph, the fuzz package included, must be named here.
+allow = [
+    { crate = "alloy-wire", reason = "the crate under test (ARFC 0003)" },
+    { crate = "alloy-wire-fuzz", reason = "this fuzz package" },
+    { crate = "arbitrary", reason = "libfuzzer-sys dependency" },
+    { crate = "cc", reason = "build dependency of libfuzzer-sys" },
+    { crate = "cfg-if", reason = "getrandom dependency, in the jobserver tree" },
+    { crate = "find-msvc-tools", reason = "cc dependency" },
+    { crate = "getrandom", reason = "jobserver dependency" },
+    { crate = "jobserver", reason = "cc dependency" },
+    { crate = "libc", reason = "jobserver and getrandom dependency" },
+    { crate = "libfuzzer-sys", reason = "standing choice for fuzzing: cargo-fuzz with libFuzzer (agent/eng/deps.md, ADR 0060)" },
+    { crate = "r-efi", reason = "getrandom dependency on UEFI targets; used under its MIT option" },
+    { crate = "shlex", reason = "cc dependency" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

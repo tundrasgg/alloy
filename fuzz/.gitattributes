@@ -1,0 +1,2 @@
+# Seeds are raw message bytes. Never convert their line endings.
+seeds/** binary

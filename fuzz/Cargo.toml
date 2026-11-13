@@ -1,0 +1,51 @@
+# Fuzz targets for the alloy-wire decoders (agent/eng/testing.md, layer Fuzz).
+#
+# This package is its own workspace, outside the root one: its targets build
+# only under `cargo fuzz`, which needs a nightly toolchain and a sanitizer
+# runtime. README.md says how to run them.
+
+[package]
+name = "alloy-wire-fuzz"
+version = "0.0.0"
+description = "libFuzzer targets for the alloy-wire decoders."
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+alloy-wire = { path = "../crates/alloy-wire" }
+libfuzzer-sys = "0.4.13"
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "message"
+path = "fuzz_targets/message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "inner_frame"
+path = "fuzz_targets/inner_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "initiation_payload"
+path = "fuzz_targets/initiation_payload.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "response_payload"
+path = "fuzz_targets/response_payload.rs"
+test = false
+doc = false
+bench = false
