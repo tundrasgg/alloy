@@ -11,7 +11,7 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0082 |
+| Task `T-` | T-0083 |
 | Decision `D-` | D-0032 |
 | ADR | 0062 |
 | Research `R-` | R-0009 |
@@ -19,16 +19,9 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008, and PB-0001 are allocated to the tasks below.
 
-## Paused
+## Red main
 
-The pilot paused dispatch. Every agent has finished. The next lead session starts here:
-
-- T-0075 (simulator slice 1): round 2 fixed the review's block; it needs its re-review, then merge, then T-0076 to T-0078.
-- T-0080 (verify-before-move): its review (`plan/reports/T-0080.reviewer.1.md`) has one block (F1) and three fixes; it needs its fix round.
-- T-0079 (commit check in `cargo xtask ci`): reported `blocked` because `fuzz/` did not compile, but T-0081 has since fixed `fuzz/` on main; merge main into `task/T-0079` and finish the fuzz step there, then review.
-- T-0008, T-0055, T-0061, T-0081 merged after the pause.
-
-Pilot-supplied note for the next session, not yet investigated: a Clippy run printed the `xtask/tests/fixtures/clippy` banned-call list for `crates/demo/src/lib.rs` (38 lines from `std::process::Command` at 8:19 through `tokio::runtime::Builder` at 140:5, including the `unix`-tagged `std::os::unix::fs` and `tokio::net::unix::pipe` items). T-0046 noted the `unix`-tagged fixture lines were only ever run on Windows and that the first Linux CI run is their check. Start by checking the latest GitHub Actions run on main and comparing this output with the fixture's `expected` file.
+CI on main fails on Linux since the T-0068 merge: `clippy_fixture_other_crates_fail` misses the forbid step's lines when `CARGO_TERM_COLOR=always`, which the workflow sets. Reproduced on Linux; the test passes without the variable. T-0082 fixes it. T-0079 waits on T-0082 because both touch `xtask/`.
 
 ## Board
 
@@ -108,13 +101,14 @@ Pilot-supplied note for the next session, not yet investigated: a Clippy run pri
 | T-0072 | build | developer | cancelled | none | Run the commit message check in CI from the current cut |
 | T-0073 | process | architect | done | none | Adopt lean task sizing and review rules |
 | T-0074 | build | developer | done | none | Create alloy-crypto with BLAKE3 content hashing |
-| T-0075 | build | developer | active | none | Build the alloy-sim executor, runs, and trace |
+| T-0075 | build | developer | review | none | Build the alloy-sim executor, runs, and trace |
 | T-0076 | build | developer | queued | T-0075 | Build alloy-sim hosts, mem runtime, and faults |
 | T-0077 | build | developer | queued | T-0076 | Build alloy-sim networks, UDP, and the echo scenario |
 | T-0078 | build | developer | queued | T-0077 | Build alloy-sim mem streams |
-| T-0079 | build | developer | blocked | none | Run the commit check inside cargo xtask ci |
-| T-0080 | spec | architect | blocked | none | Replace path-move heuristics with verify-before-move |
+| T-0079 | build | developer | queued | T-0082 | Run the commit check inside cargo xtask ci |
+| T-0080 | spec | architect | active | none | Replace path-move heuristics with verify-before-move |
 | T-0081 | build | developer | done | none | Update the alloy-wire fuzz targets to the compact layout |
+| T-0082 | build | developer | active | none | Make xtask output parsing independent of terminal color |
 
 ## First dispatch
 
