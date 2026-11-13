@@ -106,7 +106,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0080 | spec | architect | done | none | Replace path-move heuristics with verify-before-move |
 | T-0081 | build | developer | done | none | Update the alloy-wire fuzz targets to the compact layout |
 | T-0082 | build | developer | done | none | Make xtask output parsing independent of terminal color |
-| T-0083 | build | developer | active | none | Build the os implementations of the runtime seams |
+| T-0083 | build | developer | review | none | Build the os implementations of the runtime seams |
 | T-0084 | verify | verifier | queued | T-0083 | Run the runtime conformance suites against os |
 | T-0085 | build | developer | done | none | Build the AL handshake and transport crypto in alloy-crypto |
 | T-0086 | verify | verifier | active | none | Write fixed IKpsk2 handshake vectors for ARFC 0003 |
