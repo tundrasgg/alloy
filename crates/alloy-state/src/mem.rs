@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use alloy_seam::{BoxFuture, BuildError, ConfigValue, Detail, SeamConfig};
 
 use crate::config::MemStoreConfig;
-use crate::export::{Export, Reader, Source};
+use crate::export::{Export, Reader, Source, batch_full};
 use crate::rules::{check_append, check_apply, check_scan_limit, invalid, read_full, scan_full};
 use crate::store::{
     ApplyBatch, Entry, LogId, LogState, LogStore, Op, Pairs, StateInstall, StateSnapshot,
@@ -162,10 +162,10 @@ impl LogStore for MemLog {
 
     fn read(&self, first: u64, last: u64) -> BoxFuture<'_, Result<Vec<Entry>, StoreError>> {
         Box::pin(async move {
-            if first > last {
-                return Err(invalid("first is above last"));
-            }
             self.0.read(|log| {
+                if first > last {
+                    return Err(invalid("first is above last"));
+                }
                 let mut out = Vec::new();
                 let mut total = 0usize;
                 for entry in log.entries.range(first..=last).map(|(_, e)| e) {
@@ -245,14 +245,18 @@ impl fmt::Debug for MemState {
 struct MapSource(Arc<Map>);
 
 impl Source for MapSource {
-    fn after(&mut self, after: Option<&[u8]>, max: usize) -> Result<Pairs, StoreError> {
+    fn after(&mut self, after: Option<&[u8]>) -> Result<Pairs, StoreError> {
         let start = after.map_or(Bound::Unbounded, |key| Bound::Excluded(key.to_vec()));
-        Ok(self
-            .0
-            .range((start, Bound::Unbounded))
-            .take(max)
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect())
+        let mut out = Vec::new();
+        let mut bytes = 0usize;
+        for (key, value) in self.0.range((start, Bound::Unbounded)) {
+            bytes = bytes.saturating_add(key.len() + value.len());
+            out.push((key.clone(), value.clone()));
+            if batch_full(out.len(), bytes) {
+                break;
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -292,8 +296,8 @@ impl StateStore for MemState {
         limit: usize,
     ) -> BoxFuture<'a, Result<Pairs, StoreError>> {
         Box::pin(async move {
-            check_scan_limit(limit)?;
             self.0.read(|state| {
+                check_scan_limit(limit)?;
                 let mut out = Vec::new();
                 if end.is_some_and(|end| end <= start) {
                     return Ok(out);
@@ -372,6 +376,7 @@ impl StateInstall for MemInstall {
 
     fn finish(self: Box<Self>) -> BoxFuture<'static, Result<Option<LogId>, StoreError>> {
         Box::pin(async move {
+            self.store.read(|_| Ok(()))?;
             let (reader, map) = std::mem::take(&mut *lock(&self.staged));
             let applied = reader.finish()?;
             self.store.mutate(|state| {
@@ -458,11 +463,39 @@ mod tests {
         };
         now(state.apply(batch(1))).unwrap();
         now(state.apply(batch(2))).unwrap();
+        let install = now(state.begin_install()).unwrap();
+        now(install.write(b"ALSTATE1".to_vec())).unwrap();
+        drop(install);
+        let install = now(state.begin_install()).unwrap();
         assert!(matches!(now(state.apply(batch(3))), Err(StoreError::Io(_))));
         assert!(matches!(now(state.applied()), Err(StoreError::Io(_))));
+        // Clause 5.4.7: Io whatever the arguments, before any other check.
+        assert!(matches!(
+            now(state.scan(b"", None, 0)),
+            Err(StoreError::Io(_))
+        ));
+        assert!(matches!(now(install.finish()), Err(StoreError::Io(_))));
+        assert!(matches!(now(state.begin_install()), Err(StoreError::Io(_))));
         drop(state);
         let state = state_factory(&tables, &config("s", 0)).unwrap();
         assert_eq!(now(state.applied()), Ok(Some(id(2))));
+
+        let log = log_factory(&tables, &config("l", 1)).unwrap();
+        let entry = |i| Entry {
+            log_id: id(i),
+            payload: vec![],
+        };
+        now(log.append(vec![entry(1)])).unwrap();
+        assert!(matches!(
+            now(log.append(vec![entry(2)])),
+            Err(StoreError::Io(_))
+        ));
+        // Clause 5.3.8: Io also for arguments that are otherwise invalid.
+        assert!(matches!(now(log.read(5, 1)), Err(StoreError::Io(_))));
+        assert!(matches!(
+            now(log.append(vec![entry(9)])),
+            Err(StoreError::Io(_))
+        ));
     }
 
     #[test]

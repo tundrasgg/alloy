@@ -10,6 +10,11 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+/// The largest resource, in bytes of this crate's encoding (ARFC 0006
+/// section 7). A larger one is refused with [`ResourceError::Invalid`] before
+/// it is proposed.
+pub const MAX_RESOURCE: usize = 1_048_576;
+
 /// A resource's `uid`: 128 random bits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Uid(pub [u8; 16]);
@@ -395,6 +400,54 @@ pub(crate) fn decide(command: Command, found: Option<Resource>) -> Outcome {
     }
 }
 
+/// The length of `resource` in this crate's encoding, without encoding it.
+fn encoded_len(r: &Resource) -> usize {
+    let field = |bytes: usize| bytes.saturating_add(8);
+    let scope = match &r.scope {
+        Scope::Cluster => 1,
+        Scope::Project { org, project } => 1 + field(org.len()) + field(project.len()),
+    };
+    let labels = r.labels.iter().fold(8usize, |total, (key, value)| {
+        total
+            .saturating_add(field(key.len()))
+            .saturating_add(field(value.len()))
+    });
+    [
+        field(r.kind.len()),
+        scope,
+        field(r.name.len()),
+        field(r.uid.0.len()),
+        8,
+        field(r.spec.len()),
+        field(r.status.len()),
+        labels,
+        1,
+    ]
+    .into_iter()
+    .fold(0, usize::saturating_add)
+}
+
+/// Checks what can be checked of a command before it is proposed: its key's
+/// parts, and that the resource of a create or update is within
+/// [`MAX_RESOURCE`]. So no command a client sends exceeds a store limit: a
+/// log entry holds one command of at most about `MAX_RESOURCE` bytes, far
+/// below `MAX_ENTRY_PAYLOAD`.
+pub(crate) fn check_command(command: &Command) -> Result<(), ResourceError> {
+    command_key(command)?;
+    match command {
+        Command::Create(r) | Command::Update(r) => check_size(r),
+        Command::Delete { .. } | Command::Remove { .. } => Ok(()),
+    }
+}
+
+/// Refuses a resource over [`MAX_RESOURCE`] encoded.
+pub(crate) fn check_size(resource: &Resource) -> Result<(), ResourceError> {
+    if encoded_len(resource) > MAX_RESOURCE {
+        return Err(ResourceError::Invalid("the resource is over 1 MiB encoded"));
+    }
+    Ok(())
+}
+
 /// The key a command reads before it is decided.
 pub(crate) fn command_key(command: &Command) -> Result<Vec<u8>, ResourceError> {
     match command {
@@ -476,6 +529,27 @@ mod tests {
             decide(remove, Some(stored.clone())),
             Err(ResourceError::NotDeleting)
         );
+    }
+
+    #[test]
+    fn the_size_check_measures_the_encoding() {
+        let mut r = node("n1");
+        assert_eq!(encoded_len(&r), encode_resource(&r).len());
+        r.scope = Scope::Project {
+            org: "org".to_owned(),
+            project: "p".to_owned(),
+        };
+        r.status = vec![1; 300];
+        assert_eq!(encoded_len(&r), encode_resource(&r).len());
+        let room = MAX_RESOURCE - encoded_len(&r);
+        r.spec.extend(vec![0; room]);
+        assert_eq!(check_command(&Command::Create(r.clone())), Ok(()));
+        r.spec.push(0);
+        let over = Err(ResourceError::Invalid("the resource is over 1 MiB encoded"));
+        assert_eq!(check_command(&Command::Update(r.clone())), over);
+        let mut bad = node("a\0b");
+        bad.spec.clear();
+        assert!(check_command(&Command::Create(bad)).is_err());
     }
 
     #[test]

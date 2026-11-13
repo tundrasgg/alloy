@@ -31,7 +31,7 @@ mod store;
 
 pub use config::{MemStoreConfig, NativeStoreConfig};
 pub use group::{Group, GroupError};
-pub use resource::{Resource, ResourceError, Scope, Uid};
+pub use resource::{MAX_RESOURCE, Resource, ResourceError, Scope, Uid};
 pub use store::{
     ApplyBatch, Entry, LogId, LogState, LogStore, LogStoreSeam, MAX_APPEND_BYTES, MAX_BATCH_BYTES,
     MAX_CHUNK, MAX_ENTRY_PAYLOAD, MAX_KEY, MAX_READ_BYTES, MAX_SCAN, MAX_VALUE, NodeId, Op,

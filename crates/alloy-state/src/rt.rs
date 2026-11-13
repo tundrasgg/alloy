@@ -3,17 +3,22 @@
 //!
 //! `AsyncRuntime` has no receiver: `openraft` calls `spawn`, `sleep`, and
 //! `Instant::now` as associated functions. So the runtime is found through a
-//! scope: [`scoped`] makes a runtime current on the thread for each poll of a
-//! future, and every task spawned from inside a scope runs in a scope of the
-//! same runtime. `Group` enters a scope around every call into `openraft`, so
+//! scope: [`scoped`] makes an [`RtScope`] current on the thread for each poll
+//! of a future, and every task spawned from inside a scope runs in the same
+//! scope. `Group` enters its scope around every call into `openraft`, so
 //! `openraft` never runs outside one. A call outside a scope has no runtime:
 //! a spawn then fails its join handle, a sleep never completes, the clock
 //! reads [`Instant::ZERO`], and the generator gives zeros.
+//!
+//! A scope also tracks the tasks spawned in it ([`Tasks`]), so that a group
+//! that stops can end every task it started and know when they have ended,
+//! and with them every reference they held to the stores.
 //!
 //! Channels and the mutex are `tokio::sync` primitives, which read no clock,
 //! start no task, and draw no randomness.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::fmt;
 use std::future::Future;
@@ -24,6 +29,7 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
 use alloy_rt::{Elapsed, Instant, JoinError, Runtime, TaskName};
+use futures_util::future::{AbortHandle, AbortRegistration, Abortable, Aborted};
 use futures_util::{FutureExt, TryFutureExt};
 use openraft::OptionalSend;
 use openraft::async_runtime::{
@@ -33,30 +39,137 @@ use openraft::async_runtime::{
 use tokio::sync::{mpsc, oneshot, watch as tokio_watch};
 
 thread_local! {
-    /// The runtime of the scope being polled on this thread, if any.
-    static CURRENT: RefCell<Option<Runtime>> = const { RefCell::new(None) };
+    /// The scope being polled on this thread, if any.
+    static CURRENT: RefCell<Option<RtScope>> = const { RefCell::new(None) };
 }
 
-fn current() -> Option<Runtime> {
+fn current() -> Option<RtScope> {
     CURRENT.with(|current| current.borrow().clone())
 }
 
-/// A future polled with its runtime current.
+fn current_runtime() -> Option<Runtime> {
+    current().map(|scope| scope.runtime)
+}
+
+/// The runtime a group runs on and the tasks it has spawned.
+#[derive(Clone, Debug)]
+pub(crate) struct RtScope {
+    pub(crate) runtime: Runtime,
+    pub(crate) tasks: Arc<Tasks>,
+}
+
+impl RtScope {
+    /// A scope on `runtime` with no tasks yet.
+    pub(crate) fn new(runtime: &Runtime) -> RtScope {
+        RtScope {
+            runtime: runtime.clone(),
+            tasks: Arc::new(Tasks(tokio_watch::channel(TaskSet::default()).0)),
+        }
+    }
+}
+
+/// The live tasks of one scope: at most as many as the `spawn` seam allows,
+/// 1,048,576.
+#[derive(Debug)]
+pub(crate) struct Tasks(tokio_watch::Sender<TaskSet>);
+
+#[derive(Debug, Default)]
+struct TaskSet {
+    /// The id of the next task. 2^64 ids are never used up.
+    next: u64,
+    /// Set by [`Tasks::close`]: no task starts after it.
+    closed: bool,
+    /// Each live task's abort handle, by id.
+    live: BTreeMap<u64, AbortHandle>,
+}
+
+impl Tasks {
+    /// Records a new task, unless the scope is closed.
+    fn register(&self) -> Option<(u64, AbortRegistration)> {
+        let mut registered = None;
+        self.0.send_modify(|set| {
+            if set.closed {
+                return;
+            }
+            let (handle, registration) = AbortHandle::new_pair();
+            let id = set.next;
+            set.next = set.next.wrapping_add(1);
+            set.live.insert(id, handle);
+            registered = Some((id, registration));
+        });
+        registered
+    }
+
+    fn ended_one(&self, id: u64) {
+        self.0.send_modify(|set| {
+            set.live.remove(&id);
+        });
+    }
+
+    /// Ends every task of the scope: none starts after this call, and each
+    /// live one is dropped, unfinished, at its next poll.
+    pub(crate) fn close(&self) {
+        self.0.send_modify(|set| {
+            set.closed = true;
+            for handle in set.live.values() {
+                handle.abort();
+            }
+        });
+    }
+
+    /// Completes once no task of the scope is live: each has ended and its
+    /// future has been dropped.
+    pub(crate) async fn ended(&self) {
+        let mut set = self.0.subscribe();
+        // The sender is `self`, which outlives this call, so the wait never
+        // fails.
+        let _ = set.wait_for(|set| set.live.is_empty()).await;
+    }
+}
+
+/// Marks its task ended when dropped.
+struct Ended {
+    tasks: Arc<Tasks>,
+    id: u64,
+}
+
+impl Drop for Ended {
+    fn drop(&mut self) {
+        self.tasks.ended_one(self.id);
+    }
+}
+
+/// A spawned task's future. Fields drop in declaration order, so the task's
+/// future, and all it holds, is gone before the task counts as ended.
+struct Tracked<F> {
+    future: Pin<Box<Abortable<F>>>,
+    _ended: Ended,
+}
+
+impl<F: Future> Future for Tracked<F> {
+    type Output = Result<F::Output, Aborted>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.future.as_mut().poll(cx)
+    }
+}
+
+/// A future polled with its scope current.
 pub(crate) struct Scoped<F> {
-    runtime: Runtime,
+    scope: RtScope,
     future: Pin<Box<F>>,
 }
 
-/// Runs `future` with `runtime` current on every poll.
-pub(crate) fn scoped<F: Future>(runtime: &Runtime, future: F) -> Scoped<F> {
+/// Runs `future` with `scope` current on every poll.
+pub(crate) fn scoped<F: Future>(scope: &RtScope, future: F) -> Scoped<F> {
     Scoped {
-        runtime: runtime.clone(),
+        scope: scope.clone(),
         future: Box::pin(future),
     }
 }
 
 /// Restores the scope that was current before a poll, also on unwind.
-struct Restore(Option<Runtime>);
+struct Restore(Option<RtScope>);
 
 impl Drop for Restore {
     fn drop(&mut self) {
@@ -69,8 +182,8 @@ impl<F: Future> Future for Scoped<F> {
     type Output = F::Output;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
-        let runtime = self.runtime.clone();
-        let _restore = Restore(CURRENT.with(|current| current.replace(Some(runtime))));
+        let scope = self.scope.clone();
+        let _restore = Restore(CURRENT.with(|current| current.replace(Some(scope))));
         self.future.as_mut().poll(cx)
     }
 }
@@ -91,7 +204,8 @@ pub(crate) enum TaskError {
     /// The task was cancelled or panicked.
     #[error(transparent)]
     Join(#[from] JoinError),
-    /// The task never started: no runtime was current, or it refused.
+    /// The task never started: no scope was current, the scope was closed,
+    /// or the runtime refused.
     #[error("the task could not be spawned")]
     Spawn,
 }
@@ -166,7 +280,7 @@ impl Sub<RtInstant> for RtInstant {
 
 impl openraft::Instant for RtInstant {
     fn now() -> RtInstant {
-        RtInstant(current().map_or(Instant::ZERO, |rt| rt.clock().now()))
+        RtInstant(current_runtime().map_or(Instant::ZERO, |rt| rt.clock().now()))
     }
 }
 
@@ -193,7 +307,7 @@ impl rand_core::TryRng for RtRng {
     /// and tick jitter, which then take the low end of their range.
     fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Infallible> {
         dst.fill(0);
-        if let Some(rt) = current()
+        if let Some(rt) = current_runtime()
             && rt.rng().fill(dst).is_err()
         {
             dst.fill(0);
@@ -203,7 +317,7 @@ impl rand_core::TryRng for RtRng {
 }
 
 fn sleep_until(deadline: Instant) -> Boxed<()> {
-    match current() {
+    match current_runtime() {
         Some(rt) => rt.clock().sleep_until(deadline),
         None => Box::pin(std::future::pending()),
     }
@@ -223,13 +337,30 @@ impl openraft::AsyncRuntime for AlloyRt {
         T: Future + OptionalSend + 'static,
         T::Output: OptionalSend + 'static,
     {
-        let spawned = current().and_then(|rt| {
+        let spawned = current().and_then(|scope| {
+            let (id, registration) = scope.tasks.register()?;
+            let tracked = Tracked {
+                future: Box::pin(Abortable::new(future, registration)),
+                _ended: Ended {
+                    tasks: Arc::clone(&scope.tasks),
+                    id,
+                },
+            };
             // "raft" satisfies the rules of TaskName::new.
             let name = TaskName::new("raft").expect("a fixed valid task name");
-            rt.spawn(name, scoped(&rt, future)).ok()
+            scope.runtime.spawn(name, scoped(&scope, tracked)).ok()
         });
         match spawned {
-            Some(handle) => RtJoin(handle.join().map_err(TaskError::from).boxed()),
+            Some(handle) => RtJoin(
+                handle
+                    .join()
+                    .map(|joined| match joined {
+                        Ok(Ok(output)) => Ok(output),
+                        Ok(Err(Aborted)) => Err(TaskError::Join(JoinError::Cancelled)),
+                        Err(error) => Err(TaskError::Join(error)),
+                    })
+                    .boxed(),
+            ),
             None => RtJoin(Box::pin(async { Err(TaskError::Spawn) })),
         }
     }

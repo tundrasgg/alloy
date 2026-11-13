@@ -29,13 +29,14 @@ use openraft::{
 use tokio::sync::Mutex;
 
 use crate::resource::{
-    Command, Dec, Enc, Resource, ResourceError, Scope, Target, Uid, command_key, decide,
-    decode_command, decode_resource, encode_command, encode_resource, kind_prefix,
+    Command, Dec, Enc, Resource, ResourceError, Scope, Target, Uid, check_command, check_size,
+    command_key, decide, decode_command, decode_resource, encode_command, encode_resource,
+    kind_prefix,
 };
-use crate::rt::{AlloyRt, scoped};
+use crate::rt::{AlloyRt, RtScope, scoped};
 use crate::store::{
-    ApplyBatch, Entry, LogId, LogStore, MAX_SCAN, MAX_VALUE, NodeId, Op, StateSnapshot, StateStore,
-    StoreError, Vote,
+    ApplyBatch, Entry, LogId, LogStore, MAX_APPEND_BYTES, MAX_SCAN, NodeId, Op, StateSnapshot,
+    StateStore, StoreError, Vote,
 };
 
 openraft::declare_raft_types!(
@@ -59,6 +60,8 @@ type Snapshot = openraft::Snapshot<LeaderId<u64, u128>, Membership, Box<dyn Stat
 const SNAPSHOT_EVERY: u64 = 10_000;
 /// How long `open` waits for the log to be applied (clause 3.12.3).
 const OPEN_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long stopping a group waits for its tasks to end.
+const STOP_TIMEOUT: Duration = Duration::from_secs(60);
 /// The state store key of the group's membership.
 const MEMBERSHIP_KEY: &[u8] = b"\0membership";
 
@@ -168,6 +171,29 @@ fn decode_entry(entry: Entry) -> Result<RaftEntry, io::Error> {
     })
 }
 
+/// Splits `entries` into runs that one store `append` accepts, each within
+/// `MAX_APPEND_BYTES`. `openraft` may hand over more at once. A stop between
+/// two runs leaves a prefix of the entries, as Raft allows: the entries are
+/// reported durable only once every run is.
+fn append_runs(entries: Vec<Entry>) -> Vec<Vec<Entry>> {
+    let mut runs = Vec::new();
+    let mut run = Vec::new();
+    let mut bytes = 0usize;
+    for entry in entries {
+        let len = entry.payload.len();
+        if !run.is_empty() && bytes.saturating_add(len) > MAX_APPEND_BYTES {
+            runs.push(std::mem::take(&mut run));
+            bytes = 0;
+        }
+        bytes = bytes.saturating_add(len);
+        run.push(entry);
+    }
+    if !run.is_empty() {
+        runs.push(run);
+    }
+    runs
+}
+
 /// The log store as `openraft` storage.
 #[derive(Clone)]
 struct LogAdapter(Arc<dyn LogStore>);
@@ -247,7 +273,13 @@ impl RaftLogStorage<Cfg> for LogAdapter {
     {
         let entries: Vec<Entry> = entries.into_iter().map(|e| encode_entry(&e)).collect();
         // A store's append is durable when it returns (clause 5.3.2).
-        let result = self.0.append(entries).await.map_err(io_error);
+        let mut result = Ok(());
+        for run in append_runs(entries) {
+            result = self.0.append(run).await.map_err(io_error);
+            if result.is_err() {
+                break;
+            }
+        }
         callback.io_completed(result.as_ref().map(|_| ()).map_err(io_error));
         result
     }
@@ -325,17 +357,15 @@ impl StateAdapter {
                     None => None,
                 };
                 Ok(match decide(command, found) {
-                    Ok((key, Some(resource))) => {
-                        let value = encode_resource(&resource);
-                        if value.len() > MAX_VALUE {
-                            (
-                                Vec::new(),
-                                Err(ResourceError::Invalid("the resource is over 2 MiB")),
-                            )
-                        } else {
+                    // `write` refused an oversized resource before proposing
+                    // it; this check is deterministic, so every member agrees.
+                    Ok((key, Some(resource))) => match check_size(&resource) {
+                        Ok(()) => {
+                            let value = encode_resource(&resource);
                             (vec![Op::Put { key, value }], Ok(Some(resource)))
                         }
-                    }
+                        Err(error) => (Vec::new(), Err(error)),
+                    },
                     Ok((key, None)) => (vec![Op::Delete { key }], Ok(None)),
                     Err(error) => (Vec::new(), Err(error)),
                 })
@@ -488,7 +518,7 @@ fn unavailable(error: impl fmt::Display) -> GroupError {
 /// resources over one `openraft` group.
 pub struct Group {
     raft: Raft<Cfg, StateAdapter>,
-    runtime: Runtime,
+    scope: RtScope,
     me: NodeId,
     state: Arc<dyn StateStore>,
 }
@@ -533,15 +563,22 @@ impl Group {
             store: Arc::clone(&state),
             applying: Arc::new(Mutex::new(())),
         };
+        let scope = RtScope::new(runtime);
         let raft = scoped(
-            runtime,
+            &scope,
             Raft::new(raft_node(me), config, NoPeers, LogAdapter(log), adapter),
         )
-        .await
-        .map_err(unavailable)?;
+        .await;
+        let raft = match raft {
+            Ok(raft) => raft,
+            Err(error) => {
+                end_tasks(&scope).await?;
+                return Err(unavailable(error));
+            }
+        };
         let group = Group {
             raft,
-            runtime: runtime.clone(),
+            scope,
             me,
             state,
         };
@@ -554,7 +591,11 @@ impl Group {
                 },
                 "open",
             );
-            scoped(runtime, ready).await.map_err(unavailable)?;
+            if let Err(error) = scoped(&group.scope, ready).await {
+                // Releases the stores before returning, as `shutdown` does.
+                group.shutdown().await?;
+                return Err(unavailable(error));
+            }
         }
         Ok(group)
     }
@@ -569,7 +610,7 @@ impl Group {
     pub async fn initialize(&self) -> Result<(), GroupError> {
         let me = raft_node(self.me);
         let raft = &self.raft;
-        scoped(&self.runtime, async move {
+        scoped(&self.scope, async move {
             raft.initialize(BTreeSet::from([me]))
                 .await
                 .map_err(unavailable)?;
@@ -582,8 +623,11 @@ impl Group {
         .await
     }
 
+    /// Proposes `command` once it passes every check that does not need the
+    /// state, so that no client input reaches a store call that fails.
     async fn write(&self, command: Command) -> Result<Option<Resource>, GroupError> {
-        let response = scoped(&self.runtime, self.raft.client_write(command))
+        check_command(&command)?;
+        let response = scoped(&self.scope, self.raft.client_write(command))
             .await
             .map_err(unavailable)?;
         Ok(response.data?)
@@ -591,7 +635,7 @@ impl Group {
 
     async fn linearize(&self) -> Result<(), GroupError> {
         scoped(
-            &self.runtime,
+            &self.scope,
             self.raft.ensure_linearizable(ReadPolicy::ReadIndex),
         )
         .await
@@ -605,7 +649,8 @@ impl Group {
     ///
     /// [`ResourceError::AlreadyExists`] when one of that kind, scope, and
     /// name exists, [`ResourceError::Invalid`] for an unacceptable part or a
-    /// resource over 2 MiB encoded, and [`GroupError::Unavailable`].
+    /// resource over [`MAX_RESOURCE`](crate::MAX_RESOURCE) encoded, and
+    /// [`GroupError::Unavailable`].
     pub async fn create(
         &self,
         kind: &str,
@@ -615,7 +660,11 @@ impl Group {
         labels: BTreeMap<String, String>,
     ) -> Result<Resource, GroupError> {
         let mut uid = [0; 16];
-        self.runtime.rng().fill(&mut uid).map_err(unavailable)?;
+        self.scope
+            .runtime
+            .rng()
+            .fill(&mut uid)
+            .map_err(unavailable)?;
         let resource = Resource {
             kind: kind.to_owned(),
             uid: Uid(uid),
@@ -697,7 +746,8 @@ impl Group {
     /// # Errors
     ///
     /// [`ResourceError::NotFound`], [`ResourceError::Conflict`],
-    /// [`ResourceError::Invalid`], and [`GroupError::Unavailable`].
+    /// [`ResourceError::Invalid`] as for [`Group::create`], and
+    /// [`GroupError::Unavailable`].
     pub async fn update(&self, resource: Resource) -> Result<Resource, GroupError> {
         self.write(Command::Update(resource))
             .await?
@@ -758,7 +808,7 @@ impl Group {
     /// [`GroupError::Unavailable`] when `openraft` fails.
     pub async fn snapshot(&self) -> Result<Option<LogId>, GroupError> {
         let raft = &self.raft;
-        scoped(&self.runtime, async move {
+        scoped(&self.scope, async move {
             let Some(applied) = raft.metrics().borrow_watched().last_applied else {
                 return Ok(None);
             };
@@ -773,14 +823,71 @@ impl Group {
         .await
     }
 
-    /// Stops the group's tasks, which then release the stores.
+    /// Stops the group: shuts `openraft` down, then ends every task the
+    /// group started and waits until each has ended, also after a store
+    /// failure. When it returns, nothing of the group holds the stores, so
+    /// they can be built again at once.
     ///
     /// # Errors
     ///
-    /// [`GroupError::Unavailable`] when a task ended in a panic.
+    /// [`GroupError::Unavailable`] when a task ended in a panic, or the
+    /// group's tasks did not end within 60 seconds.
     pub async fn shutdown(self) -> Result<(), GroupError> {
-        scoped(&self.runtime, self.raft.shutdown())
-            .await
-            .map_err(unavailable)
+        let stopped = scoped(&self.scope, self.raft.shutdown()).await;
+        let ended = end_tasks(&self.scope).await;
+        stopped.map_err(unavailable)?;
+        ended
+    }
+}
+
+/// Dropping a group without [`Group::shutdown`] ends its tasks without
+/// waiting for them: the stores are released once each has been dropped.
+impl Drop for Group {
+    fn drop(&mut self) {
+        self.scope.tasks.close();
+    }
+}
+
+/// Ends every task of `scope` and waits until each has ended, at most 60
+/// seconds.
+async fn end_tasks(scope: &RtScope) -> Result<(), GroupError> {
+    scope.tasks.close();
+    scope
+        .runtime
+        .timeout(STOP_TIMEOUT, scope.tasks.ended())
+        .await
+        .map_err(|_| unavailable("the group's tasks did not end within 60 seconds"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::MAX_ENTRY_PAYLOAD;
+
+    fn entry(index: u64, len: usize) -> Entry {
+        Entry {
+            log_id: LogId {
+                term: 1,
+                leader: NodeId([1; 16]),
+                index,
+            },
+            payload: vec![0; len],
+        }
+    }
+
+    #[test]
+    fn appends_split_into_runs_a_store_accepts() {
+        assert!(append_runs(Vec::new()).is_empty());
+        let small: Vec<Entry> = (1..=3).map(|i| entry(i, 10)).collect();
+        assert_eq!(append_runs(small.clone()), vec![small]);
+        // Two entries of the largest payload exceed MAX_APPEND_BYTES.
+        let large: Vec<Entry> = (1..=3).map(|i| entry(i, MAX_ENTRY_PAYLOAD)).collect();
+        let runs = append_runs(large.clone());
+        assert_eq!(runs.len(), 3);
+        for run in &runs {
+            let bytes: usize = run.iter().map(|e| e.payload.len()).sum();
+            assert!(bytes <= MAX_APPEND_BYTES);
+        }
+        assert_eq!(runs.concat(), large);
     }
 }

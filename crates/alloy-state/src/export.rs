@@ -16,8 +16,16 @@ const MAGIC: &[u8; 8] = b"ALSTATE1";
 const HEADER_LEN: usize = 8 + 1 + LOG_ID_LEN;
 /// The zero length, `count`, and `digest`.
 const TRAILER_LEN: usize = 4 + 8 + 32;
-/// How many pairs a snapshot reads from its source at a time.
+/// The most pairs a snapshot reads from its source at a time.
 const SOURCE_BATCH: usize = 256;
+/// A source batch ends after the pair that brings its key and value bytes to
+/// this or more.
+const SOURCE_BYTES: usize = MAX_CHUNK;
+/// The most bytes a snapshot holds buffered, whatever the store's size (I-21):
+/// it reads a batch only while less than `MAX_CHUNK` is buffered, and a batch
+/// adds less than `SOURCE_BYTES` plus one largest pair, plus 8 length bytes
+/// per record. The trailer is added only to less than `MAX_CHUNK`.
+const MAX_BUFFERED: usize = MAX_CHUNK + SOURCE_BYTES + MAX_KEY + MAX_VALUE + 8 * SOURCE_BATCH;
 
 fn malformed(detail: &str) -> StoreError {
     StoreError::Malformed(Detail::new(detail))
@@ -25,9 +33,15 @@ fn malformed(detail: &str) -> StoreError {
 
 /// An ordered source of a store's pairs, as of one moment.
 pub(crate) trait Source: Send + 'static {
-    /// Up to `max` pairs with keys above `after` (all keys when `None`), in
-    /// ascending key order.
-    fn after(&mut self, after: Option<&[u8]>, max: usize) -> Result<Pairs, StoreError>;
+    /// The pairs with keys above `after` (all keys when `None`), in ascending
+    /// key order, ending at the first pair for which [`batch_full`] holds.
+    fn after(&mut self, after: Option<&[u8]>) -> Result<Pairs, StoreError>;
+}
+
+/// Whether a source batch of `pairs` pairs holding `bytes` key and value
+/// bytes is complete.
+pub(crate) fn batch_full(pairs: usize, bytes: usize) -> bool {
+    pairs >= SOURCE_BATCH || bytes >= SOURCE_BYTES
 }
 
 /// Writes an export into a buffer, hashing every byte it writes.
@@ -83,7 +97,9 @@ struct Progress<S> {
     writer: Writer,
     cursor: Option<Vec<u8>>,
     records_done: bool,
-    sent: usize,
+    /// The most bytes buffered at once.
+    #[cfg(test)]
+    largest: usize,
 }
 
 /// A [`StateSnapshot`] that exports a [`Source`] in chunks.
@@ -101,7 +117,8 @@ impl<S: Source> Export<S> {
                 writer: Writer::new(applied),
                 cursor: None,
                 records_done: false,
-                sent: 0,
+                #[cfg(test)]
+                largest: 0,
             }),
         }
     }
@@ -109,8 +126,8 @@ impl<S: Source> Export<S> {
     fn next(&self) -> Result<Option<Vec<u8>>, StoreError> {
         let mut guard = self.progress.lock().unwrap_or_else(PoisonError::into_inner);
         let p = &mut *guard;
-        while p.writer.out.len() - p.sent < MAX_CHUNK && !p.records_done {
-            let batch = p.source.after(p.cursor.as_deref(), SOURCE_BATCH)?;
+        while p.writer.out.len() < MAX_CHUNK && !p.records_done {
+            let batch = p.source.after(p.cursor.as_deref())?;
             match batch.last() {
                 None => {
                     p.records_done = true;
@@ -122,18 +139,18 @@ impl<S: Source> Export<S> {
                 p.writer.record(key, value);
             }
         }
-        let available = p.writer.out.len() - p.sent;
-        if available == 0 {
+        debug_assert!(p.writer.out.len() <= MAX_BUFFERED);
+        #[cfg(test)]
+        {
+            p.largest = p.largest.max(p.writer.out.len());
+        }
+        if p.writer.out.is_empty() {
             return Ok(None);
         }
-        let take = available.min(MAX_CHUNK);
-        let chunk = p.writer.out[p.sent..p.sent + take].to_vec();
-        p.sent += take;
-        if p.sent == p.writer.out.len() {
-            p.writer.out.clear();
-            p.sent = 0;
-        }
-        Ok(Some(chunk))
+        // What is handed out leaves the buffer, which so holds at most
+        // MAX_BUFFERED bytes.
+        let take = p.writer.out.len().min(MAX_CHUNK);
+        Ok(Some(p.writer.out.drain(..take).collect()))
     }
 }
 
@@ -356,14 +373,18 @@ pub(crate) mod tests {
     pub(crate) struct MapSource(pub(crate) BTreeMap<Vec<u8>, Vec<u8>>);
 
     impl Source for MapSource {
-        fn after(&mut self, after: Option<&[u8]>, max: usize) -> Result<Pairs, StoreError> {
+        fn after(&mut self, after: Option<&[u8]>) -> Result<Pairs, StoreError> {
             let start = after.map_or(Bound::Unbounded, |k| Bound::Excluded(k.to_vec()));
-            Ok(self
-                .0
-                .range((start, Bound::Unbounded))
-                .take(max)
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect())
+            let mut out = Vec::new();
+            let mut bytes = 0;
+            for (k, v) in self.0.range((start, Bound::Unbounded)) {
+                bytes += k.len() + v.len();
+                out.push((k.clone(), v.clone()));
+                if batch_full(out.len(), bytes) {
+                    break;
+                }
+            }
+            Ok(out)
         }
     }
 
@@ -378,6 +399,37 @@ pub(crate) mod tests {
             out.extend(chunk);
         }
         out
+    }
+
+    /// Exports `map` and returns the export's length and the most bytes the
+    /// snapshot held buffered after any chunk.
+    fn largest_buffer(map: BTreeMap<Vec<u8>, Vec<u8>>) -> (usize, usize) {
+        let export = Export::new(None, MapSource(map));
+        let (mut len, mut largest) = (0, 0);
+        while let Some(chunk) = export.next().unwrap() {
+            len += chunk.len();
+            largest = export.progress.lock().unwrap().largest;
+        }
+        (len, largest)
+    }
+
+    #[test]
+    fn a_snapshot_buffers_a_bounded_amount() {
+        // Many small records: 400,000 of 4 + 20 bytes, about 12.8 MB.
+        let small = (0u32..400_000)
+            .map(|i| (i.to_be_bytes().to_vec(), vec![7; 20]))
+            .collect();
+        let (len, largest) = largest_buffer(small);
+        assert!(len > 12_000_000);
+        assert!(largest <= MAX_BUFFERED, "{largest}");
+        assert!(largest < 3 * MAX_CHUNK, "{largest}");
+        // Records of the largest size: 12 of 4,096 + 2 MiB bytes.
+        let large = (0u8..12)
+            .map(|i| (vec![i; MAX_KEY], vec![i; MAX_VALUE]))
+            .collect();
+        let (len, largest) = largest_buffer(large);
+        assert!(len > 12 * MAX_VALUE);
+        assert!(largest <= MAX_BUFFERED, "{largest}");
     }
 
     fn read(bytes: &[u8], chunk: usize) -> Result<(Option<LogId>, Pairs), StoreError> {

@@ -22,7 +22,7 @@ use redb::{
 };
 
 use crate::config::NativeStoreConfig;
-use crate::export::{Export, Reader, Source};
+use crate::export::{Export, Reader, Source, batch_full};
 use crate::rules::{
     LOG_ID_LEN, check_append, check_apply, check_scan_limit, corrupt, decode_log_id, decode_vote,
     encode_log_id, encode_vote, invalid, read_full, scan_full,
@@ -213,10 +213,10 @@ impl LogStore for NativeLog {
 
     fn read(&self, first: u64, last: u64) -> BoxFuture<'_, Result<Vec<Entry>, StoreError>> {
         Box::pin(async move {
-            if first > last {
-                return Err(invalid("first is above last"));
-            }
             self.0.read(|txn| {
+                if first > last {
+                    return Err(invalid("first is above last"));
+                }
                 let entries = txn.open_table(ENTRIES).map_err(store_error)?;
                 let mut out = Vec::new();
                 let mut total = 0usize;
@@ -308,17 +308,21 @@ impl fmt::Debug for NativeState {
 struct TxnSource(ReadTransaction);
 
 impl Source for TxnSource {
-    fn after(&mut self, after: Option<&[u8]>, max: usize) -> Result<Pairs, StoreError> {
+    fn after(&mut self, after: Option<&[u8]>) -> Result<Pairs, StoreError> {
         let pairs = self.0.open_table(PAIRS).map_err(store_error)?;
         let start = after.map_or(Bound::Unbounded, Bound::Excluded);
         let mut out = Vec::new();
+        let mut bytes = 0usize;
         for item in pairs
             .range::<&[u8]>((start, Bound::Unbounded))
             .map_err(store_error)?
-            .take(max)
         {
             let (key, value) = item.map_err(store_error)?;
+            bytes = bytes.saturating_add(key.value().len() + value.value().len());
             out.push((key.value().to_vec(), value.value().to_vec()));
+            if batch_full(out.len(), bytes) {
+                break;
+            }
         }
         Ok(out)
     }
@@ -376,8 +380,8 @@ impl StateStore for NativeState {
         limit: usize,
     ) -> BoxFuture<'a, Result<Pairs, StoreError>> {
         Box::pin(async move {
-            check_scan_limit(limit)?;
             self.db.read(|txn| {
+                check_scan_limit(limit)?;
                 let mut out = Vec::new();
                 if end.is_some_and(|end| end <= start) {
                     return Ok(out);
@@ -481,6 +485,7 @@ impl StateInstall for NativeInstall {
 
     fn finish(self: Box<Self>) -> BoxFuture<'static, Result<Option<LogId>, StoreError>> {
         Box::pin(async move {
+            self.db.run(|_| Ok(()))?;
             let applied = self
                 .reader
                 .lock()
