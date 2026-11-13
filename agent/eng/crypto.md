@@ -10,7 +10,29 @@
 3. Compare secrets in constant time (`subtle`). Zeroize key material on drop
    (`zeroize`).
 4. Randomness comes from the `alloy-rt` randomness trait. Production backs it with
-   the operating system generator. Nothing else seeds anything.
+   the operating system generator. Nothing else seeds anything. One exception,
+   TLS (ADR 0042): under the `os` runtime the `rustls` provider (`aws-lc-rs`,
+   ADR 0053) draws from its own generator, which `aws-lc` seeds from the
+   operating system, exactly the values that live inside one TLS 1.3 handshake
+   and that neither side keeps after it:
+   - the ClientHello random and the ServerHello random, 32 bytes each;
+   - the client's legacy session id, 32 bytes, and its extension order seed,
+     16 bits;
+   - the ephemeral secret of each key share either side makes, for X25519,
+     secp256r1, or X25519MLKEM768, the ML-KEM decapsulation key and
+     encapsulation randomness included.
+
+   In rustls 0.23.46 these are `src/client/hs.rs` lines 119, 127, and 132,
+   `src/server/hs.rs` line 513, and the `SupportedKxGroup` implementations of
+   `src/crypto/aws_lc_rs`. Nothing else comes from it: every key Alloy keeps,
+   every nonce Alloy chooses, and every secret Alloy sends comes from the trait,
+   the API CA and API server keys included. Session tickets, resumption, early
+   data, Encrypted Client Hello and its GREASE are off, since each would draw
+   more. Under the `mem` `net` implementation, where no byte leaves the
+   process, no TLS runs, so a simulated trace holds no byte from that generator
+   (I-20, `spec/arfc-0008-native-api.md` clause 3.8.1). Under any other `net`
+   implementation the API and `stream` run on TLS as under `os`, or are not
+   served: cleartext is allowed only where no byte leaves the process.
 5. Nonces are never chosen ad hoc. Each use has a specified layout and a specified
    reason it cannot repeat.
 6. Keys have one purpose each. Derive separate keys with domain-separated labels
@@ -41,7 +63,10 @@ these messages:
 
 - API CA key: its own certificate and the certificates it issues.
 - API server certificate key: the TLS 1.3 `CertificateVerify`, and the PKCS#10
-  CSR (RFC 2986) of an ACME order (RFC 8555 section 7.4).
+  CSR (RFC 2986) of an ACME order (RFC 8555 section 7.4). The key of the
+  self-signed `stream` certificate of an anchor without `control` is one of
+  these, and also signs that certificate
+  (`spec/arfc-0004-path-manager.md` section 3.6).
 - ACME account key: the JWS of every ACME request, as `ES256` (RFC 7518
   section 3.4).
 

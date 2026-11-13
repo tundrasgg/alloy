@@ -1,6 +1,6 @@
 # ADR 0061: Traffic moves only to an endpoint that echoed a challenge
 
-- Status: accepted
+- Status: superseded by 0063
 - Subject: mesh
 - Specs: arfc-0004
 

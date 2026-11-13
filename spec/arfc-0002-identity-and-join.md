@@ -3,7 +3,7 @@
 - Status: accepted
 - Depends on: 0000, 0003, 0007, 0009, 0017
 - Crates: alloy-id, alloy-crypto
-- Decisions: 0012, 0015, 0018, 0040, 0041, 0048, 0062
+- Decisions: 0012, 0015, 0018, 0040, 0041, 0042, 0048, 0053, 0062
 
 ## 1. Purpose
 
@@ -41,12 +41,42 @@ issues must meet these rules:
   The private keys themselves are generated from the `alloy-rt` randomness
   trait.
 
-A **node record** is `{node_id, identity_pub, mesh_pub, roles, zone, infra_addr,
-advertise, capabilities, not_after, serial}` signed by the cluster key. `node_id`
-is the first 16 bytes of `BLAKE3(identity_pub)`. `advertise` is the node's list
-of advertise addresses (section 3.10). Peers accept a node only by a valid,
-unexpired record. The control plane stores with each node the `token_id` of the
-join token that admitted it.
+Every certificate the API CA key signs, its own included, is an X.509 v3
+certificate (RFC 5280) with these fields, and with no extension the table does
+not list:
+
+| Field | API CA certificate | API server certificate |
+|---|---|---|
+| serial number | 16 bytes from the `alloy-rt` randomness trait, with the high bit of the first byte cleared | The same rule |
+| subject | `CN=Alloy API CA <cluster_id>`, the id as 32 lower case hexadecimal digits | `CN=<node name>` |
+| issuer | Its own subject | The API CA certificate's subject |
+| validity | From 1 hour before issue to 10 years after | From 1 hour before issue to 30 days after |
+| subject key identifier | The leftmost 160 bits of the SHA-256 hash of the subjectPublicKey BIT STRING value (RFC 7093 section 2, method 1) | The same rule |
+| authority key identifier | None | The API CA certificate's subject key identifier |
+| basic constraints, critical | `cA` true, path length 0 | `cA` false |
+| key usage, critical | `keyCertSign`, `cRLSign` | `digitalSignature` |
+| extended key usage | None | `id-kp-serverAuth` |
+| subject alternative name | None | One `iPAddress` entry per advertise address of the node (section 3.10), then `127.0.0.1` and `::1` |
+
+Each control node holds one API server certificate and key for itself. It
+generates a new key and gets a new certificate from the API CA when 10 days of
+the current one's validity remain, and within 10 seconds after its advertise
+addresses change. The API CA certificate is replaced only by a rotation that a
+later task specifies (section 9).
+
+A **node record** is the Protocol Buffers message `NodeRecord` of section 3.13,
+signed by the cluster key. It holds `cluster_id`, `node_id`, `name`,
+`identity_pub`, `mesh_pub` (one key, or two during a rotation, section 3.6),
+`roles`, `zone`, `infra_addr`, `advertise`, `mesh_port`, `api_port`,
+`not_after`, and `serial`. `node_id` is the first 16 bytes of
+`BLAKE3(identity_pub)`. `advertise` is the node's list of advertise addresses
+(section 3.10). `mesh_port` is the UDP port of its AL socket (ARFC 0004 section
+3.6) and `api_port` the TCP port it serves the API and the `stream` underlay on
+(ARFC 0008 section 3.8). The signature is Ed25519 by the cluster key over the
+bytes `alloy/id/node-record/v1` followed by the record's encoded bytes, and
+every holder keeps and forwards those bytes as it received them, never
+re-encoded. Peers accept a node only by a valid, unexpired record. The control
+plane stores with each node the `token_id` of the join token that admitted it.
 
 The API reports each node in one **state**:
 
@@ -66,9 +96,10 @@ hold the keys and handshake counter of a failed join attempt (section 6).
 
 ### 3.1 Init
 
-`alloy init` takes `--advertise <addr>[,<addr>...]`, `--name`, `--mesh-port`,
-`--api-port`, and `--data-dir` (default `/var/lib/alloyd`, section 3.12), none
-of them required. It does this:
+`alloy init` takes `--advertise <addr>[,<addr>...]`, `--name`, `--mesh-port`
+(default 7476, ARFC 0004 section 3.6), and `--api-port` (default 443, ARFC 0008
+section 3.8), none of them required. Its data directory is `/var/lib/alloyd`
+(section 3.12). It does this:
 
 1. It runs the checks of section 3.8, in the order stated there. They include
    that it runs as root on Linux, and that the local join state is `unjoined`,
@@ -80,8 +111,10 @@ of them required. It does this:
    a usage error. It reports each address, where it came from, and whether it is
    private, meaning inside 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16,
    100.64.0.0/10, fc00::/7, 169.254.0.0/16, or fe80::/10.
-3. It generates the cluster key, a random 128-bit `cluster_id`, the API CA key,
-   and the node's keys, then creates:
+3. It generates the cluster key, a random 128-bit `cluster_id`, the API CA key
+   and certificate, the node's keys, its at-rest key, and its API server key and
+   certificate (section 2), signs the node's record, and stores each as section
+   3.14 says. It then creates:
 
    | Object | Value |
    |---|---|
@@ -90,7 +123,7 @@ of them required. It does this:
    | organization | `default` |
    | project | `default`, in `default` |
    | user | `admin`, in `default`, with cluster role `cloud-admin` and role `owner` of `default` (ARFC 0007) |
-   | pool | `default`, `replica(1)`, on one `file` disk at `<data-dir>/disks/0` (ARFC 0012 sections 3.5 and 3.6) |
+   | pool | `default`, `replica(1)`, on one `file` disk at `disks/0` in the data directory (ARFC 0012 sections 3.5 and 3.6) |
    | join token | 24 hours, unlimited uses, no preset roles or zone (section 3.2) |
    | login code | For `admin`, with `issued_by` `init` (section 3.7) |
 
@@ -127,8 +160,8 @@ fields, with integers big endian:
 | checksum | 4 | First 4 bytes of `BLAKE3` over every preceding byte |
 
 An address is a family byte (`4` or `6`), the address (4 or 16 bytes), the
-anchor's UDP mesh port (2), and the TCP port of its `stream` underlay (2, `0`
-for none, ARFC 0004 section 3.6). A token lists anchors in ascending order of
+anchor's `mesh_port` (2), and the TCP port of its `stream` underlay (2), which
+is its `api_port` (ARFC 0004 section 3.6), or `0` for none. A token lists anchors in ascending order of
 node name, each with its first 4 advertise addresses, and leaves out every
 anchor that would make the string longer than 512 characters. One anchor always
 fits: with 4 IPv6 addresses it is 180 bytes, 293 characters.
@@ -160,9 +193,12 @@ time, so that a later attempt can be told why it was refused.
 | `--zone <name>` | The token's preset zone, else `default` |
 | `--name <name>` | From the hostname, by the rule below |
 | `--advertise <addr>[,...]` | As in section 3.1 step 2, except that with no default route the node gets no advertise address, which is a usage error only when its roles include `anchor` or `control` |
-| `--mesh-port <port>` | The default mesh port of ARFC 0004 |
-| `--data-dir <path>` | `/var/lib/alloyd`. On Windows, `Alloy` in the folder Windows reports as `%ProgramData%`. Either way it follows section 3.12 |
+| `--mesh-port <port>` | 7476, the default mesh port of ARFC 0004 section 3.6 |
+| `--api-port <port>` | 443. Used only while the node holds `anchor` or `control` (ARFC 0008 section 3.8) |
 | `--no-wait` | Off. When on, the command returns with exit 0 once `alloyd` holds the request |
+
+The data directory is `/var/lib/alloyd`, and on Windows `Alloy` in the folder
+Windows reports as `%ProgramData%` (section 3.12). No flag changes it.
 
 The default name is the hostname in lower case, cut at the first dot, with every
 character outside `[a-z0-9-]` replaced by `-`, prefixed with `node-` when it
@@ -181,24 +217,31 @@ at the same point.
    them, it refuses with `Conflict`, changing nothing, when the local join state
    is `joined`, or `joining` with another token. When it is `joining` with the
    same token, it skips the remaining checks and resumes waiting at step 7.
-2. It enables and starts `alloyd`, which holds the request from here on and
-   carries out steps 3 to 7. The local join state is now `joining`. On Windows,
-   enabling sets the start type of the service `alloyd` (ARFC 0017 clause 3.15)
-   to automatic.
+2. It writes the join request, the token included, to the data directory as
+   section 3.14 says, then enables and starts `alloyd`, which holds the request
+   from here on and carries out steps 3 to 7. The local join state is now
+   `joining`. On Windows, enabling sets the start type of the service `alloyd`
+   (ARFC 0017 clause 3.15) to automatic. How the CLI learns the outcome from
+   `alloyd` is internal to one release, and it learns it within 1 second.
 3. `alloyd` generates node keys, or reuses the keys and handshake counter kept
    from an earlier failed attempt (section 6), and opens an AL session to an
-   anchor from the token as an unregistered initiator. It tries every address of
-   every anchor in token order, UDP before `stream`, for at most 10 seconds in
-   total.
+   anchor from the token as an unregistered initiator, from its mesh port. It
+   tries every address of every anchor in token order, UDP before `stream`, for
+   at most 10 seconds in total. As soon as the session opens it sends a
+   reflection request on it and answers the anchor's challenge (ARFC 0004
+   section 3.1.2), since the anchor sends on the session only to its current
+   endpoint. Steps 5 to 7 and the approval below are node messages on that
+   session (section 3.13).
 4. An anchor must accept sessions from unregistered initiators only to its join
-   service, rate limited to 10 handshakes per second per source address and 100
-   per second in total.
-5. The joiner sends its release version. Without looking at any token, the
-   anchor replies with either the refusal `version`, carrying the accepted minor
-   releases and the highest release that any node runs, or the current cluster
-   public key and the anchor's own node record. During the 7-day overlap of a
-   cluster key rotation (section 3.6) the reply also carries the previous
-   cluster public key and its signature over the current one. A joiner is
+   service (section 3.13), rate limited to 10 handshakes per second per source
+   address and 100 per second in total.
+5. The joiner sends `join_hello` with its release version. Without looking at
+   any token, the anchor replies with either the refusal `version`, carrying the
+   accepted minor releases and the highest release that any node runs, or the
+   current cluster public key and the anchor's own node record. During the
+   7-day overlap of a cluster key rotation (section 3.6) the reply also carries
+   the previous cluster public key and its signature over the current one. A
+   joiner is
    accepted when its `MAJOR.MINOR` is the lowest minor release L that any node
    runs, or the next minor release after L (ARFC 0017 sections 3.1 and 7).
    When the joiner or any node runs a preview release (ARFC 0017 clause 3.13),
@@ -210,10 +253,13 @@ at the same point.
    validly signed by the current key and unexpired; and that its `mesh_pub` is
    the key the AL session authenticated. If any check fails it closes the
    session and sends nothing more.
-6. The joiner sends `{token_id, secret, identity_pub, mesh_pub, name,
-   name_is_default, roles, zone, advertise, facts}`, with `roles` and `zone`
-   empty when not given, and `facts` being operating system, architecture,
-   cores, memory, virtualization support, and disks. It waits at most 10 seconds for the
+6. The joiner sends `join_request`: `{token_id, secret, identity_pub, name,
+   name_is_default, roles, zone, advertise, mesh_port, api_port, facts}`, with
+   `roles` and `zone` empty when not given, and `facts` being operating system,
+   architecture, cores, memory, virtualization support, and disks. The request
+   names no mesh key: the joiner's mesh key, in the record it may be issued and
+   in every check below, is the key the AL session authenticated, as a
+   `forwarded` carries it (section 3.13). It waits at most 10 seconds for the
    answer. The control plane checks, in this order:
    1. The secret, as below. An unknown `token_id` or a wrong secret is refused
       with `token_refused`.
@@ -234,9 +280,12 @@ at the same point.
    `joining`, or, when the cluster requires approval, leaves the request
    `pending`.
 7. The joiner receives its node record and the bootstrap view, or `pending`, or
-   a refusal. With a record its local join state becomes `joined`. With roles
-   including `storage`, the node's one `file` disk at `<data-dir>/disks/0` joins
-   pool `default` when that pool exists, and the pool's redundancy is unchanged.
+   a refusal, as `join_reply`. With a record it stores what section 3.14 lists,
+   and its local join state becomes `joined`. The session it joined on stays
+   open as a home session (ARFC 0004 section 3.1.2). With roles including
+   `storage`, the node's one `file` disk at `disks/0` in the data directory
+   joins pool `default` when that pool exists, and the pool's redundancy is
+   unchanged.
 8. Time from running the command to an `active` node must be under 10 seconds on
    a LAN, excluding approval.
 
@@ -269,16 +318,16 @@ the API and lasts until a cloud admin calls `ApproveNode`, which issues the
 record, or `RejectNode`, which deletes the request and sends `rejected`, or
 until the token it used expires, which deletes it and sends `token_expired`.
 Once it has received `pending`, the joiner's `alloyd` holds the request: it
-keeps or reopens its session to an anchor and asks for the request's state,
-known by the mesh key that session authenticates, never sending the secret
-again. The CLI may stop waiting without cancelling the request. After approval
+keeps or reopens its session to an anchor and asks for the request's state with
+`join_state` every 2 seconds, the request known by the mesh key that session
+authenticates, never sending the secret again. The CLI may stop waiting without cancelling the request. After approval
 the node must become `active` within 10 seconds while an anchor is reachable.
 
 ### 3.4 Addresses
 
-Each cluster has an infrastructure prefix `fd00::/8` plus 40 bits from
-`cluster_id`, giving a `/48`. A node's infrastructure address is that prefix, a
-zero subnet, and 64 bits from `BLAKE3(mesh_pub)`. Control plane, storage, and
+Each cluster has an infrastructure prefix, a `/48`: the byte `0xfd` followed by
+the first 5 bytes of `cluster_id`. A node's infrastructure address is that
+prefix, a zero 16-bit subnet, and the first 8 bytes of `BLAKE3(mesh_pub)`. Control plane, storage, and
 migration traffic use these addresses over the mesh interface `al0`. Every node,
 a client node included, holds its infrastructure address on `al0` with prefix
 length 64, so the cluster's zero subnet is reached through `al0`, and holds no
@@ -302,11 +351,11 @@ expired renews through the join service of an anchor, since peers no longer
 accept it as a registered node. Its `alloyd` tries the anchors of its last view
 by the mesh keys and addresses their last records there hold, expired or not,
 as an unregistered initiator, with the steps, time limits, rate limits, and
-checks of section 3.3 steps 3 to 5. It then sends `{node_id, serial,
+checks of section 3.3 steps 3 to 5. It then sends `renew`: `{node_id, serial,
 signature}`, where `serial` is that of its expired record and `signature` is
 its identity key's signature over the bytes `alloy-renew-v1`, `cluster_id`,
-`node_id`, and `serial` (8 bytes, big endian). The control plane answers within
-10 seconds. It issues a new record when the node exists, the signature verifies
+`node_id`, and `serial` (8 bytes, big endian). The control plane answers with
+`join_reply` within 10 seconds. It issues a new record when the node exists, the signature verifies
 against the node's `identity_pub`, and the mesh key the AL session
 authenticated is the node's `mesh_pub`. Otherwise it refuses with
 `node_unknown`, byte for byte the same for a deleted node, an unknown
@@ -326,7 +375,9 @@ then `alloy join` with a new token, makes it one again.
 
 Node keys rotate with `alloy node rotate`: the new record lists both mesh keys for
 one validity period. The cluster key rotates by cross signing: the old key signs
-the new one, both are trusted for 7 days, then the old one is dropped. A join
+the new one, both are trusted for 7 days, then the old one is dropped. The cross
+signature is Ed25519 by the previous key over the bytes
+`alloy/id/cluster-key/v1`, `cluster_id`, and the current public key (32 bytes). A join
 token made before the rotation keeps working during those 7 days (section 3.3
 step 5). When the old key is dropped, the control plane revokes every live token
 whose `cluster_key_fp` names it.
@@ -399,6 +450,19 @@ before any machine is contacted.
 - Spent, voided, and expired codes are kept until 7 days after their expiry
   time, then deleted.
 
+A computer, a node of any kind included, reaches the API only through a context
+that `alloy login` made (ARFC 0019 clause 3.1.11), or, as user id 0 on a control
+node, through the local admin socket for the commands ARFC 0019 clause 3.1.14
+lists. `init` and `join` make no context: a join token admits a node and carries
+no user's credential, and a node's keys authenticate it to the control plane
+only on the node channel (section 3.13), never on the API. A new cluster
+therefore gets the CLI working on each machine as follows. `init` prints one
+login code. User id 0 on the control node issues one more per machine with
+`alloy login --issue-code`. Each machine, the Windows client node and the
+control node itself included, runs `alloy login <code>` once. The CLI reaches
+the API over the underlay at the code's endpoints, never over the mesh (ARFC
+0008 section 3.8).
+
 ### 3.8 Machine checks
 
 Once their arguments parse, `init` and `join` run the `host` check first: when
@@ -412,7 +476,7 @@ process, then check the local join state (sections 3.1 and 3.3), exiting 5 on
 |---|---|---|---|
 | host | Linux 6.1 or later on x86_64 or aarch64. For `join` of a client node, also Windows build 17763 or later on x86_64 or aarch64 | | Anything else, 1 |
 | hardware virtualization | `/dev/kvm` opens for reading and writing | Otherwise | |
-| ports | The mesh UDP port is free, and every TCP port the node's roles listen on (ARFC 0004 section 3.6, ARFC 0008 section 3.8) | | A port is in use, 5. The message names the process and pid holding it when they can be found |
+| ports | The mesh UDP port (default 7476, ARFC 0004 section 3.6) is free, and, when the node's roles include `anchor` or `control`, so is its API TCP port (default 443, ARFC 0008 section 3.8) | | A port is in use, 5. The message names the process and pid holding it when they can be found |
 | data directory | The data directory does not exist, or is an Alloy data directory, or is a directory that section 3.12 lets `init` and `join` adopt | | Any other directory or file at its path, 5. The message names the path and its owner |
 | names | No object that ARFC 0017 clause 3.17 reserves by name exists, other than an Alloy data directory and the install's files and service. On Linux, every id of the guest id range is free (ARFC 0017 clause 3.17.7) | | One exists, or an id is held, 5. The message names the object, or the entry, line, or process that holds the id |
 | addresses | The cluster's infrastructure prefix (section 3.4) overlaps no route and no address, as ARFC 0017 clause 3.17.3 says | | An overlap, 5. The message names the route or the interface and address |
@@ -439,10 +503,11 @@ enabled nor started.
 for confirmation as any destructive command does (ARFC 0019 section 3.1.6).
 
 - `unjoined`: it changes nothing and exits 0.
-- `joining`: it withdraws the request through an anchor, trying for at most 10
-  seconds, then removes the local state.
-- `joined`: it asks the control plane, signed with the node identity key, to
-  delete its node. The control plane refuses with `Conflict`, and the machine is
+- `joining`: it withdraws the request through an anchor with `withdraw`
+  (section 3.13), trying for at most 10 seconds, then removes the local state.
+- `joined`: it asks the control plane with `leave`, signed with the node
+  identity key over the bytes `alloy/id/leave/v1`, `cluster_id`, and `node_id`,
+  to delete its node. The control plane refuses with `Conflict`, and the machine is
   unchanged, when the node is the last control node, hosts any guest, or has a
   disk that belongs to a pool. Otherwise it deletes the node (ARFC 0006 section
   3.6).
@@ -515,8 +580,15 @@ node record, and `alloy node list` shows it with its state and mesh path.
 ### 3.12 Data directory
 
 The data directory holds a node's keys, its handshake counter, its cluster
-state, and its host file (ARFC 0017 section 4.2). An **Alloy data directory**
-meets all of these:
+state, and its host file (ARFC 0017 section 4.2), as section 3.14 lists. Its
+path is fixed: `/var/lib/alloyd` on Linux, and on Windows `Alloy` in the folder
+Windows reports as `%ProgramData%`. No flag, setting, or file changes it, so
+`alloyd` started by the service manager, the install, and the uninstall (ARFC
+0017 clauses 3.15 and 3.16) all find it at that path. On Linux, a cloud admin
+who wants it on another disk mounts that disk at the path, which `init` and
+`join` adopt as below. On Windows a mounted folder is a reparse point, which the
+rule below refuses, so the data directory stays on the volume that holds
+`%ProgramData%`. An **Alloy data directory** meets all of these:
 
 - On Linux, it is not a symbolic link, is owned by user id 0, and has mode
   `0700`. Every directory above it is owned by user id 0 and is not writable by
@@ -526,7 +598,13 @@ meets all of these:
   `Administrators` group, and its access control list is protected from
   inheritance and grants full control to `SYSTEM` and `Administrators` and no
   access to anyone else. Its host file has the same owner and inherits that
-  list.
+  list. No directory above it is a reparse point, and each is owned by
+  `SYSTEM`, `Administrators`, or `TrustedInstaller`. No principal other than
+  those three may delete or rename it or any directory above it: no access
+  control entry that applies to one of these directories itself, rather than
+  only to what it holds, grants anyone else `DELETE`, `WRITE_DAC`,
+  `WRITE_OWNER`, or a generic right that includes one of them, on it, or
+  `FILE_DELETE_CHILD` on its parent.
 - It holds a host file whose first line is `alloy-host 1`.
 
 `init` and `join` use a data directory that is an Alloy data directory or that
@@ -553,7 +631,328 @@ On Windows, after an unprivileged local user creates the directory `Alloy` in
 `%ProgramData%`, `alloy join` must exit 5 naming that directory and its owner,
 and the directory must stay empty. Without that directory, `join` creates it,
 and `icacls` on it lists only `SYSTEM` and `Administrators`, each with full
-control and neither inherited.
+control and neither inherited. After an administrator adds to `%ProgramData%`
+an entry that grants the local group `Users` `FILE_DELETE_CHILD` on it, `alloy
+join` must exit 5 naming `%ProgramData%` and that group, and `alloyd`, when it next starts,
+must read no secret and log the same reason.
+
+### 3.13 Node channel
+
+The **node channel** carries every message between a node's `alloyd` and the
+control plane: the join of section 3.3 steps 5 to 7 and its approval, the
+renewal of section 3.5, the withdrawal and leave of section 3.9, and the status
+reports of ARFC 0006. It runs inside AL sessions (ARFC 0003) and needs no `al0`
+interface and no path but the session's own.
+
+**Carriage.** A node message is one `NodeMessage` below, encoded as Protocol
+Buffers (proto3). One that holds a `forwarded` is at most 16,512 bytes, and
+every other at most 16,384, so that a `forwarded` holds any request or reply,
+since its other fields take at most 77 bytes. The bounds that the definitions
+below state on strings and lists keep every message this section defines
+within 16,384 bytes. It is the payload of one UDP datagram
+(RFC 768) in one IPv6 packet (RFC 8200), sealed as an IPv6 frame on VNI 0 of an
+AL session (ARFC 0003 section 3.4), and split by AL when it exceeds the payload
+budget (ARFC 0003 section 3.5). The IPv6 header has traffic class 0, flow label
+0, next header 17, hop limit 64, and no extension header. The source address is
+the sender's infrastructure address and the destination the receiver's (section
+3.4). Both UDP ports are 7477. The UDP checksum is computed as RFC 8200 section
+8.1 says. A receiver accepts a node message only when its source address is the
+infrastructure address that the mesh key the session authenticated has in the
+receiver's cluster, its destination is the receiver's own infrastructure
+address, both ports are 7477, the checksum verifies, and the payload decodes
+and is within the bounds of this section. It drops anything else silently. A
+joiner takes the `cluster_id` for both addresses from its token.
+
+**Who speaks.** A node sends node messages only on its home session (ARFC 0004
+section 3.1.2), an anchor without `control` only on its control session below,
+and a joiner, or a node renewing an expired record, only on the session it
+opened to an anchor as an unregistered initiator. A home session and a session
+from an unregistered initiator are each an **origin session** at that anchor. The node sends requests and the anchor sends
+replies. The anchor sends on an origin session only at the node's current
+endpoint (ARFC 0004 section 3.1.2), a session from an unregistered initiator
+included. An anchor that holds `control` handles a request itself. One that
+does not forwards it on its control session, as below.
+
+**Control session.** An anchor that does not hold `control` keeps, while it is
+`joined`, one AL session with a control node, its **control session**. It opens
+it to the first control node of its latest view (the bootstrap view of section
+3.3 step 7 or a later one), in the view's order, that answers within 3 seconds,
+at the advertise addresses and the mesh port of that control node's record. A
+control node sends on the session only at an advertise address and the mesh
+port of the anchor's record, and the anchor only at those of the control
+node's: neither ever sends on it at an address learned from a packet. It is
+kept open with keepalives as a home session is (ARFC 0004 section 3.4) and is
+never closed for being idle (ARFC 0004 section 3.8). When it closes, the anchor
+opens a new one within 5 seconds, by the same rule, and while no control node
+answers it retries with backoff from 1 to 60 seconds (ARFC 0004 section 6). It
+carries the anchor's own node messages, as a home session would, and the
+`forwarded` messages below, and no other node message.
+
+**Forwarding.** The anchor numbers its origin sessions from 1 in the order they
+open, and never gives one number to two sessions while `alloyd` runs. It sends a
+request that arrives on an origin session to the control plane as a `forwarded`
+on its control session: the request's `NodeMessage` unchanged, its
+`request_id` included, with the mesh key the origin session authenticated, the
+origin session's number, and the source address and port of the request's
+underlay packet. The `NodeMessage` that holds a `forwarded` has `request_id` 0.
+The control node answers with a `forwarded` on the same control session, under
+`request_id` 0, that holds the same mesh key and origin session number, no
+source address, source port 0, and the reply under the wrapped request's
+`request_id`. The anchor sends that reply on the origin session the number
+names, when that session is still open and authenticated that mesh key, and
+drops it otherwise. The anchor keeps nothing per forwarded request and holds no
+queue: a request that arrives while its control session is not open is dropped,
+and the node's resend 1 second later carries it once the session is open. An
+anchor forwards at most 2,000 requests per second, and drops the rest, which
+their resends carry later.
+
+A control node accepts a `forwarded` only on a session whose peer holds a valid
+record with `anchor`, and treats the mesh key it names as the one an origin
+session authenticated and the source address and port as the request's. An
+anchor accepts a `forwarded` only on its control session. A `NodeMessage` that
+holds a `forwarded` and has a `request_id` other than 0, and a `forwarded` whose
+wrapped message holds a `forwarded`, are dropped.
+
+**Join service.** On a session from an unregistered initiator an anchor accepts
+only keepalives, probe messages (ARFC 0004 section 3.1), and node messages
+whose body is `join_hello`, `join_request`, `join_state`, `renew`, or
+`withdraw`. It drops every other frame and message silently. It takes at most
+1 new request per second per such session and 100 per second over all such
+sessions. A request beyond that is dropped, and its resend is taken later. `leave` and the status messages of ARFC
+0006 are accepted only on a session whose peer holds a valid record, so an
+anchor forwards them only from such a session, and a control node takes them
+in a `forwarded` only when the mesh key it names is in a valid record. A
+`withdraw` deletes the `pending` request, or the `joining` node, that the
+session's mesh key names, and is answered `DONE_CODE_OK` whether or not one
+existed.
+
+**Requests and replies.** `request_id` starts at 1 in each session and grows by
+one with each new request. A node has at most one request outstanding per
+session. It sends the same request again, byte for byte, every 1 second until a
+reply with its `request_id` arrives or the time limit of the step that sent it
+passes. No step's time limit is over 10 seconds, so no request is sent more
+than 10 seconds after it was first sent. The answering side keeps, per session,
+and for a forwarded request per pair of control session and origin session
+number, the highest `request_id` it has taken and, once it exists, that
+request's reply. A request with that id gets the kept reply again, or nothing
+while the reply does not yet exist, and is never handled twice. A lower id is
+dropped. A higher id is handled, and its reply replaces the kept one. A request
+is therefore handled at most once per origin session: a resend, direct or
+forwarded, counts no second token use and writes no second audit record. A
+control node forgets a pair when its control session closes, or 30 seconds
+after the last request for it arrived,
+when no resend of a request it took can still come, and keeps at most 8,192
+pairs per control session: a `forwarded` that would add a pair beyond that is
+dropped, and a resend adds it once a pair has been forgotten. The control plane
+replies within 10 seconds of first taking a request.
+
+```proto
+syntax = "proto3";
+package alloy.node.v1alpha1;   // proto/alloy/node/v1alpha1/node.proto
+
+message NodeMessage {
+  uint64 request_id = 1;
+  oneof body {
+    JoinHello join_hello = 2;          // node to anchor
+    JoinHelloReply join_hello_reply = 3;
+    JoinRequest join_request = 4;      // node to anchor
+    JoinReply join_reply = 5;          // answers join_request, join_state, renew
+    JoinState join_state = 6;          // node to anchor
+    Renew renew = 7;                   // node to anchor
+    Withdraw withdraw = 8;             // node to anchor
+    Leave leave = 9;                   // node to anchor
+    Done done = 10;                    // answers withdraw, leave
+    Forwarded forwarded = 11;          // anchor to control node, and the reply back
+    // Numbers 16 to 31 are the status messages of ARFC 0006.
+  }
+}
+enum Role { ROLE_UNSPECIFIED = 0; ROLE_ANCHOR = 1; ROLE_CONTROL = 2;
+            ROLE_COMPUTE = 3; ROLE_STORAGE = 4; }
+message NodeRecord {
+  bytes cluster_id = 1;              // 16 bytes
+  bytes node_id = 2;                 // 16 bytes
+  string name = 3;
+  bytes identity_pub = 4;            // 32 bytes
+  repeated bytes mesh_pub = 5;       // 32 bytes each, 1 or 2 (section 3.6)
+  repeated Role roles = 6;           // ascending, no repeats, empty for a client node
+  string zone = 7;
+  bytes infra_addr = 8;              // 16 bytes
+  repeated bytes advertise = 9;      // 4 or 16 bytes each, 0 to 16
+  uint32 mesh_port = 10;
+  uint32 api_port = 11;
+  int64 not_after = 12;              // seconds since 1970-01-01T00:00:00Z
+  uint64 serial = 13;
+}
+message SignedNodeRecord { bytes record = 1; bytes signature = 2; }  // 64-byte signature
+message JoinHello { string release = 1; }  // MAJOR.MINOR.PATCH with any pre-release suffix
+message JoinHelloReply { oneof result { VersionRefusal version = 1; ClusterProof cluster = 2; } }
+message VersionRefusal { repeated string accepted_minors = 1; string highest_release = 2; }
+message ClusterProof {
+  bytes cluster_pub = 1;             // 32 bytes
+  SignedNodeRecord anchor_record = 2;
+  bytes previous_cluster_pub = 3;    // empty outside a rotation overlap
+  bytes cross_signature = 4;         // section 3.6, empty outside a rotation overlap
+}
+message Disk { string path = 1; uint64 size_bytes = 2; }   // path at most 255 bytes
+message Facts { string os = 1;                  // at most 64 bytes
+                string arch = 2;                // at most 32 bytes
+                uint32 cores = 3; uint64 memory_bytes = 4; bool virtualization = 5;
+                repeated Disk disks = 6; }      // at most 32
+message JoinRequest {
+  bytes token_id = 1;                // 8 bytes
+  bytes secret = 2;                  // 16 bytes
+  bytes identity_pub = 3;            // 32 bytes
+  reserved 4;                        // the mesh key is the session's (section 3.3 step 6)
+  string name = 5;                   // at most 63 bytes
+  bool name_is_default = 6;
+  repeated Role roles = 7;
+  string zone = 8;                   // at most 63 bytes
+  repeated bytes advertise = 9;      // as in NodeRecord
+  uint32 mesh_port = 10; uint32 api_port = 11;
+  Facts facts = 12;
+}
+message JoinState {}
+message Renew { bytes node_id = 1; uint64 serial = 2; bytes signature = 3; }  // section 3.5
+message JoinReply { oneof result { Admitted admitted = 1; Pending pending = 2; Refusal refusal = 3; } }
+message Admitted { SignedNodeRecord record = 1; BootstrapView view = 2; }
+message Pending {}
+message BootstrapView { bytes cluster_pub = 1; repeated SignedNodeRecord nodes = 2; }
+enum RefusalReason {
+  REFUSAL_REASON_UNSPECIFIED = 0; REFUSAL_REASON_TOKEN_REFUSED = 1;
+  REFUSAL_REASON_KEY_IN_USE = 2; REFUSAL_REASON_TOKEN_REVOKED = 3;
+  REFUSAL_REASON_TOKEN_EXPIRED = 4; REFUSAL_REASON_TOKEN_USED_UP = 5;
+  REFUSAL_REASON_PRESET_CONFLICT = 6; REFUSAL_REASON_COMPUTE_UNSUPPORTED = 7;
+  REFUSAL_REASON_NAME_TAKEN = 8; REFUSAL_REASON_BUSY = 9;
+  REFUSAL_REASON_REJECTED = 10; REFUSAL_REASON_NODE_UNKNOWN = 11;
+}
+message Refusal { RefusalReason reason = 1; int64 expire_time = 2; }  // expire_time only for TOKEN_EXPIRED
+message Withdraw {}
+message Leave { bytes node_id = 1; bytes signature = 2; }  // section 3.9
+enum DoneCode { DONE_CODE_UNSPECIFIED = 0; DONE_CODE_OK = 1; DONE_CODE_CONFLICT = 2; }
+message Done { DoneCode code = 1; string reason = 2; }
+message Forwarded {
+  bytes mesh_pub = 1;                // 32 bytes, the key the origin session authenticated
+  bytes source_address = 2;          // 4 or 16 bytes; empty in a reply
+  uint32 source_port = 3;            // 0 in a reply
+  NodeMessage message = 4;           // request_id 1 or more
+  uint64 origin_session = 5;         // the anchor's number for the origin session, from 1
+}
+```
+
+The bootstrap view holds the cluster's current public key and the records of
+its anchors and control nodes, at most 16, those holding `control` first, then
+by name. A node takes its homes from them (ARFC 0004 section 3.1.2).
+
+**This version.** Before the mesh of ARFC 0004 runs (M11 rung 3), the node
+channel on each node's home session and on each anchor's control session is
+the only traffic between nodes. It goes directly over the underlay: over UDP,
+or `stream`, to an anchor's published address, and over UDP between the
+published addresses of an anchor and a control node. Relay envelopes, signaling, probe sets and direct paths between nodes,
+`al0` with the infrastructure address on hosts (section 3.4), and every other
+use of the infrastructure network wait for the mesh. The API is never reached
+over the mesh (ARFC 0008 section 3.8). Once `al0` exists, node messages to and
+from a node's own infrastructure address travel through it like any other
+packet on VNI 0, with the same bytes.
+
+### 3.14 Stored data
+
+Each node keeps these files in its data directory (section 3.12), each written
+whole: Alloy writes `<name>.new`, flushes it to disk, renames it over `<name>`,
+and makes the rename durable before it writes any other file: on Linux by
+`fsync` of the data directory, since `fsync` of a file "does not necessarily
+ensure that the entry in the directory containing the file has also reached
+disk" (https://man7.org/linux/man-pages/man2/fsync.2.html), and on Windows by
+renaming with `MoveFileExW` and the flags `MOVEFILE_REPLACE_EXISTING` and
+`MOVEFILE_WRITE_THROUGH`, which returns only once the file is moved on the disk
+(https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw).
+So after a crash each file holds either its last durable content or its
+content before that write, and the writes reach the disk in the order they
+were made. Readers ignore `.new` files.
+
+| File | Content | Present |
+|---|---|---|
+| `alloy-host` | The host file (ARFC 0017 section 4.2) | Always, written first |
+| `at-rest.key` | 32 bytes from the `alloy-rt` randomness trait, the node's at-rest key (ARFC 0020 clause 3.7). During an at-rest key rotation, 64 bytes: the old key, then the new | From the first key generation until `leave` |
+| `secrets` | A 24-byte nonce, then the XChaCha20-Poly1305 encryption under the at-rest key, with that nonce and the 24 ASCII bytes `alloy/at-rest/secrets/v1` as associated data, of `NodeSecrets` below | With `at-rest.key` |
+| `handshake-counter` | 8 bytes, little endian: the end of the highest block of handshake counter values reserved (ARFC 0003 section 3.2) | With `at-rest.key` |
+| `node` | `NodeState` below, not secret | While `joining` or `joined` |
+| `disks/0` | The `file` disk (section 3.1) | Nodes with `storage` |
+
+Each write of `secrets` draws a new nonce from the `alloy-rt` randomness trait.
+A 192-bit random nonce repeats under one key with probability below 2^-128 for
+fewer than 2^32 writes, and a node writes `secrets` only when what it holds
+changes. When `at-rest.key` holds 32 bytes, `secrets` opens under that key.
+When it holds 64, `alloyd` opens `secrets` under whichever of the two keys
+authenticates it, and finishes the rotation below before it does anything
+else. A `secrets` file that opens under no key `at-rest.key` holds, or an
+`at-rest.key` of any other length, is not read, and `alloyd` then logs that the
+data directory is damaged and serves nothing.
+
+**At-rest key rotation.** `alloy node rotate` replaces the at-rest key in three
+writes, each made durable before the next:
+
+1. `at-rest.key` becomes the old key followed by the new key, 64 bytes.
+2. `secrets` is written under the new key.
+3. `at-rest.key` becomes the new key, 32 bytes.
+
+A crash before write 1 leaves the old key and `secrets` under it. A crash after
+write 1 and before write 2 leaves both keys and `secrets` under the old one. A
+crash after write 2 and before write 3 leaves both keys and `secrets` under the
+new one. A crash after write 3 leaves the new key and `secrets` under it. In
+each case `secrets` opens. When `alloyd` starts with 64 bytes in
+`at-rest.key`, it finishes the rotation: from write 2 when `secrets` opened
+under the old key, else from write 3. The old key is gone from the data
+directory once write 3 is durable.
+
+```proto
+message NodeSecrets {
+  bytes identity_key = 1;          // Ed25519 seed, 32 bytes
+  bytes mesh_key = 2;              // X25519 private key, 32 bytes
+  bytes previous_mesh_key = 3;     // during a node key rotation (section 3.6)
+  string join_token = 4;           // while joining: the token string
+  JoinRequest join_request = 5;    // while joining: the request of section 3.3 step 6
+  bytes cluster_key = 6;           // control nodes: Ed25519 seed
+  bytes previous_cluster_key = 7;  // control nodes, during a rotation overlap
+  bytes api_ca_key = 8;            // control nodes: PKCS#8 DER (RFC 5208)
+  bytes api_server_key = 9;        // control nodes: PKCS#8 DER
+}
+message NodeState {
+  bytes cluster_id = 1;
+  repeated bytes cluster_pub = 2;  // current, then previous during an overlap
+  SignedNodeRecord record = 3;     // once joined
+  BootstrapView view = 4;          // once joined
+  bool pending = 5;                // a `pending` reply was received
+  bytes api_ca_certificate = 6;    // control nodes: DER
+  bytes api_server_certificate = 7; // control nodes: DER
+}
+```
+
+`join_token` and `join_request` are cleared in the write that records the
+node's record, or the local join state `unjoined`. A failed attempt (section 6)
+keeps `at-rest.key`, `secrets` with only the node keys, `handshake-counter`, and
+the host file, and removes `node`. `leave` removes every file but the host
+file.
+
+Key lifetimes: the node identity and mesh keys last until `alloy node rotate`
+or `leave`, the at-rest key until `leave` or the next `alloy node rotate`,
+which replaces it as above. The cluster key lasts until rotated (section 3.6).
+The key of the self-signed `stream` certificate of an anchor without `control`
+(ARFC 0004 section 3.6) is in no file: it is held in memory from its generation,
+when `alloyd` starts or the certificate is renewed, until the next renewal or
+until `alloyd` stops. The API server key lasts as long as its
+certificate, at most 30 days (section 2). The API CA key lasts as long as its
+certificate, 10 years.
+
+The control plane keeps in its replicated state (ARFC 0006), and nowhere else:
+each node with its signed record bytes, its state, its facts, and the
+`token_id` that admitted it; each `pending` request without its secret, with
+the mesh key and source address it came from; each join token as `token_id`,
+`BLAKE3(secret)`, `cluster_key_fp`, expiry time, use limit, uses, preset roles
+and zone, and whether it is revoked; each login code as `code_id`,
+`BLAKE3(secret)`, its user, `issued_by`, expiry time, and whether it is spent or
+voided; and the API CA certificate. No token, code, or access key secret is kept
+in clear. A client node keeps the files of the table and nothing of the control
+plane's.
 
 ## 6. Failure behavior
 
@@ -597,6 +996,19 @@ deleted first at the bound. `ExchangeLoginCode`: 10 calls per second per source
 address or IPv6 /64, and 100 per second in total, then `RateLimited` (section
 3.7).
 
+Node channel (section 3.13): 16,384 bytes per node message, and 16,512 for one
+that holds a `forwarded`. In `Facts`, 64 bytes of `os`, 32 of `arch`, and 32
+disks with paths of at most 255 bytes. One outstanding request per session at
+the node. At the answering side, one kept `request_id` with its reply per
+session, so at most 4,096 per node (ARFC 0004 section 7), and per pair of
+control session and origin session, at most 8,192 pairs per control session,
+each forgotten 30 seconds after its last request; a `forwarded` that would add
+a pair beyond the bound is dropped. One control session per anchor without
+`control`. 2,000 forwarded requests per second per anchor, the rest dropped.
+On sessions from unregistered initiators, 1 new request per second per session
+and 100 per second per anchor, the rest dropped. 16 records in a bootstrap
+view.
+
 ## 8. Security
 
 A join token is a bearer secret until it expires or is revoked. It grants the
@@ -620,10 +1032,25 @@ node is bounded as ARFC 0020 clause 3.3 bounds a compromised compute node that
 serves no guest, volume, or VPC: holding no role, it can read only traffic
 addressed to itself and can write only its own status.
 Unauthenticated exchange calls are bounded per source and in total before they
-reach the store or the audit log. Upholds I-09, I-14, I-15, I-21, I-22.
+reach the store or the audit log, and so are join service requests (section
+3.13). A node message is accepted only from the infrastructure address of the
+mesh key its AL session authenticated, so no node can speak for another, and a
+`forwarded` request is believed only from an anchor's session, and a
+`forwarded` reply only on the anchor's own control session, which it opened to
+a control node's published address. The node channel
+reaches no endpoint that the anchor has not seen echo a challenge (ARFC 0004
+section 3.1.2), so a spoofed or copied packet cannot point the bootstrap view or
+any other reply at a third party. Secrets at rest are sealed under the node's
+at-rest key (section 3.14, ARFC 0020 clause 3.7). On Windows no principal but
+`SYSTEM`, `Administrators`, and `TrustedInstaller` can delete, rename, or
+replace the data directory or any directory above it (section 3.12).
+Upholds I-09, I-14, I-15, I-21, I-22.
 
 ## 9. Open questions
 
 - Threshold custody of the cluster key across control nodes. Research task to be
   cut in M2.
 - Hardware-bound node keys (TPM). Research task to be cut in M10.
+- How a second control node receives the cluster key and the API CA key, and
+  how the API CA certificate rotates. Spec task to be cut with multi-voter
+  membership (ARFC 0006 clause 3.2).
