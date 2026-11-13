@@ -11,7 +11,7 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0070 |
+| Task `T-` | T-0071 |
 | Decision `D-` | D-0026 |
 | ADR | 0060 |
 | Research `R-` | R-0009 |
@@ -87,11 +87,12 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0059, R-0001 to R-0008
 | T-0062 | build | developer | done | none | Allow thiserror and proptest in the dependency allowlist |
 | T-0063 | spec | architect | queued | T-0059 | Shrink the AL transport header to 25 bytes of overhead |
 | T-0064 | build | developer | queued | T-0063 | Rework alloy-wire for the compact transport header |
-| T-0065 | spec | architect | review | none | State break-glass reach into tenant data accurately |
+| T-0065 | spec | architect | done | none | State break-glass reach into tenant data accurately |
 | T-0066 | spec | architect | review | none | Close the open stored-binding and interface gaps in ARFC 0001 |
 | T-0067 | spec | architect | queued | T-0050 | Settle timeout start and path joining in ARFC 0005 |
 | T-0068 | build | developer | queued | T-0053 | Close the direct-io gaps and vet the Clippy fixture's crates |
 | T-0069 | build | developer | active | none | Property-test the seam config codec and tidy the crates |
+| T-0070 | spec | architect | active | none | State plainly that root on a control node reads all tenant data |
 
 ## First dispatch
 
