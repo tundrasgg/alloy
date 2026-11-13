@@ -1,0 +1,172 @@
+// The `cluster` service at `v1alpha1` (ARFC 0008 clause 3.13): the nodes of
+// the cluster, as the kind `Node` (ARFC 0006 section 2.6).
+//
+// This version holds the methods M11 rung 2 calls, `GetNode` and `ListNodes`.
+// Every method fails with an `alloy.common.v1alpha1.Error` (ARFC 0008 clause
+// 3.6), and with `ERROR_CODE_UNAUTHENTICATED` when the call carries no session
+// token that authenticates and does not come through the local admin socket
+// (ARFC 0008 clauses 3.7.1 and 3.7.2).
+syntax = "proto3";
+
+package alloy.cluster.v1alpha1;
+
+import "google/protobuf/timestamp.proto";
+
+// The nodes of the cluster.
+service ClusterService {
+  // Returns the node with the given name. Never changes anything and never
+  // returns an operation.
+  //
+  // Fails with `ERROR_CODE_NOT_FOUND`, `resource` `nodes/<name>`, when no node
+  // has the name, and with `ERROR_CODE_INVALID_ARGUMENT` when `name` is not a
+  // node name.
+  //
+  // Example request: `{"name": "linux-1"}`.
+  rpc GetNode(GetNodeRequest) returns (Node);
+
+  // Returns one page of the nodes, ordered by name in ascending byte order.
+  // Never changes anything and never returns an operation.
+  //
+  // Fails with `ERROR_CODE_INVALID_ARGUMENT` for a `filter` other than empty,
+  // an `order_by` other than empty or `name`, a `page_size` below 0, and a
+  // `page_token` that this method did not return or that it returned to a
+  // call with another `filter` or `order_by` (ARFC 0008 clause 3.4).
+  //
+  // Example request: `{"page_size": 100}`.
+  rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
+}
+
+// A role a node holds (ARFC 0002 section 2). Shown as `anchor`, `control`,
+// `compute`, and `storage`.
+enum Role {
+  // Never set.
+  ROLE_UNSPECIFIED = 0;
+  // The node accepts AL sessions from other nodes and relays for them.
+  ROLE_ANCHOR = 1;
+  // The node runs the control plane and serves the API.
+  ROLE_CONTROL = 2;
+  // The node runs instances.
+  ROLE_COMPUTE = 3;
+  // The node holds disks for block and object storage.
+  ROLE_STORAGE = 4;
+}
+
+// The state the API reports for a node (ARFC 0002 section 2), computed when
+// read (ARFC 0006 clause 3.15).
+enum NodeState {
+  // Never set.
+  NODE_STATE_UNSPECIFIED = 0;
+  // A join request waits for a cloud admin's approval. No node record exists.
+  NODE_STATE_PENDING = 1;
+  // A node record is issued and the node has not yet reported to the control
+  // plane.
+  NODE_STATE_JOINING = 2;
+  // The control plane has heard from the node within the last 30 seconds.
+  NODE_STATE_ACTIVE = 3;
+  // The node holds a valid record and the control plane has not heard from it
+  // for 30 seconds.
+  NODE_STATE_UNREACHABLE = 4;
+}
+
+// The path class of a node's mesh connectivity (ARFC 0004 section 3.7).
+enum Mesh {
+  // The control plane holds no path class for the node.
+  MESH_UNSPECIFIED = 0;
+  // The node reaches other nodes directly.
+  MESH_DIRECT = 1;
+  // The node reaches other nodes only through relays.
+  MESH_RELAY_ONLY = 2;
+}
+
+// A node of the cluster, or a pending join request (ARFC 0006 section 2.6).
+// Cluster scoped: its full name is `nodes/<name>`. It carries no key, secret,
+// token, or token id.
+message Node {
+  // The node's name, a lower case DNS label of at most 63 characters, as in
+  // `linux-1`.
+  string name = 1;
+  // The resource's immutable id, 16 bytes.
+  bytes uid = 2;
+  // Increases by one with each change to `spec` or `labels`.
+  int64 generation = 3;
+  // When the resource was created.
+  google.protobuf.Timestamp create_time = 4;
+  // The resource's labels, at most 64, keys up to 63 and values up to 255
+  // characters.
+  map<string, string> labels = 5;
+  // Whether the resource is being deleted.
+  bool deleting = 6;
+  // What is wanted of the node.
+  NodeSpec spec = 7;
+  // What is known of the node.
+  NodeStatus status = 8;
+}
+
+// The wanted part of a `Node`.
+message NodeSpec {
+  // Its roles, in ascending order with no repeats. Empty for a client node.
+  repeated Role roles = 1;
+  // Its zone.
+  string zone = 2;
+  // Its advertise addresses (ARFC 0002 section 3.10), in record order, each an
+  // IPv4 address in dotted decimal or an IPv6 address in the form of RFC 5952.
+  repeated string advertise = 3;
+}
+
+// The observed part of a `Node`.
+message NodeStatus {
+  // `NODE_STATE_PENDING`, `NODE_STATE_JOINING`, `NODE_STATE_ACTIVE`, or
+  // `NODE_STATE_UNREACHABLE`.
+  NodeState state = 1;
+  // The node id of ARFC 0002 section 2: the first 16 bytes of the BLAKE3 hash
+  // of the node's identity public key.
+  bytes node_id = 2;
+  // The serial of its current node record. 0 for a pending node.
+  uint64 record_serial = 3;
+  // When its current node record expires. Unset for a pending node.
+  google.protobuf.Timestamp record_not_after = 4;
+  // Whether the control plane has accepted a heartbeat from it since its first
+  // record was issued (ARFC 0006 clause 3.14).
+  bool reported = 5;
+  // The leader's wall time when the node last became unreachable. Unset while
+  // the node is not `NODE_STATE_UNREACHABLE`.
+  google.protobuf.Timestamp unreachable_since = 6;
+  // Its running release (ARFC 0017 clause 3.11), as in `0.0.1-preview.2`.
+  // Empty while none is recorded.
+  string running_release = 7;
+  // The addresses of the latest heartbeat the leader accepted (ARFC 0006
+  // clause 3.13), written as `advertise` is. Empty when there is none.
+  repeated string addresses = 8;
+  // The leader's wall time when it accepted that heartbeat. Unset when there
+  // is none.
+  google.protobuf.Timestamp last_heartbeat_time = 9;
+  // Its path class while the control plane holds one.
+  Mesh mesh = 10;
+}
+
+// The request of `GetNode`.
+message GetNodeRequest {
+  // The node's name, as in `linux-1`.
+  string name = 1;
+}
+
+// The request of `ListNodes` (ARFC 0008 clause 3.4).
+message ListNodesRequest {
+  // The most nodes to return. 0 means 100, and a value above 1,000 is reduced
+  // to 1,000.
+  int32 page_size = 1;
+  // Empty for the first page, else the `next_page_token` of the previous page.
+  string page_token = 2;
+  // Must be empty until the filter grammar is specified.
+  string filter = 3;
+  // Empty or `name`: both order by name, ascending by byte value.
+  string order_by = 4;
+}
+
+// The response of `ListNodes`.
+message ListNodesResponse {
+  // The nodes of this page, ordered by name.
+  repeated Node nodes = 1;
+  // The token of the next page, empty on the last page and only there.
+  string next_page_token = 2;
+}
