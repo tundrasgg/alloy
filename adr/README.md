@@ -59,6 +59,7 @@ or supersede it.
 | [0039](0039-an-authenticated-probe-is-answered-at-the-source-it-arrived.md) | An authenticated probe is answered at the source it arrived from |
 | [0043](0043-the-al-handshake-is-fixed-byte-for-byte-on-noise-ikpsk2.md) | The AL handshake is fixed byte for byte on Noise IKpsk2 |
 | [0045](0045-home-sessions-get-a-keepalive-every-5-seconds-of-idleness.md) | Home sessions get a keepalive every 5 seconds of idleness |
+| [0046](0046-probes-are-sealed-under-session-keys-with-a-replay-window.md) | Probes are sealed under session keys with a replay window |
 
 ## Control plane
 

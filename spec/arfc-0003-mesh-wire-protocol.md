@@ -3,7 +3,7 @@
 - Status: accepted
 - Depends on: 0000
 - Crates: alloy-wire, alloy-link, alloy-crypto
-- Decisions: 0010, 0011, 0012, 0013, 0030, 0043
+- Decisions: 0010, 0011, 0012, 0013, 0030, 0043, 0046
 
 ## 1. Purpose
 
@@ -209,19 +209,26 @@ prk  = HKDF-Extract(salt = h, IKM = k1 || k2)
 i2r  = HKDF-Expand(prk, "alloy/al/session-i2r/v1",  32)
 r2i  = HKDF-Expand(prk, "alloy/al/session-r2i/v1",  32)
 salt = HKDF-Expand(prk, "alloy/al/session-salt/v1", 14)
+pi2r = HKDF-Expand(prk, "alloy/al/probe-i2r/v1",    32)
+pr2i = HKDF-Expand(prk, "alloy/al/probe-r2i/v1",    32)
 ```
 
 Labels are the ASCII bytes shown, with no terminator. The initiator's
 `send_key` is `i2r` and its `recv_key` is `r2i`; the responder's are the
-reverse. Both directions use the same `salt`. The Noise cipher states returned
-by `Split()` are never used to encrypt; transport uses only these keys (3.4).
+reverse. Both directions use the same `salt`. Likewise the initiator's
+`probe_send_key` is `pi2r` and its `probe_recv_key` is `pr2i`, and the
+responder's are the reverse; they seal only probe messages (3.6). The Noise
+cipher states returned by `Split()` are never used to encrypt; transport uses
+only `send_key`, `recv_key` and `salt` (3.4).
 
-Erasure (`agent/eng/crypto.md` rule 3): once `send_key`, `recv_key` and `salt`
-exist, each side must erase every secret handshake value that it or its Noise
-library holds: its ephemeral private key, the chaining key, the handshake cipher
-key, `k1`, `k2`, the cipher states `Split()` returned, and `prk`. A handshake
-that fails or is abandoned must erase the same values when it ends. `send_key`
-and `recv_key` are erased when they are discarded (below). A Noise library that
+Erasure (`agent/eng/crypto.md` rule 3): once `send_key`, `recv_key`, `salt`,
+`probe_send_key` and `probe_recv_key` exist, each side must erase every secret
+handshake value that it or its Noise library holds: its ephemeral private key,
+the chaining key, the handshake cipher key, `k1`, `k2`, the cipher states
+`Split()` returned, and `prk`. A handshake that fails or is abandoned must erase
+the same values when it ends. `send_key` and `recv_key` are erased when they are
+discarded (below), and `probe_send_key` and `probe_recv_key` with them: each
+probe key has the lifetime of the session key of the same direction. A Noise library that
 keeps a copy of any of these values that its caller cannot erase does not meet
 this section.
 
@@ -281,10 +288,122 @@ don't-fragment bit on IPv4 (I-10).
 
 ### 3.6 Probe (type 5)
 
-Probes carry path discovery (ARFC 0004) on the same socket as data. A probe is
-`type, version, reserved (2), sender node_id (16), nonce (24), ciphertext`, sealed
-with a key derived from the static-static shared secret under
-`alloy/al/probe/v1`. Probes work before and without a session.
+Probe messages carry path discovery (ARFC 0004) on the same socket as data. They
+travel inside a session: a node sends a probe message to a peer only under the
+newest session it holds with that peer. A node that is to start probing a peer
+with which it holds no session first opens one (3.1) and sends its first probe
+message once the session exists, which for a responder is once it has sent the
+response. As ARFC 0004 section 3.2 step 4 defines, a **probe** carries a
+challenge and no echo, and an **answer** carries an echo and may also carry a
+challenge.
+
+Probe message (type 5), 88 bytes unless padded:
+
+| Field | Size |
+|---|---|
+| type, version, reserved | 1, 1, 2 |
+| receiver_index | 4 |
+| counter | 8 |
+| encrypted body | 56 + p + 16 |
+
+`receiver_index` names the session at the receiver, as in a transport packet
+(3.1, 3.4). `counter` is the sender's probe counter in that session: it starts at
+0 and grows by one with every probe message the sender seals in the session. It
+is separate from the transport counters. A sender sends no probe message with a
+`counter` of 2^48 or more in a session; it rekeys (3.3) first.
+
+Body, before encryption:
+
+| Field | Size | Content |
+|---|---|---|
+| flags | 1 | Bit 0: challenge present. Bit 1: echo present. Other bits zero |
+| reserved | 3 | Zero |
+| challenge | 16 | With bit 0: 16 fresh random bytes from the `alloy-rt` randomness trait. Otherwise zero |
+| echo | 16 | With bit 1: the challenge answered, unchanged. Otherwise zero |
+| observed family | 1 | 0 none, 4 IPv4, 6 IPv6 |
+| reserved | 1 | Zero |
+| observed port | 2 | |
+| observed address | 16 | IPv4: the 4 address bytes, then 12 zero bytes |
+| padding | p | Zero bytes |
+
+Observed endpoint: an answer carries the source endpoint that the message it
+answers arrived from, as the answering node saw it. Over UDP that is the source
+address and port of the datagram, over the stream underlay (3.8) the remote
+address and port of the stream. Address and port are in the byte order of the IP
+and UDP headers. This is how an anchor reports a reflexive candidate (ARFC 0004
+section 3.1.1). The observed family, port and address are zero in a probe, and
+in an answer to a message that arrived inside a relay envelope (3.7).
+
+Length: a message with bit 1 set is exactly 88 bytes, so `p` is 0. A probe is
+88 bytes, or, when padded for path MTU discovery (ARFC 0004 section 3.5), long
+enough that the underlay packet carrying it has the size under test: that size
+minus the IP and UDP headers (28 bytes over IPv4, 48 over IPv6), minus 32 more
+when the probe travels inside a relay envelope (3.7). `p` makes up the
+difference. Padded probes are sent only over UDP and are at most 65,507 bytes.
+
+Sealing: the encrypted body is XChaCha20-Poly1305 with the sender's
+`probe_send_key` of the session (3.3), as nonce 16 zero bytes followed by
+`counter` as 8 bytes little-endian, every byte of the message before the
+encrypted body as associated data, and the body as plaintext. The receiver opens
+it with its `probe_recv_key` of the session that `receiver_index` names. A probe
+key seals in one direction of one session only and `counter` never repeats in
+it, so a nonce is never used twice with a key (I-07). The two directions use
+different keys, so a message reflected back to its sender does not open. No
+Diffie-Hellman operation is done for a probe message, by its sender or its
+receiver.
+
+Replay window: for each session, the receiver keeps a sliding window of 2,048
+probe counters, separate from the transport windows of 3.4: the highest
+`counter` accepted in the session, and which of the 2,048 counters up to it were
+accepted. A probe message passes the replay check when its `counter` has not
+been accepted in that session and is at most 2,047 below the highest accepted. A
+probe message is **accepted** when `receiver_index` names a session whose
+`probe_recv_key` the receiver holds, its encrypted body opens with that key, it
+passes the replay check, and it passes the fixed value checks below. Only an
+accepted message changes the window. A receiver may run the replay check before
+it opens the body. A node keeps a session's window exactly as long as it keeps
+that session's `probe_recv_key` and erases the two together. A process that
+hands a session over to its successor (ARFC 0017 section 3.5) hands over the
+window with the key.
+
+Replay protection, as ARFC 0020 section 3.2 requires: no probe message is
+accepted twice. While the receiver holds the key that opens a message, the window
+rejects that message's `counter` once it has been accepted. Once the receiver
+discards the key (3.3), or loses it in a crash or restart, nothing sealed under
+it opens again, and every later session has new keys (3.3). There is no other
+state whose loss lets a message pass again. A message that was sent and never
+accepted, because the underlay dropped or delayed it, can still be accepted once,
+while its key is held and its `counter` is within the window: that is a dropped
+or reordered message, which ARFC 0020 section 2.1 allows the underlay attacker,
+not a replay.
+
+What an accepted message changes is defined by ARFC 0004 section 3.2: whether it
+is answered, and which endpoint it verifies. A probe message is not a transport
+packet. It carries no inner frame and it does not move the session's return path
+(ARFC 0004 section 3.4). Because no message is accepted twice, a replayed probe
+message draws no answer, verifies nothing, and adds no answer challenge, so
+replays cannot displace the challenges a node puts in its answers (ARFC 0004
+section 7). A replayed or unauthenticated probe message creates and refreshes no
+state.
+
+Fixed values: before any cryptographic operation, a receiver must drop a probe
+message that is shorter than 88 bytes or longer than 65,507, whose `version` is
+not 1, whose header `reserved` is not zero, or whose `receiver_index` names no
+session whose `probe_recv_key` the receiver holds. After opening, it must drop a
+message whose flags have neither bit 0 nor bit 1 set or have any other bit set;
+whose reserved bytes, padding, or absent challenge or echo are not zero; whose
+observed family is not 0, 4 or 6, or is 0 with a non-zero observed port or
+address, or is 4 with a non-zero byte in observed address bytes 4 to 15; which
+has bit 1 set and is not 88 bytes long; or which has bit 1 clear and an observed
+family other than 0.
+
+Cost: a probe message costs its sender one AEAD seal and its receiver at most one
+AEAD open, the probe row of the table in section 6. Neither side does a
+Diffie-Hellman operation or a synced write for it. The state is per session: two
+32-byte probe keys, an 8-byte send counter, and a window of 8 bytes plus 2,048
+bits, 336 bytes in all. A node holds it only for sessions it holds, so at most one
+per session within the limit of ARFC 0004 section 7 (default 4,096), plus a
+previous session for the 10 seconds after each rekey (3.3).
 
 ### 3.7 Relay envelope (type 6)
 
@@ -308,8 +427,8 @@ Cost before authentication: a receiver must not spend more on a packet before
 the packet is authenticated than the table below allows. "DH" is one X25519
 operation. An initiation is authenticated when its encrypted payload decrypts
 and its counter passes 3.2. A response is authenticated when its encrypted
-payload decrypts. Every other message is authenticated when its authentication
-tag verifies.
+payload decrypts. A probe message is authenticated when it is accepted (3.6).
+Every other message is authenticated when its authentication tag verifies.
 
 | Message | Allowed before it is authenticated |
 |---|---|
@@ -317,6 +436,7 @@ tag verifies.
 | Initiation, under load | One `mac1` check, then at most two `mac2` checks, with the cookies computed from the current and the previous `cookie_secret`. If no `mac2` is valid: the AEAD seal of one cookie reply (3.1), and no DH. If one is valid: as when not under load |
 | Response | One `mac1` check. Then, only if `receiver_index` names an initiation the receiver has pending: two DH (`ee`, `se`) and the AEAD open of the encrypted payload |
 | Cookie reply | Only if `receiver_index` names an initiation the receiver has pending: the AEAD open of the encrypted cookie |
+| Probe message | Only if it passes the checks that 3.6 makes before any cryptographic operation, which include that `receiver_index` names a session whose `probe_recv_key` the receiver holds: the replay check and one AEAD open of the encrypted body with that key. No DH, under load or not |
 | Any other type | One MAC check, or one DH when not under load |
 
 The responder computes the two DH that build the response (`ee`, `se`) only
