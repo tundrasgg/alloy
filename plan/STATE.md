@@ -11,13 +11,13 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0057 |
+| Task `T-` | T-0058 |
 | Decision `D-` | D-0023 |
-| ADR | 0056 |
+| ADR | 0057 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0002 |
 
-ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0055, R-0001 to R-0008, and PB-0001 are allocated to the tasks below.
+ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0056, R-0001 to R-0008, and PB-0001 are allocated to the tasks below.
 
 ## Board
 
@@ -28,8 +28,8 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0055, R-0001 to R-0008
 | T-0003 | research | researcher | done | none | Research deterministic simulation options in Rust |
 | T-0004 | research | researcher | done | none | Research Cloud Hypervisor against ARFC 0011 |
 | T-0005 | research | researcher | done | none | Research NAT behaviors and define lab presets |
-| T-0006 | spec | architect | review | none | Specify the alloy-rt and alloy-seam interfaces |
-| T-0007 | interface | developer | queued | T-0001, T-0006 | Define the alloy-rt and alloy-seam interface crates |
+| T-0006 | spec | architect | done | none | Specify the alloy-rt and alloy-seam interfaces |
+| T-0007 | interface | developer | queued | T-0056 | Define the alloy-rt and alloy-seam interface crates |
 | T-0008 | verify | verifier | queued | T-0007 | Write conformance suites for the runtime seams |
 | T-0009 | build | developer | queued | T-0007, T-0050 | Build the alloy-sim deterministic simulator |
 | T-0010 | verify | verifier | queued | T-0007, T-0050 | Write determinism and fault tests for the simulator |
@@ -72,13 +72,14 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0055, R-0001 to R-0008
 | T-0047 | spec | architect | cancelled | none | Protect the last cloud-admin and mark ADR 0041 superseded |
 | T-0048 | research | researcher | done | none | Research the rustls provider and a P-256 signing source |
 | T-0049 | process | architect | done | none | Fix the P-256 rules in the crypto engineering file |
-| T-0050 | spec | architect | queued | T-0006 | Specify the alloy-sim world and scenario interface |
+| T-0050 | spec | architect | active | none | Specify the alloy-sim world and scenario interface |
 | T-0051 | build | developer | blocked | T-0053 | Run the commit message check in CI |
 | T-0052 | spec | architect | active | none | Make the local admin a full break-glass administrator |
 | T-0053 | build | developer | queued | T-0046 | Parse commit trailers only from the last paragraph |
 | T-0054 | build | developer | active | none | Build alloy-wire for AL handshake and transport messages |
 | T-0055 | verify | verifier | queued | T-0054 | Write conformance vectors for AL handshake and transport bytes |
 | T-0056 | process | architect | active | none | Let parallel tasks add crates to the shared workspace files |
+| T-0057 | spec | architect | active | none | Keep stored seam configuration readable across releases |
 
 ## First dispatch
 
