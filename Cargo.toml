@@ -45,6 +45,27 @@ hmac = { version = "=0.13.0", default-features = false }
 # wall clock reads in tests, so only `std` is enabled.
 proptest = { version = "=1.12.0", default-features = false, features = ["std"] }
 thiserror = "=2.0.21"
+# Only alloy-rt depends on the crates below. They serve its `os` runtime
+# implementations (ARFC 0005 section 2.6), the only code outside alloy-sim that
+# calls the operating system for time, network, storage, randomness, or
+# concurrency.
+#
+# The platform's cryptographically secure generator, for the `os` rng seam.
+getrandom = "=0.4.3"
+# System calls and option constants of Unix platforms.
+libc = "=0.2.191"
+# Batched UDP send and receive with segmentation offload, packet information,
+# and the don't fragment options (ARFC 0005 clause 3.1.2). Its default features
+# only add logging.
+quinn-udp = { version = "=0.5.16", default-features = false }
+# Socket creation and options before a socket is handed to tokio.
+socket2 = { version = "=0.6.5", features = ["all"] }
+# The standing async runtime (agent/eng/deps.md). No macros: the multi-thread
+# scheduler, timers, sockets, and `Notify` only.
+tokio = { version = "=1.54.1", default-features = false, features = ["net", "rt-multi-thread", "sync", "time"] }
+# Interface enumeration, and a write handle for `sync` on a read handle, on
+# Windows.
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_Storage", "Win32_Storage_FileSystem"] }
 
 [workspace.lints.rust]
 missing_docs = "warn"
