@@ -1,7 +1,7 @@
 [package]
 name = "alloy-crypto"
 version = "0.0.0"
-description = "The only crate that depends on cryptographic crates. BLAKE3 content hashing and the AL handshake and transport cryptography."
+description = "The only crate that depends on cryptographic crates: BLAKE3, the AL handshake and transport, Ed25519, ECDSA P-256 and X.509 certificates, and sealing at rest."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -15,6 +15,21 @@ subtle.workspace = true
 thiserror.workspace = true
 x25519-dalek.workspace = true
 zeroize.workspace = true
+# The identity primitives of ARFC 0002 section 2 (agent/eng/crypto.md, ADR
+# 0053). Their versions are stated here rather than in the root manifest, so
+# that tasks adding dependencies in parallel share only the lists that
+# agent/protocol/tasks.md makes shared. No feature that reads a random
+# generator is enabled: the caller supplies every random byte, and P-256
+# signs only with the RFC 6979 signer.
+ed25519-dalek = { version = "=3.0.0", default-features = false, features = ["fast", "zeroize"] }
+p256 = { version = "=0.14.0", default-features = false, features = ["alloc", "ecdsa", "pkcs8"] }
+# Certificates only, signed through the key above. Without the `crypto`,
+# `ring`, `aws_lc_rs`, and `pem` features `rcgen` holds no key of its own.
+rcgen = { version = "=0.14.10", default-features = false }
+# The subject key identifier of RFC 7093 section 2 method 1.
+sha2 = { version = "=0.11.1", default-features = false }
+# The validity times `rcgen` takes, built from seconds since 1970.
+time = { version = "=0.3.55", default-features = false }
 
 [dev-dependencies]
 hkdf.workspace = true

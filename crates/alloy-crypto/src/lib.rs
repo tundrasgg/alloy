@@ -5,10 +5,11 @@
 //! primitive through the interface here, so the choice of implementation, its
 //! version and its features are made in one place.
 //!
-//! It offers two things.
+//! It offers these things.
 //!
 //! BLAKE3 content hashing, which `alloy-sim` uses for the trace hash and
-//! record digests of ARFC 0005 clause 3.2.5:
+//! record digests of ARFC 0005 clause 3.2.5, and `alloy-id` for ids and
+//! fingerprints (ARFC 0002):
 //!
 //! - [`hash`] hashes one byte slice in a single call.
 //! - [`Hasher`] hashes input that arrives in pieces.
@@ -21,12 +22,38 @@
 //! The cryptography of the AL mesh protocol, in [`al`]: the Noise `IKpsk2`
 //! handshake, the session keys, `mac1`, `mac2` and cookies, and transport
 //! sealing and opening (ARFC 0003 sections 3.1 to 3.4).
+//!
+//! The identity primitives of ARFC 0002 section 2: Ed25519 signatures in
+//! [`ed25519`], ECDSA P-256 with RFC 6979 nonces in [`ecdsa`], the API CA and
+//! API server certificates and the ACME certificate signing request in
+//! [`x509`], and XChaCha20-Poly1305 with a
+//! caller-chosen nonce for data at rest in [`aead`].
+//!
+//! # Randomness
+//!
+//! Nothing in this crate reads a random generator. Every key is built from
+//! bytes the caller draws from the `alloy-rt` randomness trait and hands over
+//! (`agent/eng/crypto.md` rule 4), and every signature is deterministic.
+//!
+//! # Erasure
+//!
+//! Every private key type erases itself when it is dropped, is not `Clone`,
+//! and shows no key bytes through `Debug`. Byte copies of secrets that this
+//! crate hands out, such as a seed for storage, are [`Zeroizing`] and erase
+//! themselves too. The limit of that guarantee is stated in [`al`], under
+//! Erasure, and applies to the whole crate.
 
 #![forbid(unsafe_code)]
 
 use std::fmt;
 
+pub mod aead;
 pub mod al;
+pub mod ecdsa;
+pub mod ed25519;
+pub mod x509;
+
+pub use zeroize::{Zeroize, Zeroizing};
 
 /// Returns the 32-byte BLAKE3 hash of `input`.
 ///

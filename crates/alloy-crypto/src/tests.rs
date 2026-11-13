@@ -1,5 +1,8 @@
 use super::{Hasher, hash};
 
+/// The identity primitives: Ed25519, ECDSA P-256, X.509, and the AEAD.
+mod identity;
+
 /// The `hash` cases of the official BLAKE3 test vectors, truncated to the
 /// default 32-byte output, as the vector file says implementations without
 /// extended output should check.

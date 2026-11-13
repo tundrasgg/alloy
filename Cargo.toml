@@ -2,8 +2,11 @@
 resolver = "3"
 members = [
     "crates/alloy",
+    "crates/alloy-api",
     "crates/alloy-crypto",
+    "crates/alloy-id",
     "crates/alloy-link",
+    "crates/alloy-proto",
     "crates/alloy-rt",
     "crates/alloy-seam",
     "crates/alloy-sim",
@@ -52,19 +55,50 @@ hmac = { version = "=0.13.0", default-features = false }
 # wall clock reads in tests, so only `std` is enabled.
 proptest = { version = "=1.12.0", default-features = false, features = ["std"] }
 thiserror = "=2.0.21"
-# Raft for the control plane groups (ADR 0064), used only by alloy-state. The
-# default features add the tokio runtime and clap; alloy-state runs openraft on
-# its own `AsyncRuntime` over `alloy-rt` instead.
-openraft = { version = "=0.10.0", default-features = false }
-# The `native` log-store and state-store files (ADR 0064, ARFC 0006 section
+# (ARFC 0002 section 3.7).
+# (agent/eng/crypto.md).
 # 4.2), used only by alloy-state.
-redb = { version = "=4.5.0", default-features = false, features = ["std"] }
+# Build dependencies of alloy-proto: `protox` compiles the definitions in Rust,
+# Dev-dependency of alloy-api only: test certificates for its TLS tests. With
+# Raft for the control plane groups (ADR 0064), used only by alloy-state. The
 # Stream combinators for the openraft storage adapters in alloy-state; already
-# in the openraft tree.
-futures-util = { version = "=0.3.34", default-features = false, features = ["std"] }
+# TLS 1.3 for the API endpoints (agent/eng/crypto.md, ADR 0042, ADR 0053),
+# The `native` log-store and state-store files (ADR 0064, ARFC 0006 section
+# The certificate parser `rustls` verifies with, named directly by alloy-api to
 # The generator trait openraft's runtime draws election timeouts through;
+# The native API (ARFC 0008 clause 3.10): Protocol Buffers by `prost`, gRPC by
+# `aws_lc_rs` it signs with the provider's own randomized signer, which is
+# `tonic`, served and called over `hyper`'s HTTP/2 on connections that
+# allowed only for these throwaway test keys, never an Alloy key
+# alloy-api makes through the `alloy-rt` net seam. `tonic` has only `codegen`:
 # alloy-state implements it over the `alloy-rt` rng seam.
+# default features add the tokio runtime and clap; alloy-state runs openraft on
+# in the openraft tree.
+# its own `AsyncRuntime` over `alloy-rt` instead.
+# its transport would open sockets and spawn tasks outside `alloy-rt`.
+# no logging, and the key exchange groups are set by alloy-api.
+# read the SubjectPublicKeyInfo of a presented CA certificate for `api_ca_fp`
+# so the build needs neither `protoc` nor the network.
+# used only by alloy-api. Only the `aws-lc-rs` provider and `std`: no TLS 1.2,
+bytes = "=1.11.1"
+futures-util = { version = "=0.3.34", default-features = false, features = ["std"] }
+http = "=1.5.0"
+http-body-util = "=0.1.5"
+hyper = { version = "=1.12.0", default-features = false, features = ["client", "http2", "server"] }
+openraft = { version = "=0.10.0", default-features = false }
+prost = { version = "=0.14.6", default-features = false, features = ["std", "derive"] }
+prost-types = { version = "=0.14.6", default-features = false, features = ["std"] }
+protox = "=0.10.0"
 rand_core = { version = "=0.10.1", default-features = false }
+rcgen = { version = "=0.14.10", default-features = false, features = ["aws_lc_rs", "crypto"] }
+redb = { version = "=4.5.0", default-features = false, features = ["std"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["aws_lc_rs", "std"] }
+tokio-rustls = { version = "=0.26.6", default-features = false }
+tonic = { version = "=0.14.9", default-features = false, features = ["codegen"] }
+tonic-prost = { version = "=0.14.9", default-features = false }
+tonic-prost-build = { version = "=0.14.9", default-features = false }
+tower-service = "=0.3.3"
+webpki = { package = "rustls-webpki", version = "=0.103.17", default-features = false, features = ["alloc"] }
 # The standing choice for logging (agent/eng/deps.md), used by `alloyd`. The
 # `attributes` feature, a procedural macro tree, is off.
 tracing = { version = "=0.1.44", default-features = false, features = ["std"] }

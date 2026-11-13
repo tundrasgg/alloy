@@ -1,0 +1,91 @@
+// The error of every method of the native API (ARFC 0008 clause 3.6).
+//
+// Codes are defined here once and never reused. Each code has one gRPC
+// status, one HTTP status for the JSON form, and one CLI exit code
+// (ARFC 0019 clause 3.1.7), listed on each value below as
+// `gRPC <status> (<number>), HTTP <status>, exit <code>`.
+//
+// On gRPC an error travels as the call's status, with `message` as
+// `grpc-message`, and with the trailer `alloy-error-bin` holding the encoded
+// `Error`.
+syntax = "proto3";
+
+package alloy.common.v1alpha1;
+
+import "google/protobuf/duration.proto";
+
+// The stable code of an error. The CLI and the console show it by the rule of
+// `product/principles.md` A5.
+enum ErrorCode {
+  // Never sent. A client that reads it treats the error as `INTERNAL`.
+  ERROR_CODE_UNSPECIFIED = 0;
+  // The request is malformed or a field breaks a rule; `field_violations`
+  // lists every such field. gRPC INVALID_ARGUMENT (3), HTTP 400, exit 2.
+  ERROR_CODE_INVALID_ARGUMENT = 1;
+  // The request carries no credential, or one that does not authenticate.
+  // The message is the same for every cause. gRPC UNAUTHENTICATED (16),
+  // HTTP 401, exit 4.
+  ERROR_CODE_UNAUTHENTICATED = 2;
+  // The caller is authenticated and its policies do not allow the call.
+  // gRPC PERMISSION_DENIED (7), HTTP 403, exit 4.
+  ERROR_CODE_PERMISSION_DENIED = 3;
+  // The resource named in `resource` does not exist, or belongs to another
+  // organization. gRPC NOT_FOUND (5), HTTP 404, exit 3.
+  ERROR_CODE_NOT_FOUND = 4;
+  // The resource changed since it was read, or is in a state the call does not
+  // accept. gRPC ABORTED (10), HTTP 409, exit 5.
+  ERROR_CODE_CONFLICT = 5;
+  // The call would exceed a quota. gRPC RESOURCE_EXHAUSTED (8), HTTP 403,
+  // exit 1.
+  ERROR_CODE_QUOTA_EXCEEDED = 6;
+  // The caller sent more requests than its rate limit allows; retry after
+  // `retry_delay_duration`. gRPC RESOURCE_EXHAUSTED (8), HTTP 429, exit 6.
+  ERROR_CODE_RATE_LIMITED = 7;
+  // A watch or list asked for a revision that has been compacted away.
+  // gRPC OUT_OF_RANGE (11), HTTP 410, exit 1.
+  ERROR_CODE_COMPACTED = 8;
+  // The service cannot answer now; retry after `retry_delay_duration`.
+  // gRPC UNAVAILABLE (14), HTTP 503, exit 6.
+  ERROR_CODE_UNAVAILABLE = 9;
+  // A fault inside Alloy. gRPC INTERNAL (13), HTTP 500, exit 1.
+  ERROR_CODE_INTERNAL = 10;
+}
+
+// One invalid field of a request (`product/principles.md` A12).
+message FieldViolation {
+  // The path of the field in the request, its names joined by `.`, as in
+  // `page_token`.
+  string field = 1;
+  // The rule the field's value breaks, written for a person.
+  string rule = 2;
+}
+
+// A call that fixes the error, and the same call as a CLI command
+// (`product/principles.md` A11).
+message NextStep {
+  // The API method, as `<package>.<Service>/<Method>`, as in
+  // `alloy.iam.v1alpha1.IamService/ExchangeLoginCode`.
+  string method = 1;
+  // The CLI form of the call, as in `alloy login <login code>`. The CLI prints
+  // it after `Try:`.
+  string command = 2;
+}
+
+// The error of a call, carried in the trailer `alloy-error-bin`.
+message Error {
+  // The stable code.
+  ErrorCode code = 1;
+  // What happened, why, and what to do next, written for a person. Equal to
+  // the call's `grpc-message`.
+  string message = 2;
+  // The full name of the resource concerned, as in `nodes/linux-1`. Empty when
+  // the error concerns no one resource.
+  string resource = 3;
+  // Every invalid field of the request, for `ERROR_CODE_INVALID_ARGUMENT`.
+  repeated FieldViolation field_violations = 4;
+  // How long to wait before retrying, for `ERROR_CODE_RATE_LIMITED` and
+  // `ERROR_CODE_UNAVAILABLE`. Unset otherwise.
+  google.protobuf.Duration retry_delay_duration = 5;
+  // The call that fixes the error, when one exists.
+  NextStep next_step = 6;
+}
