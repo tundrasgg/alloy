@@ -48,7 +48,7 @@ ADR 0036, ADR 0040 to ADR 0043, ADR 0045, R-0001 to R-0005, and PB-0001 are allo
 | T-0023 | spec | architect | active | none | Specify user access keys and the local admin path |
 | T-0024 | spec | architect | queued | T-0021 | Fix the default mesh port and TCP 443 sharing |
 | T-0025 | process | architect | done | none | Let parallel tasks share append-only index files |
-| T-0026 | spec | architect | active | none | Make the ARFC 0003 handshake implementable on Noise libraries |
+| T-0026 | spec | architect | review | none | Make the ARFC 0003 handshake implementable on Noise libraries |
 | T-0027 | process | architect | done | none | Align core delegation and the lead role with shared index files |
 | T-0028 | spec | architect | done | none | Fix the Landlock clauses in ARFC 0011 section 2 |
 | T-0029 | spec | architect | done | none | Record the install script location in ADR 0044 |
