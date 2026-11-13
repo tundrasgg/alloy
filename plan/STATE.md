@@ -11,13 +11,13 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0048 |
+| Task `T-` | T-0050 |
 | Decision `D-` | D-0018 |
-| ADR | 0053 |
-| Research `R-` | R-0008 |
+| ADR | 0054 |
+| Research `R-` | R-0009 |
 | Brief `PB-` | PB-0002 |
 
-ADR 0036, ADR 0042, ADR 0046 to ADR 0052, R-0001 to R-0007, and PB-0001 are allocated to the tasks below.
+ADR 0036, ADR 0042, ADR 0046 to ADR 0053, R-0001 to R-0008, and PB-0001 are allocated to the tasks below.
 
 ## Board
 
@@ -63,13 +63,15 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0052, R-0001 to R-0007, and PB-0001 are allo
 | T-0038 | spec | architect | active | none | Specify probe bytes and probe replay protection in ARFC 0003 |
 | T-0039 | spec | architect | cancelled | none | Bound probe sets and return path moves in ARFC 0004 |
 | T-0040 | spec | architect | done | none | Bound lineage state and close gaps in ARFC 0007 section 3.9 |
-| T-0041 | spec | architect | review | none | Use a browser-compatible key type for the API CA |
+| T-0041 | spec | architect | done | none | Use a browser-compatible key type for the API CA |
 | T-0042 | build | developer | done | none | Close the check-repo gaps found in review |
 | T-0043 | spec | architect | active | none | Settle the path class rule and bound return path moves |
 | T-0044 | spec | architect | review | none | Make access key recovery and deleted-key requests well defined |
-| T-0045 | spec | architect | queued | T-0041, T-0044 | Close join, local admin, and API CA gaps in ARFC 0002 and 0019 |
+| T-0045 | spec | architect | queued | T-0044 | Close join, local admin, and API CA gaps in ARFC 0002 and 0019 |
 | T-0046 | build | developer | queued | T-0018 | Enforce direct-io with Clippy on resolved paths |
 | T-0047 | spec | architect | queued | T-0044 | Protect the last cloud-admin and mark ADR 0041 superseded |
+| T-0048 | research | researcher | active | none | Research the rustls provider and a P-256 signing source |
+| T-0049 | process | architect | queued | T-0048 | Fix the P-256 rules in the crypto engineering file |
 
 ## First dispatch
 
@@ -111,7 +113,6 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 - Process: a task that supersedes an ADR needs that ADR's status line and its index row in `touches`; the shared index rule has no append-only way to mark a superseded row (T-0044).
 - Spec: ARFC 0014 maps native errors, including `Unauthenticated`, to S3 errors; add `Unauthenticated` to `proto/alloy/common/errors.proto` when it is written (T-0044).
 - Process: a dependency policy for npm packages, since `deny.toml` covers Cargo only (T-0035).
-- Research then ADR: the `rustls` crypto provider (`aws-lc-rs` needs a C build and license review; `ring` release cadence), which must sign ECDSA P-256 with RFC 6979 nonces, and the crate that builds X.509 certificates for the API CA. From R-0004 and T-0041.
 - Spec (M6): a key type for the ingress ACME certificates in ARFC 0010 clause 3.6 (T-0041).
 - The task that wires openraft into `alloy-rt` includes a seed replay test. From R-0004.
 - If LMDB or `blake3` are adopted, an ADR adds OpenLDAP and CC0 to the license allowlist. From R-0004.
