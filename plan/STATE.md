@@ -5,7 +5,7 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 ## Now
 
 - Milestone: M11, First deployment (`plan/milestones.md`, D-0034), above M0 and M1, which continue in parallel
-- M11 rung: 1, install. Run 2 of v0.0.1-preview.2: 78 passed, 3 failed, all three the digest of Proxmox's self-updating `lrm_status` timestamp; T-0100 normalizes it (merged); a bridge FDB counter in `ip -d link` also changes between snapshots, T-0101
+- M11 rung: 2, join. Rung 1 passed on the real machines: `tests/e2e/rung1.ps1` against `v0.0.1-preview.2`, 81 passed, 0 failed (two Linux nodes, one a Proxmox VE host, and the Windows client)
 - Milestones exited: none
 
 ## Next free ids
