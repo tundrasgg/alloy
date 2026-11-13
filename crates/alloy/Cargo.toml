@@ -1,0 +1,11 @@
+[package]
+name = "alloy"
+version.workspace = true
+description = "The Alloy command line interface (ARFC 0019)."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
