@@ -17,7 +17,7 @@ use std::future::{Future, poll_fn};
 
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::task::Poll;
 use std::time::Duration;
 
@@ -60,6 +60,12 @@ struct HostInner {
     runtime: Mutex<Option<Runtime>>,
     /// Set by [`OsHost::shutdown`] before the runtime stops.
     shutting_down: AtomicBool,
+    /// Whether the timer driver may be stopped. A poll of a `tokio` timer
+    /// holds it shared and reads `true` only before shutdown; shutdown writes
+    /// `false` holding it exclusively, so no timer poll is between its check
+    /// and the `tokio` call while the driver stops. `tokio` panics on a timer
+    /// polled after its driver stopped.
+    timers: RwLock<bool>,
 }
 
 impl OsHost {
@@ -85,6 +91,7 @@ impl OsHost {
             handle: runtime.handle().clone(),
             runtime: Mutex::new(Some(runtime)),
             shutting_down: AtomicBool::new(false),
+            timers: RwLock::new(true),
         })))
     }
 
@@ -111,6 +118,7 @@ impl OsHost {
     /// Called from a task, it cannot wait, and returns at once.
     pub fn shutdown(&self, grace: Duration) {
         self.0.shutting_down.store(true, Ordering::SeqCst);
+        self.0.close_timers();
         let runtime = self
             .0
             .runtime
@@ -141,11 +149,21 @@ impl HostInner {
     fn is_shut(&self) -> bool {
         self.shutting_down.load(Ordering::SeqCst)
     }
+
+    /// Waits for every timer poll in progress to end, and makes every later
+    /// one see the host shut.
+    fn close_timers(&self) {
+        *self.timers.write().unwrap_or_else(PoisonError::into_inner) = false;
+    }
 }
 
 impl Drop for HostInner {
     fn drop(&mut self) {
         self.shutting_down.store(true, Ordering::SeqCst);
+        *self
+            .timers
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner) = false;
         let runtime = self
             .runtime
             .get_mut()
@@ -192,12 +210,12 @@ impl Host {
     /// Completes once `deadline` has passed on the runtime's timer. Never
     /// completes once the host is shutting down: `tokio` panics on a timer
     /// polled after its driver stopped, and this keeps every sleep from
-    /// reaching that.
+    /// reaching that, from any thread, also while the host shuts down.
     fn sleep_until(&self, deadline: std::time::Instant) -> SleepUntil {
         SleepUntil {
+            sleep: None,
             host: self.clone(),
             deadline: tokio::time::Instant::from_std(deadline),
-            sleep: None,
         }
     }
 
@@ -222,10 +240,12 @@ struct Stopped;
 
 /// The future of [`Host::sleep_until`].
 struct SleepUntil {
+    /// Created on the first poll that needs it, inside the runtime's context.
+    /// Declared first so that it is dropped before `host`, which may hold the
+    /// last reference to the runtime.
+    sleep: Option<Pin<Box<tokio::time::Sleep>>>,
     host: Host,
     deadline: tokio::time::Instant,
-    /// Created on the first poll that needs it, inside the runtime's context.
-    sleep: Option<Pin<Box<tokio::time::Sleep>>>,
 }
 
 impl fmt::Debug for SleepUntil {
@@ -240,15 +260,20 @@ impl Future for SleepUntil {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<()> {
-        if self.host.is_shut() {
+        let SleepUntil {
+            sleep,
+            host,
+            deadline,
+        } = &mut *self;
+        // Held until the `tokio` poll returns, so the driver cannot stop in
+        // between (see `HostInner::timers`).
+        let open = host.0.timers.read().unwrap_or_else(PoisonError::into_inner);
+        if !*open {
             return Poll::Pending;
         }
-        let this = &mut *self;
-        let _context = this.host.handle().enter();
-        let deadline = this.deadline;
-        let sleep = this
-            .sleep
-            .get_or_insert_with(|| Box::pin(tokio::time::sleep_until(deadline)));
+        let _context = host.handle().enter();
+        let deadline = *deadline;
+        let sleep = sleep.get_or_insert_with(|| Box::pin(tokio::time::sleep_until(deadline)));
         sleep.as_mut().poll(cx)
     }
 }
@@ -435,6 +460,52 @@ mod tests {
             Poll::Ready(Err(crate::JoinError::Cancelled))
         );
         assert!(format!("{host:?}").contains("shutting_down: true"));
+    }
+
+    #[test]
+    fn sleeps_polled_while_the_host_shuts_down_never_panic() {
+        // Each round races four pollers against the shutdown. Without the
+        // gate in `SleepUntil::poll`, a poll panics inside `tokio` within the
+        // first 50 rounds or so, so 500 rounds find it.
+        for _ in 0..500 {
+            let host = host();
+            let registry = registry(&host);
+            let empty = ConfigValue::defaults(1).unwrap();
+            let os = ImplName::new("os").unwrap();
+            let clock = registry.instantiate::<ClockSeam>(&(), &os, &empty).unwrap();
+            let stop = Arc::new(AtomicBool::new(false));
+            let started = Arc::new(AtomicU32::new(0));
+            let pollers: Vec<_> = (0..4)
+                .map(|_| {
+                    let clock = Arc::clone(&clock);
+                    let stop = Arc::clone(&stop);
+                    let started = Arc::clone(&started);
+                    std::thread::spawn(move || {
+                        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+                        let mut rounds = 0_u32;
+                        while !stop.load(Ordering::SeqCst) || rounds == 0 {
+                            let deadline = clock.now().saturating_add(Duration::from_secs(3600));
+                            let mut sleep = clock.sleep_until(deadline);
+                            assert!(sleep.as_mut().poll(&mut cx).is_pending());
+                            assert!(sleep.as_mut().poll(&mut cx).is_pending());
+                            drop(sleep);
+                            if rounds == 0 {
+                                started.fetch_add(1, Ordering::SeqCst);
+                            }
+                            rounds += 1;
+                        }
+                    })
+                })
+                .collect();
+            while started.load(Ordering::SeqCst) < 4 {
+                std::thread::yield_now();
+            }
+            host.shutdown(Duration::from_millis(100));
+            stop.store(true, Ordering::SeqCst);
+            for poller in pollers {
+                assert!(poller.join().is_ok(), "a poll panicked");
+            }
+        }
     }
 
     #[test]

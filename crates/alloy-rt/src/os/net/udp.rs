@@ -105,7 +105,7 @@ impl OsUdpSocket {
             tokio::net::UdpSocket::from_std(socket.into()).map_err(net)?
         };
         let state = UdpSocketState::new(UdpSockRef::from(&io)).map_err(net)?;
-        platform::forbid_fragmentation(&io, local.is_ipv6()).map_err(net)?;
+        platform::forbid_fragmentation(&io, &state, local.is_ipv6())?;
         let local = io.local_addr().map_err(net)?;
         Ok(OsUdpSocket {
             host,
@@ -426,11 +426,20 @@ mod platform {
     use std::io;
     use std::os::fd::{AsFd, AsRawFd};
 
+    use quinn_udp::UdpSocketState;
+
+    use crate::NetError;
+    use crate::os::errors;
+
     /// Makes the kernel refuse a datagram above the path MTU it knows, the one
     /// it learned from ICMP included, instead of sending it to be dropped:
     /// `IP_PMTUDISC_DO`. `quinn-udp` sets `IP_PMTUDISC_PROBE`, which ignores
-    /// learned values.
-    pub(super) fn forbid_fragmentation(socket: &impl AsFd, v6: bool) -> io::Result<()> {
+    /// learned values. A kernel that refuses the option fails the bind.
+    pub(super) fn forbid_fragmentation(
+        socket: &impl AsFd,
+        _state: &UdpSocketState,
+        v6: bool,
+    ) -> Result<(), NetError> {
         let (level, name, value) = if v6 {
             (
                 libc::IPPROTO_IPV6,
@@ -459,7 +468,7 @@ mod platform {
         if rc == 0 {
             Ok(())
         } else {
-            Err(io::Error::last_os_error())
+            Err(errors::net(&io::Error::last_os_error()))
         }
     }
 
@@ -493,11 +502,39 @@ mod platform {
 
 #[cfg(not(target_os = "linux"))]
 mod platform {
-    use std::io;
+    use quinn_udp::UdpSocketState;
 
-    /// `quinn-udp` already sets the don't fragment options of this platform.
-    pub(super) fn forbid_fragmentation<S>(_socket: &S, _v6: bool) -> io::Result<()> {
-        Ok(())
+    use crate::NetError;
+
+    /// Whether `quinn-udp` sets a don't fragment option for this family on
+    /// this platform: on Windows, Apple platforms, FreeBSD, and Android for
+    /// both, elsewhere for IPv6 only.
+    const SETS_DONT_FRAGMENT_V4: bool = cfg!(any(
+        windows,
+        target_vendor = "apple",
+        target_os = "freebsd",
+        target_os = "android"
+    ));
+
+    /// Checks that the socket cannot emit a fragmented datagram. `quinn-udp`
+    /// sets the platform's don't fragment options when it builds the socket
+    /// state, failing on Windows when one is refused, and elsewhere recording
+    /// a refusal in `may_fragment`.
+    ///
+    /// # Errors
+    ///
+    /// [`NetError::Unsupported`] when the platform does not forbid
+    /// fragmentation on this socket (I-10).
+    pub(super) fn forbid_fragmentation<S>(
+        _socket: &S,
+        state: &UdpSocketState,
+        v6: bool,
+    ) -> Result<(), NetError> {
+        if state.may_fragment() || (!v6 && !SETS_DONT_FRAGMENT_V4) {
+            Err(NetError::Unsupported)
+        } else {
+            Ok(())
+        }
     }
 
     /// This platform does not report a route's MTU.

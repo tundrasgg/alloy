@@ -71,14 +71,17 @@ impl OsDiskIo {
     /// # Errors
     ///
     /// [`DiskError::InvalidPath`] for a component the platform would not
-    /// read as one plain name, such as `C:` on Windows, which would replace
-    /// the root rather than extend it.
+    /// read as one plain name of its own: on Windows `C:`, which would replace
+    /// the root rather than extend it, `a.`, which names `a`, or `CON`, which
+    /// names a device.
     fn native(&self, path: &RtPath) -> Result<PathBuf, DiskError> {
         let mut native = self.root.clone();
         for component in path.as_str().split('/').filter(|c| !c.is_empty()) {
             let mut parts = Path::new(component).components();
             match (parts.next(), parts.next()) {
-                (Some(Component::Normal(name)), None) if name == OsStr::new(component) => {
+                (Some(Component::Normal(name)), None)
+                    if name == OsStr::new(component) && platform::is_plain_name(component) =>
+                {
                     native.push(component);
                 }
                 _ => return Err(DiskError::InvalidPath),
@@ -275,7 +278,7 @@ fn open_native(path: &Path, options: OpenOptions) -> Result<Opened, DiskError> {
     std_options
         .read(true)
         .write(options.access == Access::ReadWrite);
-    match options.create {
+    match platform_create(options) {
         Create::Never => {}
         Create::IfMissing => {
             std_options.create(true);
@@ -312,6 +315,18 @@ fn open_native(path: &Path, options: OpenOptions) -> Result<Opened, DiskError> {
         device_len,
         block_size,
     })
+}
+
+/// The create mode to hand the platform for `options`. An exclusive open is
+/// of a block device that exists, as `open_native` checks first, so it creates
+/// nothing: with a create flag, Linux reads `O_EXCL` as "fail if it exists"
+/// rather than "fail while another holder has the device".
+fn platform_create(options: OpenOptions) -> Create {
+    if options.exclusive {
+        Create::Never
+    } else {
+        options.create
+    }
 }
 
 /// An open file or block device, implementation `os`.
@@ -453,10 +468,11 @@ impl DiskFile for OsDiskFile {
         let lens: Vec<usize> = ranges.iter().map(|range| range.1).collect();
         let shared = Arc::clone(&self.shared);
         let ticket = self.inflight.issue();
+        let unit = self.direct.then_some(self.block_size as usize);
         let task = self.host.blocking(move || {
             let _ticket = ticket;
             ops.into_iter()
-                .map(|op| read_one(&shared.file, op))
+                .map(|op| read_one(&shared.file, op, unit))
                 .collect::<Vec<_>>()
         });
         Box::pin(async move {
@@ -507,21 +523,11 @@ impl DiskFile for OsDiskFile {
         let barrier = self.inflight.barrier();
         let shared = Arc::clone(&self.shared);
         let host = self.host.clone();
-        let read_only = self.access == Access::Read;
+        let access = self.access;
         Box::pin(async move {
             barrier.await;
-            if read_only && !platform::SYNC_READ_HANDLES {
-                // No write was made through this handle, so it has nothing to
-                // make durable, and the platform refuses to flush a handle
-                // without write access.
-                return Ok(());
-            }
             let task = host.blocking(move || {
-                match kind {
-                    SyncKind::Data => shared.file.sync_data(),
-                    SyncKind::All => shared.file.sync_all(),
-                }
-                .map_err(|e| errors::disk(&e))
+                platform::sync(&shared.file, access, kind).map_err(|e| errors::disk(&e))
             });
             task.await.unwrap_or(Err(DiskError::Io))
         })
@@ -544,7 +550,11 @@ impl DiskFile for OsDiskFile {
     }
 }
 
-fn read_one(file: &File, op: ReadOp) -> ReadDone {
+/// Reads `op` whole, or up to the end of the file. On a direct handle `unit`
+/// is the block size: a platform read that ends off a block boundary has
+/// reached the end of the file, and reading on from there would hand the
+/// platform an unaligned offset and buffer, which it refuses.
+fn read_one(file: &File, op: ReadOp, unit: Option<usize>) -> ReadDone {
     let ReadOp { offset, mut buf } = op;
     let mut done = 0;
     let result = loop {
@@ -556,7 +566,12 @@ fn read_one(file: &File, op: ReadOp) -> ReadDone {
         };
         match platform::read_at(file, &mut buf[done..], at) {
             Ok(0) => break Ok(done),
-            Ok(n) => done += n,
+            Ok(n) => {
+                done += n;
+                if unit.is_some_and(|unit| !done.is_multiple_of(unit)) {
+                    break Ok(done);
+                }
+            }
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
             Err(e) => break Err(errors::disk(&e)),
         }
@@ -660,12 +675,24 @@ mod platform {
     use std::path::Path;
 
     use super::DEFAULT_BLOCK_SIZE;
-    use crate::{DiskError, EntryKind, OpenOptions};
+    use crate::{Access, DiskError, EntryKind, OpenOptions, SyncKind};
 
-    pub(super) const SYNC_READ_HANDLES: bool = true;
+    /// Makes the file's completed writes durable, and with `SyncKind::All`
+    /// its metadata, through any handle of it, a read handle included.
+    pub(super) fn sync(file: &File, _access: Access, kind: SyncKind) -> io::Result<()> {
+        match kind {
+            SyncKind::Data => file.sync_data(),
+            SyncKind::All => file.sync_all(),
+        }
+    }
 
     pub(super) fn is_block_device(file_type: &fs::FileType) -> bool {
         file_type.is_block_device()
+    }
+
+    /// Every component `RtPath` accepts names itself here.
+    pub(super) fn is_plain_name(_name: &str) -> bool {
+        true
     }
 
     pub(super) fn set_flags(
@@ -733,12 +760,24 @@ mod platform {
     use std::path::Path;
 
     use super::DEFAULT_BLOCK_SIZE;
-    use crate::{DiskError, EntryKind, OpenOptions};
+    use crate::{Access, DiskError, EntryKind, OpenOptions, SyncKind};
 
-    pub(super) const SYNC_READ_HANDLES: bool = true;
+    /// Makes the file's completed writes durable, and with `SyncKind::All`
+    /// its metadata, through any handle of it, a read handle included.
+    pub(super) fn sync(file: &File, _access: Access, kind: SyncKind) -> io::Result<()> {
+        match kind {
+            SyncKind::Data => file.sync_data(),
+            SyncKind::All => file.sync_all(),
+        }
+    }
 
     pub(super) fn is_block_device(file_type: &fs::FileType) -> bool {
         file_type.is_block_device()
+    }
+
+    /// Every component `RtPath` accepts names itself here.
+    pub(super) fn is_plain_name(_name: &str) -> bool {
+        true
     }
 
     pub(super) fn set_flags(
@@ -799,18 +838,109 @@ mod platform {
     use std::path::Path;
 
     use super::DEFAULT_BLOCK_SIZE;
-    use crate::{DiskError, EntryKind, OpenOptions};
+    use crate::{Access, DiskError, EntryKind, OpenOptions, SyncKind};
 
     /// `FILE_FLAG_NO_BUFFERING`.
     const NO_BUFFERING: u32 = 0x2000_0000;
     /// `FILE_FLAG_BACKUP_SEMANTICS`, which lets a directory be opened.
     const BACKUP_SEMANTICS: u32 = 0x0200_0000;
 
-    /// Windows refuses to flush a handle without write access.
-    pub(super) const SYNC_READ_HANDLES: bool = false;
+    /// Makes the file's completed writes durable, and with `SyncKind::All`
+    /// its metadata. Windows refuses to flush a handle without write access,
+    /// so a read handle is flushed through a write handle of the same open
+    /// file, which fails as the platform decides, never silently.
+    pub(super) fn sync(file: &File, access: Access, kind: SyncKind) -> io::Result<()> {
+        let writable;
+        let file = if access == Access::Read {
+            writable = reopen_for_write(file)?;
+            &writable
+        } else {
+            file
+        };
+        match kind {
+            SyncKind::Data => file.sync_data(),
+            SyncKind::All => file.sync_all(),
+        }
+    }
+
+    /// A new handle with write access to the file `file` has open, whatever
+    /// its path is now.
+    #[allow(unsafe_code, reason = "ReOpenFile has no safe binding")]
+    fn reopen_for_write(file: &File) -> io::Result<File> {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        use windows_sys::Win32::Foundation::{GENERIC_WRITE, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, ReOpenFile,
+        };
+
+        let share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+        // SAFETY: `file` owns an open handle for the whole call. ReOpenFile
+        // reads only the handle value and returns a new handle or
+        // INVALID_HANDLE_VALUE.
+        let handle = unsafe { ReOpenFile(file.as_raw_handle(), GENERIC_WRITE, share, 0) };
+        if handle == INVALID_HANDLE_VALUE || handle.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: `handle` is a new open handle that nothing else owns, so
+        // the `OwnedHandle` is its only owner and closes it once.
+        Ok(File::from(unsafe { OwnedHandle::from_raw_handle(handle) }))
+    }
 
     pub(super) fn is_block_device(_file_type: &fs::FileType) -> bool {
         false
+    }
+
+    /// The device names Windows reserves in every directory, with or without
+    /// an extension.
+    const RESERVED: [&str; 30] = [
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        "CONIN$",
+        "CONOUT$",
+        "COM1",
+        "COM2",
+        "COM3",
+        "COM4",
+        "COM5",
+        "COM6",
+        "COM7",
+        "COM8",
+        "COM9",
+        "COM\u{b9}",
+        "COM\u{b2}",
+        "COM\u{b3}",
+        "LPT1",
+        "LPT2",
+        "LPT3",
+        "LPT4",
+        "LPT5",
+        "LPT6",
+        "LPT7",
+        "LPT8",
+        "LPT9",
+        "LPT\u{b9}",
+        "LPT\u{b2}",
+        "LPT\u{b3}",
+    ];
+
+    /// Whether Windows reads `name` as a file of exactly that name: no
+    /// character it forbids or reads as a stream separator, no trailing dot
+    /// or space, which it strips, and no reserved device name.
+    pub(super) fn is_plain_name(name: &str) -> bool {
+        const FORBIDDEN: &[char] = &['<', '>', ':', '"', '|', '?', '*'];
+        if name
+            .chars()
+            .any(|c| c.is_ascii_control() || FORBIDDEN.contains(&c))
+            || name.ends_with(['.', ' '])
+        {
+            return false;
+        }
+        let stem = name.split('.').next().unwrap_or(name).trim_end_matches(' ');
+        !RESERVED
+            .iter()
+            .any(|reserved| stem.eq_ignore_ascii_case(reserved))
     }
 
     pub(super) fn set_flags(

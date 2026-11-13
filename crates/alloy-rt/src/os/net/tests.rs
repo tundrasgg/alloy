@@ -308,6 +308,21 @@ fn interfaces_report_a_generation() {
     finish(host);
 }
 
+#[test]
+fn a_wait_ends_at_the_first_change_after_the_call() {
+    // No generation given: the current list at once.
+    assert!(answers(None, 1, 1));
+    // A first read already newer than `g`: at once.
+    assert!(answers(Some(2), 3, 3));
+    // `g` current: at the next change, and not before.
+    assert!(!answers(Some(3), 3, 3));
+    assert!(answers(Some(3), 3, 4));
+    // `g` ahead of this instance, kept from an earlier one: at the next change
+    // all the same, not once the generation passes `g`.
+    assert!(!answers(Some(10), 3, 3));
+    assert!(answers(Some(10), 3, 4));
+}
+
 /// A connected pair over TCP on loopback: (client, server).
 fn tcp_pair(host: &OsHost, net: &OsNet) -> (Box<dyn Stream>, Box<dyn Stream>, Box<dyn Listener>) {
     let listener = net

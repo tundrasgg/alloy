@@ -324,8 +324,125 @@ fn plain_names_only_extend_the_root() {
     let s = Scratch::new("native");
     assert_eq!(s.disk.native(&RtPath::root()), Ok(s.dir.clone()));
     assert_eq!(s.disk.native(&path("/a/b")), Ok(s.dir.join("a").join("b")));
-    if cfg!(windows) {
-        assert_eq!(s.disk.native(&path("/C:")), Err(DiskError::InvalidPath));
+    // Names Windows would read as another file, a stream, or a device.
+    let aliases = [
+        "/C:",
+        "/a:b",
+        "/a.",
+        "/b ",
+        "/d/c.",
+        "/CON",
+        "/con",
+        "/AUX.txt",
+        "/nul .x",
+        "/COM1",
+        "/LPT9.log",
+        "/COM\u{b9}",
+        "/q?",
+        "/s*",
+        "/p|q",
+        "/x<y",
+        "/\"q\"",
+        "/t\u{1}",
+    ];
+    for alias in aliases {
+        let expected = if cfg!(windows) {
+            Err(DiskError::InvalidPath)
+        } else {
+            Ok(s.dir.join(alias.trim_start_matches('/')))
+        };
+        assert_eq!(s.disk.native(&path(alias)), expected, "{alias}");
     }
+    for plain in [
+        "/COM10",
+        "/CONSOLE",
+        "/a.b",
+        "/.a",
+        "/a b",
+        "/LPT",
+        "/conx.txt",
+    ] {
+        assert_eq!(
+            s.disk.native(&path(plain)),
+            Ok(s.dir.join(&plain[1..])),
+            "{plain}"
+        );
+    }
+    s.finish();
+}
+
+#[test]
+fn a_direct_read_across_the_end_returns_the_bytes_before_it() {
+    let s = Scratch::new("direct-end");
+    let direct = OpenOptions {
+        access: Access::Read,
+        create: Create::Never,
+        direct: true,
+        exclusive: false,
+    };
+    // The block size the platform reports for a direct handle in this
+    // directory; a file system without direct I/O has nothing to check.
+    drop(s.open("/probe", Access::ReadWrite, Create::New).unwrap());
+    let block = match s.run(s.disk.open(&path("/probe"), direct)) {
+        Ok(file) => s.run(file.info()).unwrap().block_size as usize,
+        Err(DiskError::Unsupported) => return s.finish(),
+        Err(e) => panic!("{e:?}"),
+    };
+    let len = block + 904;
+    let bytes: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+    let file = s.open("/f", Access::ReadWrite, Create::New).unwrap();
+    assert_eq!(
+        s.run(file.write_at(vec![write(0, &bytes)]))[0].result,
+        Ok(())
+    );
+    s.run(file.sync(SyncKind::Data)).unwrap();
+    drop(file);
+    let file = s.run(s.disk.open(&path("/f"), direct)).unwrap();
+    let done = s.run(file.read_at(vec![
+        read(block as u64, block),
+        read(0, 2 * block),
+        read(2 * block as u64, block),
+    ]));
+    assert_eq!(done[0].result, Ok(904));
+    assert_eq!(&done[0].buf[..904], &bytes[block..]);
+    assert_eq!(done[1].result, Ok(len));
+    assert_eq!(&done[1].buf[..len], &bytes[..]);
+    assert_eq!(done[2].result, Ok(0));
+    drop(file);
+    s.finish();
+}
+
+#[test]
+fn an_exclusive_open_creates_nothing() {
+    for create in [Create::Never, Create::IfMissing, Create::New] {
+        let exclusive = OpenOptions {
+            access: Access::ReadWrite,
+            create,
+            direct: false,
+            exclusive: true,
+        };
+        assert_eq!(platform_create(exclusive), Create::Never);
+        let shared = OpenOptions {
+            exclusive: false,
+            ..exclusive
+        };
+        assert_eq!(platform_create(shared), create);
+    }
+}
+
+#[test]
+fn sync_on_a_read_handle_makes_the_file_durable() {
+    let s = Scratch::new("sync-read");
+    let writer = s.open("/f", Access::ReadWrite, Create::New).unwrap();
+    let done = s.run(writer.write_at(vec![write(0, b"durable")]));
+    assert_eq!(done[0].result, Ok(()));
+    let reader = s.open("/f", Access::Read, Create::Never).unwrap();
+    assert_eq!(s.run(reader.sync(SyncKind::Data)), Ok(()));
+    assert_eq!(s.run(reader.sync(SyncKind::All)), Ok(()));
+    drop(writer);
+    // The handle is synced, not the name: renaming the file changes nothing.
+    s.run(s.disk.rename(&path("/f"), &path("/g"))).unwrap();
+    assert_eq!(s.run(reader.sync(SyncKind::All)), Ok(()));
+    drop(reader);
     s.finish();
 }

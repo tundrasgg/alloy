@@ -143,6 +143,7 @@ impl Net for OsNet {
         let host = self.host.clone();
         let cache = Arc::clone(&self.interfaces);
         Box::pin(async move {
+            let mut first = None;
             loop {
                 let fresh = host
                     .blocking(ifaces::read)
@@ -150,7 +151,8 @@ impl Net for OsNet {
                     .map_err(|Stopped| NetError::Closed)?
                     .map_err(|e| errors::net(&e))?;
                 let list = cache.update(fresh);
-                if newer_than.is_none_or(|g| list.generation > g) {
+                let first = *first.get_or_insert(list.generation);
+                if answers(newer_than, first, list.generation) {
                     return Ok(list);
                 }
                 let now = std::time::Instant::now();
@@ -256,6 +258,15 @@ fn connect_unix(
     _permit: Permit,
 ) -> BoxFuture<'static, Result<Box<dyn Stream>, NetError>> {
     Box::pin(ready(Err(NetError::Unsupported)))
+}
+
+/// Whether `interfaces(newer_than)` completes with a list of `generation`,
+/// when its first read of the list had generation `first` (ARFC 0005 clause
+/// 3.1.7): at once when `first` is newer than `g`, otherwise at the first
+/// change after the call, also when `g` is ahead of every generation this
+/// instance has had.
+fn answers(newer_than: Option<u64>, first: u64, generation: u64) -> bool {
+    newer_than.is_none_or(|g| generation > g.min(first))
 }
 
 /// The host's interface list as last read, and its generation (ARFC 0005
