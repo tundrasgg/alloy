@@ -75,7 +75,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0059, R-0001 to R-0008
 | T-0050 | spec | architect | active | none | Specify the alloy-sim world and scenario interface |
 | T-0051 | build | developer | blocked | T-0053 | Run the commit message check in CI |
 | T-0052 | spec | architect | done | none | Make the local admin a full break-glass administrator |
-| T-0053 | build | developer | active | none | Parse commit trailers only from the last paragraph |
+| T-0053 | build | developer | review | none | Parse commit trailers only from the last paragraph |
 | T-0054 | build | developer | done | none | Build alloy-wire for AL handshake and transport messages |
 | T-0055 | verify | verifier | queued | T-0064 | Write conformance vectors for AL handshake and transport bytes |
 | T-0056 | process | architect | done | none | Let parallel tasks add crates to the shared workspace files |
