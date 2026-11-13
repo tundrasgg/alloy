@@ -11,13 +11,13 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0063 |
-| Decision `D-` | D-0024 |
-| ADR | 0058 |
+| Task `T-` | T-0065 |
+| Decision `D-` | D-0025 |
+| ADR | 0059 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0002 |
 
-ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0057, R-0001 to R-0008, and PB-0001 are allocated to the tasks below.
+ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0058, R-0001 to R-0008, and PB-0001 are allocated to the tasks below.
 
 ## Board
 
@@ -68,23 +68,25 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0057, R-0001 to R-0008
 | T-0043 | spec | architect | active | none | Settle the path class rule and bound return path moves |
 | T-0044 | spec | architect | done | none | Make access key recovery and deleted-key requests well defined |
 | T-0045 | spec | architect | queued | T-0052 | Close join, local admin, and API CA gaps in ARFC 0002 and 0019 |
-| T-0046 | build | developer | active | none | Enforce direct-io with Clippy on resolved paths |
+| T-0046 | build | developer | review | none | Enforce direct-io with Clippy on resolved paths |
 | T-0047 | spec | architect | cancelled | none | Protect the last cloud-admin and mark ADR 0041 superseded |
 | T-0048 | research | researcher | done | none | Research the rustls provider and a P-256 signing source |
 | T-0049 | process | architect | done | none | Fix the P-256 rules in the crypto engineering file |
 | T-0050 | spec | architect | active | none | Specify the alloy-sim world and scenario interface |
 | T-0051 | build | developer | blocked | T-0053 | Run the commit message check in CI |
-| T-0052 | spec | architect | active | none | Make the local admin a full break-glass administrator |
+| T-0052 | spec | architect | review | none | Make the local admin a full break-glass administrator |
 | T-0053 | build | developer | queued | T-0046 | Parse commit trailers only from the last paragraph |
 | T-0054 | build | developer | review | none | Build alloy-wire for AL handshake and transport messages |
-| T-0055 | verify | verifier | queued | T-0054 | Write conformance vectors for AL handshake and transport bytes |
+| T-0055 | verify | verifier | queued | T-0064 | Write conformance vectors for AL handshake and transport bytes |
 | T-0056 | process | architect | done | none | Let parallel tasks add crates to the shared workspace files |
 | T-0057 | spec | architect | active | none | Keep stored seam configuration readable across releases |
 | T-0058 | process | architect | done | none | Align core and lead rules with shared workspace files |
 | T-0059 | spec | architect | review | none | Discard sessions a failed handover's successor touched |
-| T-0060 | spec | architect | queued | T-0059 | Settle the open fragment and queue details in ARFC 0003 |
+| T-0060 | spec | architect | cancelled | none | Settle the open fragment and queue details in ARFC 0003 |
 | T-0061 | build | developer | queued | T-0054 | Add fuzz targets for every alloy-wire decoder |
 | T-0062 | build | developer | active | none | Allow thiserror and proptest in the dependency allowlist |
+| T-0063 | spec | architect | queued | T-0059 | Shrink the AL transport header to 25 bytes of overhead |
+| T-0064 | build | developer | queued | T-0054, T-0063 | Rework alloy-wire for the compact transport header |
 
 ## First dispatch
 
