@@ -26,6 +26,20 @@ publish = false
 # the Rust implementations, so the build compiles no C or assembly. `std` keeps
 # runtime CPU feature detection for the Rust SIMD paths.
 blake3 = { version = "=1.8.7", default-features = false, features = ["std", "pure"] }
+# The AL handshake and transport primitives (ARFC 0003, agent/eng/crypto.md).
+# Only alloy-crypto depends on these. Every one is built with its `zeroize`
+# feature, so key material the crates hold is erased on drop (ARFC 0003
+# section 3.3). No feature that reads a random generator is enabled: the caller
+# supplies every random byte.
+blake2 = { version = "=0.11.0", default-features = false, features = ["zeroize"] }
+chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["zeroize"] }
+subtle = { version = "=2.6.1", default-features = false }
+x25519-dalek = { version = "=3.0.0", default-features = false, features = ["precomputed-tables", "static_secrets", "zeroize"] }
+zeroize = { version = "=1.9.1", default-features = false }
+# Dev-dependencies of alloy-crypto only: independent implementations of
+# HMAC-BLAKE2s and HKDF that its own construction is tested against.
+hkdf = { version = "=0.13.0", default-features = false }
+hmac = { version = "=0.13.0", default-features = false }
 # Dev-dependency only. The default `fork` and `timeout` features run each test
 # in a child process under a wall clock timeout, and agent/eng/testing.md bars
 # wall clock reads in tests, so only `std` is enabled.

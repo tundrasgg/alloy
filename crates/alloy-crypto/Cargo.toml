@@ -1,14 +1,25 @@
 [package]
 name = "alloy-crypto"
 version = "0.0.0"
-description = "The only crate that depends on cryptographic crates. BLAKE3 content hashing."
+description = "The only crate that depends on cryptographic crates. BLAKE3 content hashing and the AL handshake and transport cryptography."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
 [dependencies]
+blake2.workspace = true
 blake3.workspace = true
+chacha20poly1305.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+x25519-dalek.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+hkdf.workspace = true
+hmac.workspace = true
+proptest.workspace = true
 
 [lints]
 workspace = true
