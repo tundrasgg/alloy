@@ -239,6 +239,9 @@ function Test-AlloyMarker([string]$Path) {
     return $true
 }
 
+# A function that ends with "return ,$out" returns its array as one object, so
+# its caller assigns the result to a variable and loops over that: a foreach
+# over the call itself sees the whole array, even an empty one, as one item.
 function Get-AlloyMarkers {
     $out = @()
     foreach ($t in @("$($AlloyState.Paths.Root).alloy-new", "$($AlloyState.Paths.Root).alloy-old")) {
@@ -664,7 +667,8 @@ function Invoke-AlloyUninstall([string]$Try) {
     # Step 6.
     if ($AlloyState.DD -eq 'alloy') {
         Write-AlloySay 'Removing host objects'
-        foreach ($m in Get-AlloyHostMatches) {
+        $found = Get-AlloyHostMatches
+        foreach ($m in $found) {
             $out = & pnputil.exe /remove-device $m.Adapter.PnPDeviceID 2>&1
             if ($LASTEXITCODE -ne 0) {
                 Stop-Alloy 1 "Could not remove $($m.Description): $out" 'run this uninstall again'
@@ -700,7 +704,8 @@ function Invoke-AlloyUninstall([string]$Try) {
         }
         Remove-AlloyManifest
     }
-    foreach ($mk in Get-AlloyMarkers) {
+    $markers = Get-AlloyMarkers
+    foreach ($mk in $markers) {
         Remove-Item -LiteralPath $mk -Recurse -Force
         Write-AlloyStep 'done' "removed $mk, left by an interrupted install"
     }
@@ -720,7 +725,8 @@ function Invoke-AlloyUninstall([string]$Try) {
     } elseif ($AlloyState.DD -eq 'other') {
         Write-AlloySay "Left $($paths.DataDir) in place: it is not an Alloy data directory."
     }
-    foreach ($o in Get-AlloyReserved) {
+    $reserved = Get-AlloyReserved
+    foreach ($o in $reserved) {
         Write-AlloySay "Left $o in place: Alloy did not create it."
     }
     Write-AlloySay 'Kept each user''s CLI configuration in %APPDATA%\alloy and the access keys the CLI stored in Windows Credential Manager.'
