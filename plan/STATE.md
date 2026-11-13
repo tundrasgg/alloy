@@ -11,7 +11,7 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0068 |
+| Task `T-` | T-0069 |
 | Decision `D-` | D-0026 |
 | ADR | 0060 |
 | Research `R-` | R-0009 |
@@ -68,14 +68,14 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0059, R-0001 to R-0008
 | T-0043 | spec | architect | active | none | Settle the path class rule and bound return path moves |
 | T-0044 | spec | architect | done | none | Make access key recovery and deleted-key requests well defined |
 | T-0045 | spec | architect | queued | T-0052 | Close join, local admin, and API CA gaps in ARFC 0002 and 0019 |
-| T-0046 | build | developer | review | none | Enforce direct-io with Clippy on resolved paths |
+| T-0046 | build | developer | done | none | Enforce direct-io with Clippy on resolved paths |
 | T-0047 | spec | architect | cancelled | none | Protect the last cloud-admin and mark ADR 0041 superseded |
 | T-0048 | research | researcher | done | none | Research the rustls provider and a P-256 signing source |
 | T-0049 | process | architect | done | none | Fix the P-256 rules in the crypto engineering file |
 | T-0050 | spec | architect | active | none | Specify the alloy-sim world and scenario interface |
 | T-0051 | build | developer | blocked | T-0053 | Run the commit message check in CI |
 | T-0052 | spec | architect | done | none | Make the local admin a full break-glass administrator |
-| T-0053 | build | developer | queued | T-0046 | Parse commit trailers only from the last paragraph |
+| T-0053 | build | developer | active | none | Parse commit trailers only from the last paragraph |
 | T-0054 | build | developer | done | none | Build alloy-wire for AL handshake and transport messages |
 | T-0055 | verify | verifier | queued | T-0064 | Write conformance vectors for AL handshake and transport bytes |
 | T-0056 | process | architect | done | none | Let parallel tasks add crates to the shared workspace files |
@@ -90,6 +90,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0059, R-0001 to R-0008
 | T-0065 | spec | architect | active | none | State break-glass reach into tenant data accurately |
 | T-0066 | spec | architect | active | none | Close the open stored-binding and interface gaps in ARFC 0001 |
 | T-0067 | spec | architect | queued | T-0050 | Settle timeout start and path joining in ARFC 0005 |
+| T-0068 | build | developer | queued | T-0053 | Close the direct-io gaps and vet the Clippy fixture's crates |
 
 ## First dispatch
 
