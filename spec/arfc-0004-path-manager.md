@@ -3,7 +3,7 @@
 - Status: accepted
 - Depends on: 0002, 0003
 - Crates: alloy-path, alloy-relay
-- Decisions: 0014, 0015, 0016, 0031, 0039, 0045, 0061
+- Decisions: 0014, 0015, 0016, 0031, 0039, 0042, 0045, 0063
 
 ## 1. Purpose
 
@@ -17,10 +17,18 @@ An **endpoint** is `(underlay kind, address, port)`. A node's **candidates** are
 
 | Kind | Source |
 |---|---|
-| local | Addresses on its interfaces |
+| local | Addresses on its interfaces, each with its mesh port (section 3.6), except those below |
 | reflexive | Its address as an anchor sees it |
 | mapped | A port mapping it obtained from its gateway (`portmap` seam) |
 | relay | An anchor it is homed to |
+
+A node never takes as a local candidate, and never advertises, an address on an
+interface whose name ARFC 0017 clause 3.17 reserves (`al` or `alv` then a
+digit, on Windows `al` then a digit) whoever created it, an address inside its
+cluster's infrastructure prefix (ARFC 0002 section 3.4) on any interface, a
+loopback address (127.0.0.0/8, ::1), or a link-local address (169.254.0.0/16,
+fe80::/10). AL packets carried inside the mesh therefore never become a path of
+the mesh.
 
 A **path** is a pair of endpoints, or a relay. Path states: `unknown`, `probing`,
 `usable`, `failed`. Each peer pair has at most one **active** path at a time.
@@ -59,6 +67,12 @@ changes it: a transport packet, relay envelope, or probe message from another
 endpoint of the node, accepted or not, moves nothing. A challenge is used up by
 the first accepted message that echoes it, whatever endpoint that message came
 from.
+
+A session that an unregistered initiator opened to the anchor's join service
+(ARFC 0002 sections 3.3 and 3.13) follows the same rules as a home session
+here: the initiator sends a reflection request as soon as the session opens and
+answers the challenge of its answer, and the anchor sends on that session only
+at the initiator's current endpoint.
 
 An anchor has no current endpoint for a node until the first such echo on the
 home session, and loses it when 75 seconds (3 reflection periods) pass without
@@ -110,7 +124,9 @@ When node A first has traffic for node B:
    exactly one answer, sent to the source endpoint the message arrived from,
    whether or not that endpoint is an advertised candidate of the sender, when
    that endpoint is now verified or the node is probing the sender. Otherwise the
-   message is dropped silently. The answer echoes the challenge. It carries a
+   message is dropped silently. The node seals the answer at the moment it
+   accepts the message, with no queue between the two. The answer echoes the
+   challenge. It carries a
    challenge of its own only when it answers a probe, not an answer, that arrived
    from an endpoint that is not verified (step 6). A message without a challenge
    is never answered.
@@ -356,8 +372,10 @@ this section. The time bounds are those of section 3.2.
   besides the active one, and no probe set or path MTU search makes it withhold
   a check. A probe set over at most 18 candidate pairs loses no probe to the
   budget; a larger one probes its pairs over several rounds.
-- A probe message that arrives 2 seconds or more after it was sealed is
-  **late**. Every probe message a node seals that is not a probe is an answer,
+- A probe message that a node accepts 2 seconds or more after it was sealed is
+  **late**, however long it waited at the node before the node handled it: a
+  node that handles its receive queue late, as after a process stall, makes the
+  messages in it late. Every probe message a node seals that is not a probe is an answer,
   one per challenge-bearing message accepted from the peer (section 3.2 step 5),
   and an answer carries a challenge only when it answers a probe. While no probe
   message between two nodes is late, each seals at most 2,004 probe messages to
@@ -390,8 +408,30 @@ The payload budget is the path MTU minus the overhead in ARFC 0003.
 
 ### 3.6 Underlays
 
-`udp` is the default. `stream` (TLS 1.3 over TCP port 443 to an anchor) is used
-only for the home session and relayed traffic, and only after 3 seconds without a
+`udp` is the default. Each node sends and receives every AL packet over UDP on
+one socket bound to its **mesh port** on every local address, IPv4 and IPv6:
+UDP 7476 unless `init` or `join` was given `--mesh-port` (ARFC 0002 sections
+3.1 and 3.3). The record carries it as `mesh_port`. Port 7476 lies in a range
+IANA lists as unassigned for both UDP and TCP (7475 to 7477,
+https://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.csv),
+and below the default ephemeral ranges of Linux (32768 to 60999,
+https://docs.kernel.org/networking/ip-sysctl.html, `ip_local_port_range`) and
+Windows (49152 to 65535,
+https://learn.microsoft.com/en-us/troubleshoot/windows-server/networking/default-dynamic-port-range-tcpip-chang),
+so no outgoing connection of another program takes it by chance.
+
+`stream` is TLS 1.3 over TCP to an anchor's `api_port`, 443 by default, the
+port its API also uses when it holds `control` (ARFC 0008 section 3.8). The node
+offers the single ALPN protocol id `alloy-al/1` (RFC 7301), and the anchor
+selects it, which tells the anchor to carry AL on the connection instead of
+the API. The node does not authenticate the TLS server: the AL session inside
+authenticates the anchor's mesh key (ARFC 0003 section 3.1), so the node
+accepts any certificate. An anchor that holds `control` presents its API server
+certificate (ARFC 0002 section 2). One that does not presents a self-signed
+certificate whose key and signature follow ARFC 0002 section 2, with the
+fields of an API server certificate except that its issuer is its own subject
+and it carries no authority key identifier, renewed when 10 days of its 30
+remain. `stream` is used only for the home session and relayed traffic, and only after 3 seconds without a
 UDP reply from any anchor, counted from the node's first UDP packet to an anchor.
 Such a node must then be reachable through a relay within 5 seconds of joining
 (section 3.2). A node on `stream` retries UDP every 5 minutes. On `stream` the
@@ -455,6 +495,8 @@ unlimited.
 
 ## 8. Security
 
+The TLS of `stream` authenticates and protects nothing that the AL session it
+carries does not already: it lets AL cross networks that pass only TLS on TCP.
 Probes and signaling are authenticated. Probe messages and transport packets are
 replay protected (ARFC 0003 sections 3.4 and 3.6), and only accepted packets
 count in this ARFC (section 3.2 step 4): a replayed packet changes nothing.

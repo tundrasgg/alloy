@@ -66,7 +66,8 @@ or supersede it.
 | [0049](0049-only-answers-and-bounded-probes-reach-an-unverified-endpoint.md) | Only answers and bounded probes reach an unverified endpoint (superseded by 0061) |
 | [0057](0057-sessions-are-used-only-with-current-state-the-peer-holds.md) | Sessions are used only with current state the peer holds |
 | [0058](0058-al-transport-packets-carry-25-bytes-of-overhead.md) | AL transport packets carry 25 bytes of overhead |
-| [0061](0061-traffic-moves-only-to-an-endpoint-that-echoed-a-challenge.md) | Traffic moves only to an endpoint that echoed a challenge |
+| [0061](0061-traffic-moves-only-to-an-endpoint-that-echoed-a-challenge.md) | Traffic moves only to an endpoint that echoed a challenge (superseded by 0063) |
+| [0063](0063-path-checks-are-held-apart-from-probes-and-traffic-moves-onl.md) | Path checks are held apart from probes, and traffic moves only on an echo |
 
 ## Control plane
 
@@ -92,6 +93,7 @@ or supersede it.
 | [0026](0026-the-native-api-is-the-source-of-truth-ec2-and-s3-are-compati.md) | The native API is the source of truth, EC2 and S3 are compatibility surfaces |
 | [0048](0048-the-api-ca-and-api-server-certificates-use-ecdsa-p-256.md) | The API CA and API server certificates use ECDSA P-256 |
 | [0053](0053-p-256-signs-through-rustcrypto-and-rustls-uses-aws-lc-rs.md) | P-256 signs through RustCrypto, and rustls uses aws-lc-rs |
+| [0042](0042-nodes-talk-to-the-control-plane-over-al-clients-to-the-api-o.md) | Nodes talk to the control plane over AL, clients to the API over gRPC |
 
 ## Network
 

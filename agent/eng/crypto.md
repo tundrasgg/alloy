@@ -10,7 +10,16 @@
 3. Compare secrets in constant time (`subtle`). Zeroize key material on drop
    (`zeroize`).
 4. Randomness comes from the `alloy-rt` randomness trait. Production backs it with
-   the operating system generator. Nothing else seeds anything.
+   the operating system generator. Nothing else seeds anything. One exception,
+   TLS (ADR 0042): under the `os` runtime the `rustls` provider (`aws-lc-rs`,
+   ADR 0053) draws the TLS 1.3 hello randoms and ephemeral key shares from its
+   own generator, which `aws-lc` seeds from the operating system. Nothing else
+   comes from it: every key Alloy keeps, every nonce Alloy chooses, and every
+   secret Alloy sends comes from the trait, the API CA and API server keys
+   included, and TLS session tickets and resumption are off. Under any other
+   `net` implementation, the simulator's included, no TLS runs, so the trace
+   holds no byte from that generator (I-20,
+   `spec/arfc-0008-native-api.md` clause 3.8.1).
 5. Nonces are never chosen ad hoc. Each use has a specified layout and a specified
    reason it cannot repeat.
 6. Keys have one purpose each. Derive separate keys with domain-separated labels
