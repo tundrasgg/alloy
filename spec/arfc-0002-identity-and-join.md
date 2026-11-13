@@ -357,7 +357,10 @@ its identity key's signature over the bytes `alloy-renew-v1`, `cluster_id`,
 `node_id`, and `serial` (8 bytes, big endian). The control plane answers with
 `join_reply` within 10 seconds. It issues a new record when the node exists, the signature verifies
 against the node's `identity_pub`, and the mesh key the AL session
-authenticated is the node's `mesh_pub`. Otherwise it refuses with
+authenticated is the node's `mesh_pub`, except that when `serial` is below the
+serial of the node's current record and that record has not expired, it issues
+nothing and answers with that record, so a `renew` handled twice (section 3.13)
+issues one record. Otherwise it refuses with
 `node_unknown`, byte for byte the same for a deleted node, an unknown
 `node_id`, a bad signature, and another mesh key. A renewal needs no token and
 counts no use.
@@ -522,9 +525,16 @@ unjoined` and listing no object. The machine then holds no reserved object of
 ARFC 0017 clause 3.17 other than its data directory and the install's files and
 service, so `join` on it passes the `names` check of section 3.8, and a `join`
 after a `leave` succeeds as a first join does. When the control plane does not
-answer within 10 seconds, `leave` fails with `Unavailable` and changes nothing,
-unless `--force` is given: then it removes the local state anyway, and the node
-record lasts until it expires (section 3.5) or a cloud admin deletes it.
+answer within 10 seconds, `leave` fails with `Unavailable` and changes nothing
+on the machine, unless `--force` is given: then it removes the local state anyway, and the node
+record lasts until it expires (section 3.5) or a cloud admin deletes it. A
+`leave` that gets no answer may still have deleted the node, as a write answered
+`Unavailable` may (ARFC 0006 clause 3.12.2): its reply can be lost after the
+deletion, and the control node then drops the node's sessions, so no resend
+reaches it (section 3.13). The control node that deletes a node on its `leave`
+sends the reply before it drops the node's sessions. A node already deleted
+gets no answer to a later `leave`, and `alloy node leave --force` removes its
+local state.
 
 ### 3.10 Advertise addresses
 
@@ -647,7 +657,7 @@ interface and no path but the session's own.
 **Carriage.** A node message is one `NodeMessage` below, encoded as Protocol
 Buffers (proto3). One that holds a `forwarded` is at most 16,512 bytes, and
 every other at most 16,384, so that a `forwarded` holds any request or reply,
-since its other fields take at most 77 bytes. The bounds that the definitions
+since its other fields take at most 66 bytes. The bounds that the definitions
 below state on strings and lists keep every message this section defines
 within 16,384 bytes. It is the payload of one UDP datagram
 (RFC 768) in one IPv6 packet (RFC 8200), sealed as an IPv6 frame on VNI 0 of an
@@ -663,88 +673,115 @@ address, both ports are 7477, the checksum verifies, and the payload decodes
 and is within the bounds of this section. It drops anything else silently. A
 joiner takes the `cluster_id` for both addresses from its token.
 
-**Who speaks.** A node sends node messages only on its home session (ARFC 0004
-section 3.1.2), an anchor without `control` only on its control session below,
-and a joiner, or a node renewing an expired record, only on the session it
-opened to an anchor as an unregistered initiator. A home session and a session
-from an unregistered initiator are each an **origin session** at that anchor. The node sends requests and the anchor sends
-replies. The anchor sends on an origin session only at the node's current
-endpoint (ARFC 0004 section 3.1.2), a session from an unregistered initiator
-included. An anchor that holds `control` handles a request itself. One that
-does not forwards it on its control session, as below.
+**Who speaks.** The node that sends a request is its **requester**, and the
+control node that handles it answers. A joiner, and a node renewing an expired
+record (section 3.5), sends node messages only on the session it opened to an
+anchor as an unregistered initiator, and only the requests of the join service
+below. An anchor sends on such a session only at the initiator's current
+endpoint (ARFC 0004 section 3.1.2). An anchor that holds `control` handles a
+join service request itself. One that does not forwards it to a control node,
+as below. A node that holds a valid record sends its node messages only to a
+control node, on an AL session it holds with that control node, and the
+control node handles them itself: no other node carries them, and an anchor
+without `control` drops them. A node that holds
+`control` handles its own requests in its own process and sends no node message
+for them.
 
-**Control session.** An anchor that does not hold `control` keeps, while it is
-`joined`, one AL session with a control node, its **control session**. It opens
-it to the first control node of its latest view (the bootstrap view of section
-3.3 step 7 or a later one), in the view's order, that answers within 3 seconds,
-at the advertise addresses and the mesh port of that control node's record. A
-control node sends on the session only at an advertise address and the mesh
-port of the anchor's record, and the anchor only at those of the control
-node's: neither ever sends on it at an address learned from a packet. It is
-kept open with keepalives as a home session is (ARFC 0004 section 3.4) and is
-never closed for being idle (ARFC 0004 section 3.8). When it closes, the anchor
-opens a new one within 5 seconds, by the same rule, and while no control node
-answers it retries with backoff from 1 to 60 seconds (ARFC 0004 section 6). It
-carries the anchor's own node messages, as a home session would, and the
-`forwarded` messages below, and no other node message.
+**Control node choice.** A node with a valid record sends each request to one
+control node of its latest view (the bootstrap view of section 3.3 step 7 or a
+later one) that it can reach (This version, below): the one that last replied
+to it, or, until one has, the first in the view's order. When a request gets no
+reply within its time limit, or gets a `NodeStatusReply` with result
+`UNAVAILABLE` (ARFC 0006 section 4.3), its next request goes to the next such
+control node in the view's order, wrapping around. This is all a node keeps for
+choosing.
 
-**Forwarding.** The anchor numbers its origin sessions from 1 in the order they
-open, and never gives one number to two sessions while `alloyd` runs. It sends a
-request that arrives on an origin session to the control plane as a `forwarded`
-on its control session: the request's `NodeMessage` unchanged, its
-`request_id` included, with the mesh key the origin session authenticated, the
-origin session's number, and the source address and port of the request's
-underlay packet. The `NodeMessage` that holds a `forwarded` has `request_id` 0.
-The control node answers with a `forwarded` on the same control session, under
-`request_id` 0, that holds the same mesh key and origin session number, no
-source address, source port 0, and the reply under the wrapped request's
-`request_id`. The anchor sends that reply on the origin session the number
-names, when that session is still open and authenticated that mesh key, and
-drops it otherwise. The anchor keeps nothing per forwarded request and holds no
-queue: a request that arrives while its control session is not open is dropped,
-and the node's resend 1 second later carries it once the session is open. An
-anchor forwards at most 2,000 requests per second, and drops the rest, which
-their resends carry later.
+**Forwarding.** An anchor without `control` sends a join service request that
+arrives on a session from an unregistered initiator to a control node as a
+`forwarded`: the request's `NodeMessage` unchanged, its `request_id` included,
+with the mesh key that the session authenticated and the source address and
+port of the request's underlay packet. The `NodeMessage` that holds a
+`forwarded` has `request_id` 0. The control node answers with a `forwarded`
+under `request_id` 0 that holds the same mesh key, no source address, source
+port 0, and the reply under the wrapped request's `request_id`. The anchor sends
+that reply to the node with that mesh key, on a session it holds with that
+key, and drops it when it holds none. An AL rekey between the request and the
+reply therefore loses no reply, and neither does the joiner's record becoming
+valid, which makes its session a home session (section 3.3 step 7). The anchor
+forwards to one control node of its latest view: the one that last sent it a
+`forwarded` reply, or, until one has, the first in the view's order. When 3
+seconds pass after it forwarded a request to that control node with no
+`forwarded` reply from it since, it moves to the next control node in the
+view's order, wrapping around. Beyond that one control node and that one time,
+the anchor keeps nothing per forwarded request and holds no queue: a request it
+cannot send at once is dropped, and the node's resend 1 second later carries
+it. An anchor forwards at most 2,000 requests per second, and drops the rest,
+which their resends carry later.
 
-A control node accepts a `forwarded` only on a session whose peer holds a valid
-record with `anchor`, and treats the mesh key it names as the one an origin
-session authenticated and the source address and port as the request's. An
-anchor accepts a `forwarded` only on its control session. A `NodeMessage` that
-holds a `forwarded` and has a `request_id` other than 0, and a `forwarded` whose
-wrapped message holds a `forwarded`, are dropped.
+A control node accepts a `forwarded` only from a node that holds a valid record
+with `anchor`, and only when its wrapped message is a join service request. It
+treats the mesh key the `forwarded` names as the one an unregistered
+initiator's session authenticated, and the source address and port as the
+request's. An anchor accepts a `forwarded` only from a node that holds a valid
+record with `control`. A `NodeMessage` that holds a `forwarded` and has a
+`request_id` other than 0, and a `forwarded` whose wrapped message holds a
+`forwarded`, are dropped.
 
 **Join service.** On a session from an unregistered initiator an anchor accepts
 only keepalives, probe messages (ARFC 0004 section 3.1), and node messages
 whose body is `join_hello`, `join_request`, `join_state`, `renew`, or
-`withdraw`. It drops every other frame and message silently. It takes at most
+`withdraw`, the **join service requests**. It drops every other frame and
+message silently. It takes at most
 1 new request per second per such session and 100 per second over all such
-sessions. A request beyond that is dropped, and its resend is taken later. `leave` and the status messages of ARFC
-0006 are accepted only on a session whose peer holds a valid record, so an
-anchor forwards them only from such a session, and a control node takes them
-in a `forwarded` only when the mesh key it names is in a valid record. A
+sessions. A request beyond that is dropped, and its resend is taken later.
+`leave` and the status messages of ARFC 0006 are accepted only on a session
+whose peer holds a valid record, and never in a `forwarded`, so a control node
+takes them only from the node they concern. A
 `withdraw` deletes the `pending` request, or the `joining` node, that the
 session's mesh key names, and is answered `DONE_CODE_OK` whether or not one
 existed.
 
-**Requests and replies.** `request_id` starts at 1 in each session and grows by
-one with each new request. A node has at most one request outstanding per
-session. It sends the same request again, byte for byte, every 1 second until a
-reply with its `request_id` arrives or the time limit of the step that sent it
-passes. No step's time limit is over 10 seconds, so no request is sent more
-than 10 seconds after it was first sent. The answering side keeps, per session,
-and for a forwarded request per pair of control session and origin session
-number, the highest `request_id` it has taken and, once it exists, that
-request's reply. A request with that id gets the kept reply again, or nothing
-while the reply does not yet exist, and is never handled twice. A lower id is
-dropped. A higher id is handled, and its reply replaces the kept one. A request
-is therefore handled at most once per origin session: a resend, direct or
-forwarded, counts no second token use and writes no second audit record. A
-control node forgets a pair when its control session closes, or 30 seconds
-after the last request for it arrived,
-when no resend of a request it took can still come, and keeps at most 8,192
-pairs per control session: a `forwarded` that would add a pair beyond that is
-dropped, and a resend adds it once a pair has been forgotten. The control plane
-replies within 10 seconds of first taking a request.
+**Requests and replies.** A node takes each new `request_id` from its handshake
+counter (ARFC 0003 section 3.2): the next value that neither an initiation nor
+a request has used, plus 1. So the `request_id`s a node sends are never 0 and
+only grow, across AL rekeys, new sessions, other peers, and restarts of
+`alloyd`. A node has at most one request outstanding to each peer. It sends the
+same request again, byte for byte and to the same peer, every 1 second until a
+reply with its `request_id` arrives, the time limit of the step that sent it
+passes, or it sends that peer a new request, which ends the one before. No
+step's time limit is over 10 seconds, so no request is sent more than 10
+seconds after it was first sent.
+
+A control node keeps one **entry** per **origin**: the highest `request_id` it
+has taken from that origin and, once it exists, that request's reply. The
+origin of a request is the mesh key that the AL session it arrived on
+authenticated, and for a request in a `forwarded`, that key together with the
+mesh key the `forwarded` names. An origin is made of mesh keys, never of an AL
+session: an AL rekey (ARFC 0003 section 3.3) makes a new session but leaves
+every origin, every entry, and the order of `request_id`s unchanged, and so does
+a new session after one closes. A request with an entry's id gets the kept
+reply again, or nothing while the reply does not yet exist, and is never
+handled twice. A lower id is dropped. A higher id, or any id when its origin has
+no entry, is handled, and its reply replaces the kept one. An entry is
+forgotten 30 seconds after the last request for it arrived, when no resend of a
+request it took can still come. A control node keeps at most 8,192 entries
+whose origin is one mesh key, and at most 8,192 for requests that one anchor
+forwarded: a request that would add an entry beyond its bound is dropped, and a
+resend adds it once an entry is forgotten. The control plane replies within 10
+seconds of first taking a request.
+
+A request is therefore handled at most once by one control node while that
+control node's `alloyd` runs: a resend counts no second token use and writes
+no second audit record. Only two cases can handle a request twice: a forwarded request whose
+anchor moves to another control node between its resends, and any request
+whose resend reaches a control node that restarted in between. Handling a
+request again then has this outcome. `join_hello`, `join_state`, and `withdraw`
+change nothing more. A `join_request` already admitted or `pending` is a retry
+(section 3.3 step 6). A `join_request` refused once is checked again from the
+start, and its refusal writes one more audit record and, when it is
+`token_refused`, counts one more use. A `renew` issues no second record (section 3.5). A status message
+commits nothing a second time (ARFC 0006 clause 3.14). A `leave` whose node was
+deleted finds no session to come on, so it gets no reply (section 3.9).
 
 ```proto
 syntax = "proto3";
@@ -758,11 +795,11 @@ message NodeMessage {
     JoinRequest join_request = 4;      // node to anchor
     JoinReply join_reply = 5;          // answers join_request, join_state, renew
     JoinState join_state = 6;          // node to anchor
-    Renew renew = 7;                   // node to anchor
+    Renew renew = 7;                   // node to anchor, or to control node while its record is valid
     Withdraw withdraw = 8;             // node to anchor
-    Leave leave = 9;                   // node to anchor
+    Leave leave = 9;                   // node to control node
     Done done = 10;                    // answers withdraw, leave
-    Forwarded forwarded = 11;          // anchor to control node, and the reply back
+    Forwarded forwarded = 11;          // anchor without control to control node, and the reply back
     // Numbers 16 to 31 are the status messages of ARFC 0006.
   }
 }
@@ -831,11 +868,11 @@ message Leave { bytes node_id = 1; bytes signature = 2; }  // section 3.9
 enum DoneCode { DONE_CODE_UNSPECIFIED = 0; DONE_CODE_OK = 1; DONE_CODE_CONFLICT = 2; }
 message Done { DoneCode code = 1; string reason = 2; }
 message Forwarded {
-  bytes mesh_pub = 1;                // 32 bytes, the key the origin session authenticated
+  bytes mesh_pub = 1;                // 32 bytes, the key the requester's session authenticated
   bytes source_address = 2;          // 4 or 16 bytes; empty in a reply
   uint32 source_port = 3;            // 0 in a reply
-  NodeMessage message = 4;           // request_id 1 or more
-  uint64 origin_session = 5;         // the anchor's number for the origin session, from 1
+  NodeMessage message = 4;           // a join service request or its reply, request_id 1 or more
+  reserved 5;                        // origins are mesh keys, not sessions
 }
 ```
 
@@ -844,15 +881,22 @@ its anchors and control nodes, at most 16, those holding `control` first, then
 by name. A node takes its homes from them (ARFC 0004 section 3.1.2).
 
 **This version.** Before the mesh of ARFC 0004 runs (M11 rung 3), the node
-channel on each node's home session and on each anchor's control session is
-the only traffic between nodes. It goes directly over the underlay: over UDP,
-or `stream`, to an anchor's published address, and over UDP between the
-published addresses of an anchor and a control node. Relay envelopes, signaling, probe sets and direct paths between nodes,
+channel on home sessions and on sessions from unregistered initiators is the
+only traffic between nodes. It goes directly over the underlay: over UDP, or
+`stream`, to an anchor's published address. A node then reaches a control node
+only over a home session whose anchor holds `control`, and an anchor without
+`control` reaches no control node, so it forwards nothing, and a node none of
+whose homes holds `control` cannot reach the control plane. M11 rung 2 runs
+with every anchor holding `control`, and needs no forwarding. Relay envelopes, signaling, probe sets and direct paths between nodes,
 `al0` with the infrastructure address on hosts (section 3.4), and every other
 use of the infrastructure network wait for the mesh. The API is never reached
 over the mesh (ARFC 0008 section 3.8). Once `al0` exists, node messages to and
 from a node's own infrastructure address travel through it like any other
-packet on VNI 0, with the same bytes.
+packet on VNI 0, with the same bytes, on the AL session that the mesh holds
+with the peer, over a direct or a relayed path (ARFC 0004). From then on a node
+reaches every control node of its view, and an anchor without `control` the
+control node it forwards to, that way, and the bytes and rules of this section
+do not change.
 
 ### 3.14 Stored data
 
@@ -998,13 +1042,14 @@ address or IPv6 /64, and 100 per second in total, then `RateLimited` (section
 
 Node channel (section 3.13): 16,384 bytes per node message, and 16,512 for one
 that holds a `forwarded`. In `Facts`, 64 bytes of `os`, 32 of `arch`, and 32
-disks with paths of at most 255 bytes. One outstanding request per session at
-the node. At the answering side, one kept `request_id` with its reply per
-session, so at most 4,096 per node (ARFC 0004 section 7), and per pair of
-control session and origin session, at most 8,192 pairs per control session,
-each forgotten 30 seconds after its last request; a `forwarded` that would add
-a pair beyond the bound is dropped. One control session per anchor without
-`control`. 2,000 forwarded requests per second per anchor, the rest dropped.
+disks with paths of at most 255 bytes. One outstanding request per peer at
+the node, and one control node to try first. At a control node, one entry, a
+kept `request_id` with its reply, per origin, each forgotten 30 seconds after
+its last request: at most 8,192 entries whose origin is one mesh key, and 8,192
+for the requests of each anchor that forwards; a request that would add an
+entry beyond its bound is dropped. At an anchor without `control`, one control
+node to forward to and one time, nothing per request, and 2,000 forwarded
+requests per second, the rest dropped.
 On sessions from unregistered initiators, 1 new request per second per session
 and 100 per second per anchor, the rest dropped. 16 records in a bootstrap
 view.
@@ -1034,10 +1079,24 @@ addressed to itself and can write only its own status.
 Unauthenticated exchange calls are bounded per source and in total before they
 reach the store or the audit log, and so are join service requests (section
 3.13). A node message is accepted only from the infrastructure address of the
-mesh key its AL session authenticated, so no node can speak for another, and a
-`forwarded` request is believed only from an anchor's session, and a
-`forwarded` reply only on the anchor's own control session, which it opened to
-a control node's published address. The node channel
+mesh key its AL session authenticated. A node with a valid record speaks only
+for itself: a control node takes `leave`, the status messages of ARFC 0006,
+and every other request from a node with a valid record only on an AL session
+that node authenticated, never in a `forwarded`, so no node, an anchor
+included, can send them for another, and a heartbeat that an anchor forges for
+another node commits nothing and writes no audit record (ARFC 0020 clause
+3.3). What an anchor without `control` can assert for another node is bounded
+to the join service: a `forwarded` names the mesh key, source address, and
+port of a join service request, and a control node believes them, from an
+anchor's valid record alone. A compromised anchor can therefore send join
+service requests under any mesh key and source address: read the state of a
+`pending` request or a `joining` node, withdraw one, put a false source address
+in the audit record of a join refusal, and resend a `renew` it once forwarded,
+which issues nothing once that `renew` has been handled (section 3.5). It cannot use a token
+whose secret it does not hold, renew or remove a node without that node's
+identity key signature, or report status for any node but itself. A
+`forwarded` reply is believed only from a node whose valid record holds
+`control`. The node channel
 reaches no endpoint that the anchor has not seen echo a challenge (ARFC 0004
 section 3.1.2), so a spoofed or copied packet cannot point the bootstrap view or
 any other reply at a third party. Secrets at rest are sealed under the node's

@@ -190,8 +190,8 @@ not expired by its own clock:
   at most 64, IPv4 before IPv6, each family in ascending byte order. Its
   `release` is the node's own release while ARFC 0017 clause 3.11 makes the node
   write its running release, and empty otherwise. A heartbeat names no node: it
-  applies to the node whose record holds the mesh key that the session it came
-  on authenticated (3.14).
+  applies to the node whose record holds the mesh key that the AL session it
+  came on authenticated (3.14).
 - Schedule. The node sends the first heartbeat within 1 second after `alloyd`
   holds a valid record. A heartbeat is one request of the node channel with a
   time limit of 4 seconds: the node sends it again every 1 second until its
@@ -205,39 +205,36 @@ not expired by its own clock:
   heartbeat carries `release`. A reply `OK` tells the node the write is applied,
   and `RELEASE_REFUSED` that it is refused, with the finalized release that ARFC
   0017 clause 3.11 makes the node report.
-- Path. The node sends each heartbeat on one of its home sessions (ARFC 0004
-  section 3.1.2): the one on which its latest heartbeat succeeded, and after a
-  failure, when it has two homes, the other one. An anchor that holds `control`
-  handles the heartbeat as 3.14 says. An anchor that does not sends it on as
-  `forwarded` (ARFC 0002 section 3.13) to a control node: first to the one that
-  last answered it with a result other than `UNAVAILABLE`, or the first in
-  ascending name order until one has. When that control node answers
-  `UNAVAILABLE` or gives no reply within 1.5 seconds, the anchor moves to the
-  next control node in ascending name order, wrapping around, and sends the
-  heartbeat there. It replies to the node with the first result other than
-  `UNAVAILABLE`, or with `UNAVAILABLE` once two control nodes have failed, at
-  most 3 seconds after it took the request. A control node that fails stays
-  passed over, so successive heartbeats through an anchor try every control node
-  in turn.
-- Rungs. In M11 rung 2 a home session runs directly over UDP or `stream` to the
+- Path. The node sends each heartbeat straight to a control node, on an AL
+  session it holds with that control node, and to the one ARFC 0002 section
+  3.13 chooses: the one that last replied to it, and after a heartbeat with no
+  reply or with `UNAVAILABLE`, the next one it can reach in its view's order,
+  wrapping around. All the resends of one heartbeat go to the same control
+  node. No other node carries a heartbeat: an anchor without `control` forwards
+  none, and a control node drops one that arrives in a `forwarded`.
+- Rungs. In M11 rung 2 the node can reach only those of its homes that hold
+  `control`, over home sessions that run directly over UDP or `stream` to the
   anchor's published address on the underlay (ARFC 0002 section 3.13). From M11
-  rung 3, home sessions take the paths of ARFC 0004 and node messages pass
-  through `al0`. Heartbeats keep the same bytes, timing, and rules.
+  rung 3, node messages pass through `al0` on the sessions of ARFC 0004, and
+  the node can reach every control node of its view. Heartbeats keep the same
+  bytes, timing, and rules.
 - A node that holds `control` makes its own heartbeat in its own process, on
   the same schedule, with no node message, and handles it as 3.14 says.
 
 With 4 control nodes or fewer, a node has a heartbeat accepted less than 30
-seconds after the one before, and so shows `active` (3.15), while one of its
-homes answers within these limits and either holds `control` and reaches the
-leader, or holds sessions with the control nodes, at least one of which reaches
-the leader.
+seconds after the one before, and so shows `active` (3.15), while some control
+node that it can reach answers within these limits and either is the leader or
+reaches it. After an accepted heartbeat, the next starts 5 seconds after it,
+and three that then fail in a row, each on another control node, put the start
+of the fourth 24 seconds after the accepted one's start and its acceptance
+within 28.
 
 3.14 Accepting a heartbeat. A control node that is not the leader of the global
 group passes a heartbeat to the leader, as 3.4 passes writes, and replies with
 the leader's result, or with `UNAVAILABLE` when that result does not reach it
 within 1 second. A leader that does not yet serve the group (3.12.3) replies
-`UNAVAILABLE`. The heartbeat's mesh key is the one the session it came on
-authenticated, or the one its `forwarded` names. The leader:
+`UNAVAILABLE`. The heartbeat's mesh key is the one that the AL session it came
+on authenticated, never one that a `forwarded` names. The leader:
 
 - replies `INVALID`, changing nothing, when the message breaks section 4.3;
 - replies `REFUSED`, changing nothing, when no node record in the global group
@@ -264,9 +261,9 @@ commit above. A heartbeat answered `INVALID` or `REFUSED`, or answered
 `UNAVAILABLE` before any commit, or dropped by the node channel (ARFC 0002
 section 3.13), writes none.
 
-A deleted node holds no record in the global group. Its anchor drops its node
-messages once it no longer holds the node's record as valid (ARFC 0002 section
-3.13), and the leader refuses those still passed on. So a deleted node's
+A deleted node holds no record in the global group. A control node drops its
+node messages once it no longer holds the node's record as valid (ARFC 0002
+section 3.13), and the leader refuses those still passed on. So a deleted node's
 heartbeats change nothing and write no audit record. They come at most one per
 60 seconds once one is refused, and only until its record expires by its own
 clock, at most 24 hours after its last renewal (ARFC 0002 section 3.5). Its
@@ -355,7 +352,7 @@ for later status messages.
 
 ```proto
 // In message NodeMessage, oneof body:
-//   NodeStatus node_status = 16;              // node to anchor, anchor to control node
+//   NodeStatus node_status = 16;              // node to control node, never forwarded
 //   NodeStatusReply node_status_reply = 17;   // answers node_status
 message NodeStatus {
   repeated bytes addresses = 1;      // 4 or 16 bytes each, 0 to 64, clause 3.13 order
@@ -663,8 +660,8 @@ watches per control node. 64 MiB per write batch.
 Store limits are the constants of section 5.1, each failing as sections 5.3 and
 5.4 say. 64 addresses per heartbeat: one with more is answered `INVALID` and
 changes nothing (section 4.3). The leader holds heartbeat soft state for at most
-one entry per node record. An anchor holds, per control node, only whether it is
-the one to try first (clause 3.13).
+one entry per node record. A node holds, for its heartbeats, only which control
+node to try first (clause 3.13), and an anchor holds nothing for them.
 
 ## 8. Security
 
@@ -674,7 +671,10 @@ proposed, except the node lifecycle controller's commits of `unreachable_since`,
 which record what the leader observed and write no audit record (clause 3.16).
 A heartbeat applies only to the node whose record holds the mesh key its AL
 session authenticated, and changes only that node's soft state, its `reported`
-flag, and its running release (ARFC 0020 clause 3.3).
+flag, and its running release (ARFC 0020 clause 3.3). It is taken only on an AL
+session between that node and a control node, never in a `forwarded`, so no
+other node, an anchor included, can report for a node: a `NodeStatus` that an
+anchor sends in a `forwarded` commits nothing and writes no audit record.
 Store files are readable only as the data directory is (ARFC 0002 section 3.12).
 Upholds I-03, I-11, I-14, I-15, I-21.
 
@@ -682,3 +682,7 @@ Upholds I-03, I-11, I-14, I-15, I-21.
 
 - Cross-region replication of the global group and its latency budget. Research
   task to be cut in M2.
+- How nodes spread their heartbeats and sessions over the control nodes once a
+  cluster has more nodes than one control node's active sessions (ARFC 0004
+  section 7), since clause 3.13 starts every node at the first control node of
+  its view. Spec task to be cut with more than one voter (clause 3.2).
