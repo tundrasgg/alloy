@@ -1,1 +1,0 @@
-A vendor instruction file.

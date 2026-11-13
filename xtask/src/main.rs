@@ -323,8 +323,8 @@ fn check_repo(root: &Path, options: &Options) -> Outcome {
     }
 }
 
-/// The branch the path lock judges and the paths it changes since its merge
-/// base with `base`.
+/// The branch the path lock judges, the paths it changes since its merge base
+/// with `base`, and its task file as it is on `base`.
 fn branch_diff(root: &Path, base: &str, branch: Option<&str>) -> Result<BranchDiff, String> {
     let branch = match branch {
         Some(branch) => branch.to_owned(),
@@ -342,7 +342,26 @@ fn branch_diff(root: &Path, base: &str, branch: Option<&str>) -> Result<BranchDi
         .filter(|path| !path.is_empty())
         .map(str::to_owned)
         .collect();
-    Ok(BranchDiff { branch, changed })
+    let base_task = match rules::task_file(&branch) {
+        Some(path) => file_at(root, base, &path)?,
+        None => None,
+    };
+    Ok(BranchDiff {
+        branch,
+        changed,
+        base_task,
+    })
+}
+
+/// The text of `path` as it is on `rev`, or `None` when `rev` has no file there.
+///
+/// Fails when git fails, for example because `rev` does not exist.
+fn file_at(root: &Path, rev: &str, path: &str) -> Result<Option<String>, String> {
+    let listed = tree::git(root, &["ls-tree", "--name-only", rev, "--", path])?;
+    if listed.trim().is_empty() {
+        return Ok(None);
+    }
+    tree::git(root, &["show", &format!("{rev}:{path}")]).map(Some)
 }
 
 fn main() -> ExitCode {

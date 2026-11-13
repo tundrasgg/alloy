@@ -3,7 +3,6 @@
 
 use super::{BranchDiff, Rule, Violation};
 use crate::text::front_matter;
-use crate::tree::Tree;
 
 /// The paths written only on verifier branches.
 const LOCKED: [&str; 4] = [
@@ -13,33 +12,35 @@ const LOCKED: [&str; 4] = [
     "tests/system/",
 ];
 
-pub(super) fn check(tree: &Tree, diff: Option<&BranchDiff>) -> Vec<Violation> {
+/// Judges `diff`. The task type comes from `diff.base_task`, the task file as it
+/// is on the base ref, and never from the tree being checked, which the judged
+/// branch controls.
+pub(super) fn check(diff: Option<&BranchDiff>) -> Vec<Violation> {
     let Some(diff) = diff else {
         return Vec::new();
     };
-    let Some(id) = task_id(&diff.branch) else {
+    let Some(task_path) = task_file(&diff.branch) else {
         return Vec::new();
     };
-    let task_path = format!("plan/tasks/{id}.md");
     let violation =
         |path: &str, message: String| Violation::new(Rule::PathLock, path, None, message);
-    let text = match tree.read(&task_path) {
-        Ok(text) if tree.contains(&task_path) => text,
-        _ => {
-            return vec![violation(
-                &task_path,
-                format!("branch `{}` names a task with no task file", diff.branch),
-            )];
-        }
+    let Some(text) = &diff.base_task else {
+        return vec![violation(
+            &task_path,
+            format!(
+                "branch `{}` names a task with no task file on the base ref",
+                diff.branch
+            ),
+        )];
     };
-    let kind = front_matter(&text)
+    let kind = front_matter(text)
         .ok()
         .and_then(|fields| fields.into_iter().find(|f| f.key == "type"))
         .map(|f| f.value);
     let Some(kind) = kind else {
         return vec![violation(
             &task_path,
-            "the task file has no `type` in its front matter".to_owned(),
+            "the task file on the base ref has no `type` in its front matter".to_owned(),
         )];
     };
     if kind == "verify" {
@@ -52,12 +53,18 @@ pub(super) fn check(tree: &Tree, diff: Option<&BranchDiff>) -> Vec<Violation> {
             violation(
                 path,
                 format!(
-                    "locked to verify tasks, and branch `{}` is a `{kind}` task",
+                    "locked to verify tasks, and branch `{}` is a `{kind}` task on the base ref",
                     diff.branch
                 ),
             )
         })
         .collect()
+}
+
+/// The task file of a task branch: `plan/tasks/T-NNNN.md` for `task/T-NNNN`, and
+/// `None` for any other branch.
+pub(crate) fn task_file(branch: &str) -> Option<String> {
+    task_id(branch).map(|id| format!("plan/tasks/{id}.md"))
 }
 
 /// The task id in a task branch name, `task/T-NNNN`.
@@ -79,5 +86,57 @@ mod tests {
         assert_eq!(task_id("task/T-0002-x"), None);
         assert_eq!(task_id("review/T-0002.1"), None);
         assert_eq!(task_id("main"), None);
+        assert_eq!(
+            task_file("task/T-0002").as_deref(),
+            Some("plan/tasks/T-0002.md")
+        );
+        assert_eq!(task_file("review/T-0002.1"), None);
+    }
+
+    fn task(kind: &str) -> String {
+        format!("---\nid: T-0101\ntype: {kind}\n---\n\n## Goal\n")
+    }
+
+    fn diff(base_task: Option<String>) -> BranchDiff {
+        BranchDiff {
+            branch: "task/T-0101".to_owned(),
+            changed: vec![
+                "tests/conformance/x.rs".to_owned(),
+                "crates/a/src/lib.rs".to_owned(),
+            ],
+            base_task,
+        }
+    }
+
+    fn locations(diff: &BranchDiff) -> Vec<String> {
+        check(Some(diff)).iter().map(Violation::location).collect()
+    }
+
+    #[test]
+    fn the_task_type_comes_from_the_base_ref() {
+        assert_eq!(
+            locations(&diff(Some(task("build")))),
+            ["tests/conformance/x.rs: path-lock"]
+        );
+        assert!(locations(&diff(Some(task("verify")))).is_empty());
+    }
+
+    #[test]
+    fn a_task_branch_needs_a_typed_task_file_on_the_base_ref() {
+        assert_eq!(locations(&diff(None)), ["plan/tasks/T-0101.md: path-lock"]);
+        assert_eq!(
+            locations(&diff(Some("no front matter".to_owned()))),
+            ["plan/tasks/T-0101.md: path-lock"]
+        );
+    }
+
+    #[test]
+    fn other_branches_and_runs_without_a_base_pass() {
+        assert!(check(None).is_empty());
+        let review = BranchDiff {
+            branch: "review/T-0101.1".to_owned(),
+            ..diff(None)
+        };
+        assert!(locations(&review).is_empty());
     }
 }

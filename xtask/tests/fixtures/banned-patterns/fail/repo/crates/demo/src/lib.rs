@@ -34,3 +34,10 @@ mod tests {
     // #[test]
     // fn disabled() {}
 }
+
+pub fn f(x: Option<u8>) -> u8 {
+    if checks::test(1) {
+        return x.unwrap();
+    }
+    0
+}

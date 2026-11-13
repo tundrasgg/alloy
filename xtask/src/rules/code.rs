@@ -16,10 +16,10 @@ const IO_CRATES: [&str; 2] = ["alloy-rt", "alloy-sim"];
 /// Crates that may contain `unsafe` (`agent/eng/rust.md`, section Unsafe).
 const UNSAFE_CRATES: [&str; 3] = ["alloy-rt", "alloy-net", "alloy-store"];
 
-/// Paths that reach the operating system for time, network, files, threads, or
-/// randomness, with what each one reaches. Address types such as
+/// Paths that reach the operating system for time, network, files, threads,
+/// processes, or randomness, with what each one reaches. Address types such as
 /// `std::net::SocketAddr` are plain values and are not listed.
-const IO_PATTERNS: [(&str, &str); 23] = [
+const IO_PATTERNS: [(&str, &str); 28] = [
     ("Instant::now", "the clock"),
     ("SystemTime::now", "the clock"),
     ("tokio::time", "the clock"),
@@ -37,12 +37,17 @@ const IO_PATTERNS: [(&str, &str); 23] = [
     ("std::thread", "threads"),
     ("tokio::spawn", "threads"),
     ("tokio::task", "threads"),
+    ("tokio::runtime", "threads"),
+    ("std::process", "processes"),
+    ("tokio::process", "processes"),
     ("thread_rng", "randomness"),
     ("rand::rng", "randomness"),
     ("rand::random", "randomness"),
     ("OsRng", "randomness"),
     ("getrandom", "randomness"),
     ("from_entropy", "randomness"),
+    ("from_os_rng", "randomness"),
+    ("ThreadRng", "randomness"),
 ];
 
 /// One source line, split into code and comment text.
@@ -226,12 +231,30 @@ fn squeeze(code: &str) -> String {
     out
 }
 
-/// True for an attribute that marks the next item as test code.
+/// True when `code` holds an attribute that marks the next item as test code:
+/// `#[test]`, `#[cfg(test)]`, or `#[<path>::test]`, the last with or without
+/// arguments. A call such as `checks::test(1)` is not an attribute.
 fn has_test_attribute(code: &str) -> bool {
-    code.contains("#[test]")
-        || code.contains("#[cfg(test)]")
-        || code.contains("::test]")
-        || code.contains("::test(")
+    code.match_indices("#[")
+        .any(|(at, open)| is_test_attribute(&code[at + open.len()..]))
+}
+
+/// True when `attr`, the text after a `#[`, starts a test attribute.
+fn is_test_attribute(attr: &str) -> bool {
+    if attr.starts_with("cfg(test)]") {
+        return true;
+    }
+    let attr = attr.strip_prefix("::").unwrap_or(attr);
+    let end = attr
+        .find(|c: char| !is_ident(c) && c != ':')
+        .unwrap_or(attr.len());
+    let (path, after) = attr.split_at(end);
+    let well_formed = path
+        .split("::")
+        .all(|segment| !segment.is_empty() && segment.chars().all(is_ident));
+    well_formed
+        && path.rsplit("::").next() == Some("test")
+        && (after.starts_with(']') || after.starts_with('('))
 }
 
 /// For each line, whether it is inside test code: an item marked `#[test]` or
@@ -487,6 +510,42 @@ mod tests {
         );
         let declared = "#[cfg(test)]\nmod tests;\nfn e() {}";
         assert_eq!(test_lines(&lex(declared)), [true, false, false]);
+    }
+
+    #[test]
+    fn only_test_attributes_open_test_regions() {
+        for code in [
+            "#[test]",
+            "#[cfg(test)]",
+            "#[tokio::test]",
+            "#[tokio::test(flavor=\"\")]",
+            "#[::tokio::test]",
+            "#[allow(dead_code)]#[test]fn f(){}",
+        ] {
+            assert!(has_test_attribute(code), "{code} is a test attribute");
+        }
+        for code in [
+            "if checks::test(1){",
+            "let t=x::test;",
+            "#[testing]",
+            "#[tokio::tests]",
+            "#[cfg(not(test))]",
+            "#[a::::test]",
+            "#[allow(x)]checks::test(1);",
+        ] {
+            assert!(!has_test_attribute(code), "{code} is not a test attribute");
+        }
+    }
+
+    #[test]
+    fn a_call_named_test_does_not_exempt_the_block_after_it() {
+        let src = "fn f(x: Option<u8>) -> u8 {
+    if checks::test(1) {
+        return x.unwrap();
+    }
+    0
+}";
+        assert_eq!(test_lines(&lex(src)), [false; 6]);
     }
 
     #[test]

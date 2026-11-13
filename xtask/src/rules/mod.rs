@@ -9,6 +9,8 @@ mod front_matter;
 mod instruction;
 mod path_lock;
 
+pub(crate) use path_lock::task_file;
+
 use std::fmt;
 
 use crate::tree::Tree;
@@ -59,6 +61,10 @@ pub(crate) struct BranchDiff {
     pub(crate) branch: String,
     /// Paths added, modified, or deleted, with `/` separators.
     pub(crate) changed: Vec<String>,
+    /// The text of the branch's task file, [`task_file`], as it is on the base
+    /// ref, so that the branch being judged cannot change it. `None` when the
+    /// branch is not a task branch or the base ref has no such file.
+    pub(crate) base_task: Option<String>,
 }
 
 /// A repository rule.
@@ -68,7 +74,8 @@ pub(crate) enum Rule {
     InstructionFiles,
     /// The banned code patterns of `agent/core/4-evidence.md`, in `crates/`.
     BannedPatterns,
-    /// No clock, network, file, thread, or randomness calls outside the runtime.
+    /// No clock, network, file, thread, process, or randomness calls outside the
+    /// runtime.
     DirectIo,
     /// No `unsafe` outside the crates `agent/eng/rust.md` allows.
     Unsafe,
@@ -117,7 +124,7 @@ impl Rule {
             Self::BannedPatterns => code::check_banned(tree),
             Self::DirectIo => code::check_direct_io(tree),
             Self::Unsafe => code::check_unsafe(tree),
-            Self::PathLock => path_lock::check(tree, diff),
+            Self::PathLock => path_lock::check(diff),
             Self::FrontMatter => front_matter::check(tree),
             Self::Links => docs::check_links(tree),
             Self::Dates => docs::check_dates(tree),
@@ -138,14 +145,24 @@ pub(crate) fn check_all(tree: &Tree, diff: Option<&BranchDiff>) -> Vec<Violation
 #[cfg(test)]
 mod fixture_tests {
     //! Each rule has `xtask/tests/fixtures/<rule>/pass/` and `.../fail/`. A case
-    //! holds `repo/`, the tree to check, and optionally `branch`, whose first line
-    //! is the branch name and whose other lines are the changed paths. A failing
-    //! case also holds `expected`: one `path:line: rule` per expected violation.
+    //! holds the tree to check, either as `repo/` or as `files`, and optionally
+    //! `branch`, whose first line is the branch name and whose other lines are
+    //! the changed paths, and `base/`, files as they are on the base ref. A
+    //! failing case also holds `expected`: one `path:line: rule` per expected
+    //! violation.
+    //!
+    //! `files` lists one path per line. The test creates each in a temporary
+    //! directory and checks that directory, so that files the repository must
+    //! never hold, such as vendor instruction files, are never committed.
 
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
+    use std::process;
 
     use super::*;
+
+    /// The text of every file created from a `files` list.
+    const CREATED: &str = "Created by the fixture test; never committed.\n";
 
     fn case_dir(rule: Rule, case: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -154,14 +171,69 @@ mod fixture_tests {
             .join(case)
     }
 
+    /// A temporary directory, removed when dropped, also when a test fails.
+    struct TempRepo(PathBuf);
+
+    impl TempRepo {
+        /// Creates every path in `list` under a directory unique to this
+        /// process, rule, and case, so that tests running in parallel do not
+        /// share it.
+        fn create(rule: Rule, case: &str, list: &str) -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "alloy-xtask-fixture-{}-{}-{case}",
+                process::id(),
+                rule.name()
+            ));
+            let repo = Self(root);
+            // A directory left by a process with a reused id would add files.
+            let _ = fs::remove_dir_all(&repo.0);
+            for path in list.lines().map(str::trim).filter(|l| !l.is_empty()) {
+                let file = repo.0.join(path);
+                let parent = file.parent().expect("a listed path names a file");
+                fs::create_dir_all(parent).expect("temporary directory is writable");
+                fs::write(&file, CREATED).expect("temporary file is writable");
+            }
+            repo
+        }
+    }
+
+    impl Drop for TempRepo {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn instruction_file_fixtures_are_created_at_test_time() {
+        for case in ["pass", "fail"] {
+            let dir = case_dir(Rule::InstructionFiles, case);
+            assert!(dir.join("files").is_file(), "{case} lists its files");
+            assert!(!dir.join("repo").exists(), "{case} commits no tree");
+        }
+    }
+
+    /// The file at `path` in the case's `base/`, if there is one.
+    fn base_file(dir: &Path, path: &str) -> Option<String> {
+        fs::read_to_string(dir.join("base").join(path)).ok()
+    }
+
     fn run(rule: Rule, case: &str) -> Vec<String> {
         let dir = case_dir(rule, case);
-        let tree = Tree::from_walk(&dir.join("repo")).expect("fixture repo is readable");
+        let created = fs::read_to_string(dir.join("files"))
+            .ok()
+            .map(|list| TempRepo::create(rule, case, &list));
+        let root = created
+            .as_ref()
+            .map_or_else(|| dir.join("repo"), |t| t.0.clone());
+        let tree = Tree::from_walk(&root).expect("fixture repo is readable");
         let diff = fs::read_to_string(dir.join("branch")).ok().map(|text| {
             let mut lines = text.lines().map(str::to_owned);
+            let branch = lines.next().unwrap_or_default();
+            let base_task = task_file(&branch).and_then(|path| base_file(&dir, &path));
             BranchDiff {
-                branch: lines.next().unwrap_or_default(),
+                branch,
                 changed: lines.filter(|l| !l.is_empty()).collect(),
+                base_task,
             }
         });
         let mut found: Vec<String> = rule
