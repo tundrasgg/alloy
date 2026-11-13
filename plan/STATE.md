@@ -195,6 +195,8 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 
 ## M11 notes
 
+- `check-repo` validates each `reads` entry as a plain path, so the `path#section` form that T-0096 introduced turns main red. Until an `xtask` task strips the `#section` part before the check, task files list whole paths and name sections in Scope.
+
 - D-0045: the Windows service `alloyd` gets the display name "Alloy Underlay Mesh"; fold into the next packaging task and the next ARFC 0017 task.
 - ARFC 0009 names no default IPv4 range for a VPC. Lead's proposal for the rung 4 or 5 spec task: the default VPC takes a `/16` from `10.128.0.0/9` that overlaps no route on any node or client node (ARFC 0017 clause 3.17.3), unless the user gives one.
 
