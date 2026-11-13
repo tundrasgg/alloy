@@ -3,7 +3,7 @@
 - Status: accepted
 - Depends on: 0000
 - Crates: alloy-seam, alloy-rt
-- Decisions: 0009
+- Decisions: 0009, 0056
 
 ## 1. Purpose
 
@@ -177,8 +177,9 @@ impl ConfigValue {
     pub fn from_bytes(bytes: &[u8]) -> Result<ConfigValue, ConfigError>;
 }
 
-/// An implementation's typed configuration.
-pub trait SeamConfig: Sized {
+/// An implementation's typed configuration. `==` is configuration
+/// equality, which the binding identity rule of clause 3.13 uses.
+pub trait SeamConfig: Sized + PartialEq {
     /// The newest version `to_value` writes and `from_value` reads.
     const VERSION: u16;
     /// The oldest version `to_value` writes and `from_value` reads.
@@ -208,7 +209,22 @@ pub enum ConfigError {
     NotExpressible { version: u16, field: Detail },
 }
 
-/// An implementation name and its configuration.
+/// One implementation's `SeamConfig`, with its type erased, for code that
+/// handles bindings of any kind and name (clauses 3.13 and 3.19).
+pub trait ConfigCodec: Send + Sync {
+    /// `SeamConfig::VERSION`.
+    fn version(&self) -> u16;
+    /// `SeamConfig::MIN_VERSION`.
+    fn min_version(&self) -> u16;
+    /// `from_value(value)`, then `to_value(version)` of the result.
+    fn reencode(&self, value: &ConfigValue, version: u16) -> Result<ConfigValue, ConfigError>;
+    /// Whether `a` and `b` decode to equal configurations.
+    fn same(&self, a: &ConfigValue, b: &ConfigValue) -> Result<bool, ConfigError>;
+}
+
+/// An implementation name and its configuration. `==` compares names and
+/// serialized values byte for byte. It is not the binding identity of
+/// clause 3.13, which `ConfigCodec::same` decides.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Binding {
     pub name: ImplName,
@@ -257,6 +273,12 @@ impl RegistryBuilder {
         name: ImplName,
         factory: Factory<S>,
     ) -> Result<(), RegistryError>;
+    /// Registers `C` as the configuration type of implementation `name` of
+    /// seam `S` (clause 3.19).
+    pub fn register_config<S: Seam, C: SeamConfig + 'static>(
+        &mut self,
+        name: ImplName,
+    ) -> Result<(), RegistryError>;
     pub fn build(self) -> Registry;
 }
 
@@ -274,6 +296,10 @@ impl Registry {
     pub fn contains(&self, kind: &Kind, name: &ImplName) -> bool;
     /// Every registration, sorted by kind, then by name.
     pub fn entries(&self) -> Vec<(Kind, ImplName, SwapClass)>;
+    /// The configuration type registered under `(kind, name)`, if any.
+    pub fn config(&self, kind: &Kind, name: &ImplName) -> Option<Arc<dyn ConfigCodec>>;
+    /// Every configuration registration, sorted by kind, then by name.
+    pub fn configs(&self) -> Vec<(Kind, ImplName)>;
 }
 
 /// The current instance of seam `S` for one user, and its binding.
@@ -416,18 +442,87 @@ every configuration `c` and every such `v` where `to_value(v)` succeeds,
 payload must decode to the implementation's defaults. Every implementation's ARFC
 defines its payload, for each version, as a Protocol Buffers message (section 4).
 
+Format `VERSION` carries every configuration: `to_value(VERSION)` must never
+return `NotExpressible`.
+
 Bindings are part of control plane state (section 2), so serialized configuration
 values are persisted, replicated to other nodes, and read by other releases. Their
-format changes follow ARFC 0017 clause 3.3:
+format changes follow ARFC 0017 clause 3.3. Below, for one implementation, `V(R)`
+is the `VERSION` of minor release `R`. For an implementation that release `R - 1`
+does not have, `V(R - 1)` is `V(R)`. `VERSION` never decreases from one minor
+release to the next: `V(R)` is at least `V(R - 1)`.
 
-- `MIN_VERSION` must be no newer than the oldest version the previous minor
-  release writes, so that one release of skew works (I-18).
-- A release that raises `VERSION` from `p` to `p + 1` keeps `MIN_VERSION` at or
-  below `p`. Whoever writes a binding to control plane state calls `to_value(p)`
-  until the upgrade is finalized (ARFC 0017 clause 3.7), and `to_value(p + 1)`
-  only after. The control plane gives a configuration that fails with
-  `NotExpressible` before finalization back to the caller as an error, and does
-  not store it.
+Finalizing the upgrade to release `R` (ARFC 0017 clause 3.7) **starts** at the
+switch and **completes** when the rewrite leaves no stored binding at a version
+other than `V(R)`, both as defined below. A cluster created at release `R` is
+created with the finalization of `R` complete: every group's write versions are
+the `V(R)` of every configuration type release `R` registers, and `R` is recorded
+as the finalized release.
+
+- Write versions. Each consensus group (ARFC 0006 clause 2.2) holds a write
+  version per `(kind, name)`. Whoever writes a binding to control plane state
+  calls `to_value` with the write version of its implementation in the group that
+  stores it, or with its own release's `VERSION` when that group holds none. A
+  group applies a binding write, in log order, only if its version equals that
+  write version or the group holds none for the implementation. Otherwise the
+  write fails with `UnsupportedVersion` whose `min` and `max` are the write
+  version, and nothing is stored. A configuration that fails with
+  `NotExpressible` at the write version is given back to the caller as an error
+  and not stored. Write versions change only at the switch, so before the switch
+  for `R` they are the `V(R - 1)` that the switch for `R - 1`, or cluster
+  creation, set.
+- Check. Finalization first decodes every stored binding with the configuration
+  types of release `R` (clause 3.19), and writes nothing. If a binding's
+  implementation has no configuration type in release `R`, or `from_value`
+  fails, finalization reports each such binding with its resource and error and
+  stops before the switch, so rollback to `R - 1` stays possible.
+- Switch. Finalization then starts with one write to the global group that
+  records `R` as the finalized release (ARFC 0017 section 8) and sets the group's
+  write versions to exactly the `V(R)` of every configuration type release `R`
+  registers, followed by one write that sets the same write versions in each
+  regional group. From the switch on, no node runs release `R - 1`: rollback,
+  falling back to the previous binary (ARFC 0017 section 6), and starting
+  `alloyd` of release `R - 1` are refused.
+- Rewrite. After a group's switch, finalization replaces each binding stored in
+  that group whose version is not `V(R)` with `reencode(value, V(R))` (clause
+  3.19), which is the same configuration (round trip rule above). Each
+  replacement is a write that names the resource `generation` it read (ARFC 0006
+  clause 3.5). On `Conflict` it reads the resource again and replaces the
+  binding only if it is still at a version other than `V(R)`: a change made by
+  another writer after the switch is already at `V(R)` and is never overwritten.
+  A binding at `V(R)` is not rewritten.
+- Completion. Finalization completes, and `alloy cluster upgrade --finalize`
+  reports success, only when every group has switched and no group stores a
+  binding at a version other than `V(R)`. From then until the next switch none
+  does, because every group refuses binding writes at another version. A binding
+  the rewrite cannot replace is reported with its resource and error, and
+  finalization stays started and not complete until a later run replaces it or
+  the resource is rebound or deleted.
+- Who runs it. The check and the rewrite run in `alloyd` of release `R` on a
+  control node, as a controller of each group (ARFC 0006 clause 2.4). Clause 3.19
+  gives every such process the configuration type of every implementation release
+  `R` registers on any supported host. The rewrite resumes after a crash or a
+  leader change, and running `alloy cluster upgrade --finalize` again resumes it
+  too. Either way it rewrites only what is still at another version.
+- A rewrite is not a binding change. Two bindings are the same binding when their
+  names are equal and `ConfigCodec::same` of their configurations returns
+  `Ok(true)`, whatever their versions. `Binding`'s `==` compares bytes and is not
+  this rule. Whoever acts on a change to a stored binding with a swap, drain, or
+  restart compares the old and new binding by this rule first, and does nothing
+  when they are the same binding. A rewrite therefore causes no swap, drain, or
+  restart, and does not change any slot's `current`, `binding`, or `generation`.
+- Ordering. The upgrade to release `R + 1` must not start, and `alloyd` of release
+  `R + 1` refuses to start, while the finalization of release `R` is not
+  complete.
+- Bound. `MIN_VERSION` of release `R + 1` must be no newer than `V(R)`. With the
+  rules above, the releases that may run and the versions stored are, in order:
+  before the switch for `R`, releases `R - 1` and `R`, with bindings at
+  `V(R - 1)`; from that switch until completion, release `R` only, with bindings
+  at `V(R - 1)` or `V(R)`; from completion until the switch for `R + 1`, releases
+  `R` and `R + 1`, with bindings at `V(R)`. Every stored binding therefore stays
+  readable by every release that may run on the cluster, after any number of
+  upgrades (I-18), and no release decodes a version older than its predecessor's
+  `VERSION`.
 
 3.14 Slots. `current` must return the instance installed by `new` or by the most
 recent activation, from any thread, without waiting for a swap in progress. A swap
@@ -484,6 +579,39 @@ bytes, because live seams such as `key-provider` move key material through them
 The `Debug` output of a seam instance is its implementation's, and must not hold
 secrets either.
 
+3.19 Configuration types. `RegistryBuilder::register_config::<S, C>` must fail,
+and leave the builder unchanged, with:
+
+- `InvalidKind` when `S::KIND` breaks the rules of clause 3.10,
+- `KindConflict` when another marker type registered `S::KIND` before, by
+  `register` or by `register_config`, compared by `TypeId`,
+- `Duplicate` when a configuration type is registered under `(S::KIND, name)`,
+- `Full` when the builder holds 1,024 configuration types.
+
+The `KindConflict` check of clause 3.11 likewise counts registrations by both
+methods. Factories and configuration types are counted separately, and either may
+be registered for a name without the other.
+
+`Registry::config` must return `None` for a `(kind, name)` with no configuration
+type, and otherwise a `ConfigCodec` for the type `C` registered there:
+
+- `version` and `min_version` return `C::VERSION` and `C::MIN_VERSION`,
+- `reencode(value, v)` returns the error of `C::from_value(value)` if it fails,
+  and otherwise the result of `to_value(v)` on the decoded configuration,
+- `same(a, b)` returns the error of `C::from_value(a)` if it fails, otherwise the
+  error of `C::from_value(b)` if it fails, and otherwise `Ok` of whether the two
+  decoded configurations are equal by `==`.
+
+`configs` must list every configuration type once, sorted by kind and then by
+name.
+
+Every `alloyd` of a release, on every supported host (ARFC 0000 clause 3.8), must
+register the configuration type of every implementation that `alloyd` of that
+release registers on any supported host. Clause 3.2 may exclude an
+implementation's factory on a host, never its configuration type. So `configs`
+returns the same list on every supported host, and that list holds every
+`(kind, name)` that `entries` lists on any of them.
+
 ## 4. Formats
 
 A serialized configuration value is:
@@ -531,8 +659,14 @@ otherwise. The trait of every `live` seam has `Swappable` as a supertrait and it
 marker implements `LiveSeam`.
 
 The registry and the slot are not a seam. Their conformance suite is
-`tests/conformance/seam/`, and it checks clauses 3.10 to 3.18 and section 4 with
-test seams and test configurations defined in the suite.
+`tests/conformance/seam/`, and it checks clauses 3.10 to 3.19 and section 4 with
+test seams and test configurations defined in the suite. The rules of clause 3.13
+for bindings stored in control plane state (write versions, check, switch,
+rewrite, completion, binding identity, ordering) are control plane behavior and
+are checked by the upgrade scenarios that ARFC 0017 clause 3.10 runs, not by this
+suite. The last paragraph of clause 3.19 is a property of `alloyd` builds and is
+checked by building `alloyd` for both supported hosts and comparing their
+`configs`, not by this suite.
 
 ## 6. Failure behavior
 
@@ -541,8 +675,15 @@ instance serving and must surface the error on the resource that asked for it. A
 resource bound to an implementation the node does not have must report
 `SeamUnavailable` and must not fall back to a different implementation.
 
-A configuration that the version a writer must use cannot carry fails with
-`NotExpressible` and is not stored (clause 3.13).
+A configuration that the write version cannot carry fails with `NotExpressible`,
+and a binding written at a version other than the write version fails with
+`UnsupportedVersion`. Neither is stored (clause 3.13).
+
+A stored binding that the finalization check cannot decode is reported with its
+resource and error, and finalization does not start: rollback stays possible. A
+stored binding that the rewrite cannot replace after the switch is reported the
+same way, and finalization stays started and not complete until a later run
+replaces it or the resource is rebound or deleted (clause 3.13).
 
 A failed or timed-out swap leaves the old instance current and resumed, or reports
 in `resumed` that it could not resume. The owning subsystem surfaces either result
@@ -555,6 +696,7 @@ on the resource whose binding was being changed.
 | Registry name (`Kind`, `ImplName`) | 1 to 32 bytes, `[a-z0-9-]` | `NameError` |
 | Serialized configuration value | 65,536 bytes | `ConfigError::TooLarge` |
 | Registrations per registry | 1,024 | `RegistryError::Full` |
+| Configuration types per registry | 1,024 | `RegistryError::Full` |
 | `Detail` text | 1,024 bytes | Truncated at a character boundary |
 | Concurrent swaps per slot | 1 | `SwapError::Busy` |
 
