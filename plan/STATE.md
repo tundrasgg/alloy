@@ -74,7 +74,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0056, R-0001 to R-0008
 | T-0049 | process | architect | done | none | Fix the P-256 rules in the crypto engineering file |
 | T-0050 | spec | architect | active | none | Specify the alloy-sim world and scenario interface |
 | T-0051 | build | developer | blocked | T-0053 | Run the commit message check in CI |
-| T-0052 | spec | architect | active | none | Make the local admin a full break-glass administrator |
+| T-0052 | spec | architect | review | none | Make the local admin a full break-glass administrator |
 | T-0053 | build | developer | queued | T-0046 | Parse commit trailers only from the last paragraph |
 | T-0054 | build | developer | active | none | Build alloy-wire for AL handshake and transport messages |
 | T-0055 | verify | verifier | queued | T-0054 | Write conformance vectors for AL handshake and transport bytes |
@@ -127,6 +127,7 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 - Spec (after T-0038 and T-0043 merge): ARFC 0004 section 8 and ADR 0039's consequence line restated against probe replay protection in ARFC 0003 section 3.6; the relay envelope in ARFC 0003 section 3.7 gains the `src` that section 3.1's cookie needs; ARFC 0004 section 3.5 says whether path MTU probes travel inside relay envelopes; ARFC 0003 section 7 throttles probe floods that name real node ids. Verify: ARFC 0003 section 3.6 conformance cases listed in `plan/reports/T-0038.architect.1.md`.
 - Ruling before the first task that builds TLS: `rustls` providers draw key shares and hello randoms from their own generator, which `agent/eng/crypto.md` rule 4 forbids and which breaks I-20 under the simulator; either an exception to rule 4 or a provider fed from `alloy-rt` (T-0049).
 - Spec: ARFC 0008 clause 3.8 names the ACME account key and its type, and ARFC 0002 section 2's RFC 6979 rule covers it, as ADR 0053 decides; ARFC 0002 and 0008 `Decisions` headers list 0053 (T-0049).
+- From T-0052 (after it merges): I-02 in `agent/domain/invariants.md` names the break-glass action as the second way across an org boundary; a spec task names the `iam` methods for users, roles, and policies and what `cloud-admin` allows, before any build task cites ARFC 0007 clause 3.10.7; PB-0001 mentions the `local-admin-used` warning; `tests/conformance/authn` cases listed in `plan/reports/T-0052.architect.1.md`.
 - Process: a task that supersedes an ADR needs that ADR's status line and its index row in `touches`; the shared index rule has no append-only way to mark a superseded row (T-0044).
 - Spec: ARFC 0014 maps native errors, including `Unauthenticated`, to S3 errors; add `Unauthenticated` to `proto/alloy/common/errors.proto` when it is written (T-0044).
 - Process: a dependency policy for npm packages, since `deny.toml` covers Cargo only (T-0035).
