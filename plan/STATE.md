@@ -21,7 +21,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 
 ## Paused
 
-The pilot paused dispatch. In flight when paused: T-0075 round 2, T-0008 round 2, T-0055, T-0079, and the T-0080 review. The next lead session processes their reports first (merge, or dispatch the review each needs), then continues with T-0076 to T-0078 and the board below.
+The pilot paused dispatch. T-0075 round 2 finished after the pause and needs its re-review. Still in flight when paused: T-0008 round 2, T-0055, T-0079, and the T-0080 review. The next lead session processes their reports first (merge, or dispatch the review each needs), then continues with T-0076 to T-0078 and the board below.
 
 ## Board
 
