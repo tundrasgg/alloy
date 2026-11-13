@@ -39,6 +39,7 @@ or supersede it.
 | [0035](0035-dependencies-must-be-permissively-licensed.md) | Dependencies must be permissively licensed |
 | [0054](0054-simulated-worlds-are-network-trees-driven-by-a-control-task.md) | Simulated worlds are network trees driven by a control task |
 | [0060](0060-libfuzzer-sys-alone-may-use-ncsa-in-fuzz-targets-only.md) | libfuzzer-sys alone may use NCSA, in fuzz targets only |
+| [0062](0062-the-windows-client-may-ship-the-signed-wintun-dll-unmodified.md) | The Windows client may ship the signed Wintun DLL unmodified |
 
 ## Architecture
 

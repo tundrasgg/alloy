@@ -1,9 +1,9 @@
 # ARFC 0019: CLI and console
 
 - Status: draft
-- Depends on: 0002, 0007, 0008
+- Depends on: 0002, 0007, 0008, 0017
 - Crates: alloy (binary), ui/console
-- Decisions: 0002, 0040, 0041
+- Decisions: 0002, 0040, 0041, 0044, 0062
 
 ## 1. Purpose
 
@@ -13,10 +13,16 @@ starting with PB-0001 (task T-0013).
 
 ## 2. Model
 
-The CLI is one binary, `alloy`, for Linux, macOS, and Windows. It holds
-**contexts**: a name, one to four API endpoints, a pinned API CA fingerprint
-(`api_ca_fp`, ARFC 0002 section 3.7) or public name, an access key, and a
-default org and project. At most one context is current.
+The CLI is one binary, `alloy`, for Linux, macOS, and Windows, installed and
+removed by the scripts of ARFC 0017 clauses 3.15 and 3.16. On Linux and Windows
+the same install also brings the **mesh client**: `alloyd`, with which `alloy
+join` makes the computer a node, a client node on Windows (ARFC 0002 section
+3.11). On Windows `alloy join` and `alloy node leave` need an elevated
+administrator where Linux needs root.
+
+The CLI holds **contexts**: a name, one to four API endpoints, a pinned API CA
+fingerprint (`api_ca_fp`, ARFC 0002 section 3.7) or public name, an access key,
+and a default org and project. At most one context is current.
 
 The console is a web application served by control nodes at the API endpoint. It
 is written in TypeScript and built into static files embedded in `alloyd`.
@@ -78,7 +84,7 @@ safe. No endpoint answering within 10 seconds exits 6.
 
 | Command | Behavior |
 |---|---|
-| `alloy node list` | Columns `NAME`, `ROLES`, `ZONE`, `STATE`, `MESH`, `VERSION`. `STATE` is a node state from ARFC 0002 section 2. `MESH` is `direct` or `relay-only` (ARFC 0004 section 3.7), or `-` for a `pending` or `joining` node. `ROLES` lists roles in the order `anchor`, `control`, `compute`, `storage`, joined by commas |
+| `alloy node list` | Columns `NAME`, `ROLES`, `ZONE`, `STATE`, `MESH`, `VERSION`. `STATE` is a node state from ARFC 0002 section 2. `MESH` is `direct` or `relay-only` (ARFC 0004 section 3.7), or `-` for a `pending` or `joining` node. `ROLES` lists roles in the order `anchor`, `control`, `compute`, `storage`, joined by commas, or `-` for a client node |
 | `alloy node approve <name>` | Calls `ApproveNode` (ARFC 0002 section 3.3). Fails with `Conflict` for a node that is not `pending` |
 | `alloy node reject <name>` | Calls `RejectNode`. Fails with `Conflict` for a node that is not `pending` |
 | `alloy node update <name>` | Takes `--roles <list>` and `--advertise <addr>[,...]`, for any node. Adding `anchor` or `control` to a node with no advertise address fails as ARFC 0002 section 3.10 says unless `--advertise` is given in the same command |

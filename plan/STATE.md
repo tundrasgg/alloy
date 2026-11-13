@@ -12,8 +12,8 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0094 |
-| Decision `D-` | D-0040 |
+| Task `T-` | T-0096 |
+| Decision `D-` | D-0043 |
 | ADR | 0063 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0002 |
@@ -100,23 +100,25 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0074 | build | developer | done | none | Create alloy-crypto with BLAKE3 content hashing |
 | T-0075 | build | developer | done | none | Build the alloy-sim executor, runs, and trace |
 | T-0076 | build | developer | active | none | Build alloy-sim hosts, mem runtime, and faults |
-| T-0077 | build | developer | queued | T-0076 | Build alloy-sim networks, UDP, and the echo scenario |
+| T-0077 | build | developer | queued | T-0094 | Build alloy-sim networks, UDP, and the echo scenario |
 | T-0078 | build | developer | queued | T-0077 | Build alloy-sim mem streams |
 | T-0079 | build | developer | done | none | Run the commit check inside cargo xtask ci |
 | T-0080 | spec | architect | done | none | Replace path-move heuristics with verify-before-move |
 | T-0081 | build | developer | done | none | Update the alloy-wire fuzz targets to the compact layout |
 | T-0082 | build | developer | done | none | Make xtask output parsing independent of terminal color |
-| T-0083 | build | developer | active | none | Build the os implementations of the runtime seams |
+| T-0083 | build | developer | review | none | Build the os implementations of the runtime seams |
 | T-0084 | verify | verifier | queued | T-0083 | Run the runtime conformance suites against os |
 | T-0085 | build | developer | done | none | Build the AL handshake and transport crypto in alloy-crypto |
 | T-0086 | verify | verifier | done | none | Write fixed IKpsk2 handshake vectors for ARFC 0003 |
 | T-0087 | product | product | done | none | Set the design standard for the CLI, console, and APIs |
-| T-0088 | spec | architect | active | none | Specify install, uninstall, and the Windows client node |
+| T-0088 | spec | architect | done | none | Specify install, uninstall, and the Windows client node |
 | T-0089 | build | developer | done | none | Let binary crates set their exit code |
-| T-0090 | spec | architect | review | none | Keep path checks apart from probe-set challenges |
-| T-0091 | build | developer | queued | T-0088 | Create the alloy and alloyd binaries |
-| T-0092 | build | developer | queued | T-0088 | Build the release workflow and the install scripts |
-| T-0093 | verify | verifier | queued | T-0088 | Write the M11 rung 1 install and uninstall check |
+| T-0090 | spec | architect | active | none | Keep path checks apart from probe-set challenges |
+| T-0091 | build | developer | queued | T-0095 | Create the alloy and alloyd binaries |
+| T-0092 | build | developer | active | none | Build the release workflow and the install scripts |
+| T-0093 | verify | verifier | active | none | Write the M11 rung 1 install and uninstall check |
+| T-0094 | build | developer | queued | T-0076 | Build the alloy-sim mem disk-io model |
+| T-0095 | build | developer | active | none | Fix the os direct read across end of file on Linux |
 
 ## First dispatch
 
@@ -188,6 +190,11 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 - Spec: ARFC 0004 section 8 states the probe reflection bound from section 3.2 (T-0021 follow-up).
 
 ## M11 notes
+
+- From T-0088 re-review (fold into the next ARFC 0002 or 0017 task): F1, the Windows data directory has no rule for its ancestors; F2, nothing records a non-default data directory for the unit or the uninstall. F3 and F4 are in T-0092.
+
+- T-0083 round 2 on Linux (8059f64): `cargo test -p alloy-rt` gives 65 passed, 1 failed, `os::disk::tests::a_direct_read_across_the_end_returns_the_bytes_before_it` panics at `crates/alloy-rt/src/os/disk/tests.rs:406`. It passes on Windows. T-0083 cannot merge until it passes on Linux.
+- Naming (D-0041): a product task maps the public names onto the glossary, CLI help, and console. "Underlay Mesh" names the overlay, while the glossary's "underlay" means the networks beneath it; that task resolves the wording.
 
 - From T-0086 (fold into the next ARFC 0003 task): the handshake nonce is always 24 zero bytes in `IKpsk2`, so its byte order is unobservable; section 3.3 erasure can only be checked by proxies; add probe key vectors once section 3.6 sealing exists.
 - From T-0079 review (note): a dependency added to `alloy-wire` must also update `fuzz/Cargo.lock`, which the `fuzz` gate step does not name when it fails; fold into the next `xtask` task.
