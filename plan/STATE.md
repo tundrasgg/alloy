@@ -63,11 +63,11 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0051, R-0001 to R-0007, and PB-0001 are allo
 | T-0038 | spec | architect | active | none | Specify probe bytes and probe replay protection in ARFC 0003 |
 | T-0039 | spec | architect | cancelled | none | Bound probe sets and return path moves in ARFC 0004 |
 | T-0040 | spec | architect | done | none | Bound lineage state and close gaps in ARFC 0007 section 3.9 |
-| T-0041 | spec | architect | active | none | Use a browser-compatible key type for the API CA |
+| T-0041 | spec | architect | review | none | Use a browser-compatible key type for the API CA |
 | T-0042 | build | developer | review | none | Close the check-repo gaps found in review |
 | T-0043 | spec | architect | active | none | Settle the path class rule and bound return path moves |
 | T-0044 | spec | architect | active | none | Make access key recovery and deleted-key requests well defined |
-| T-0045 | spec | architect | queued | T-0041 | Close the join and local admin gaps in ARFC 0002 and 0019 |
+| T-0045 | spec | architect | queued | T-0041 | Close join, local admin, and API CA gaps in ARFC 0002 and 0019 |
 
 ## First dispatch
 
@@ -107,7 +107,8 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 - Research: observe a Safari TLS handshake with an Ed25519 chain on Apple hardware, and check previous-major Chromium and Firefox in real browsers (R-0006 follow-up).
 - Build: `check-repo` rejects all of `std::process` outside `alloy-rt` and `alloy-sim`, which includes `ExitCode` and `exit`; the first binary crate needs a narrower pattern or an exit path through `alloy-rt`. `banned-patterns` scans only `crates/`, not `tests/` or `fuzz/` (T-0042).
 - Process: a dependency policy for npm packages, since `deny.toml` covers Cargo only (T-0035).
-- Research then ADR: the `rustls` crypto provider (`aws-lc-rs` needs a C build and license review; `ring` release cadence). From R-0004.
+- Research then ADR: the `rustls` crypto provider (`aws-lc-rs` needs a C build and license review; `ring` release cadence), which must sign ECDSA P-256 with RFC 6979 nonces, and the crate that builds X.509 certificates for the API CA. From R-0004 and T-0041.
+- Spec (M6): a key type for the ingress ACME certificates in ARFC 0010 clause 3.6 (T-0041).
 - The task that wires openraft into `alloy-rt` includes a seed replay test. From R-0004.
 - If LMDB or `blake3` are adopted, an ADR adds OpenLDAP and CC0 to the license allowlist. From R-0004.
 - Product: replace `<download-host>` in PB-0001 with the ADR 0044 URLs.
