@@ -21,7 +21,7 @@ found and not expected.
 | File | What |
 |---|---|
 | `rung1.ps1` | Rung 1 driver: install and uninstall on every machine |
-| `host-snapshot.sh` | The host snapshot of a Linux machine (ARFC 0017 clause 3.17.6) |
+| `host-snapshot.sh` | The host snapshot of a Linux machine (ARFC 0017 clause 3.17.6), and its stability self-check |
 | `host-snapshot.ps1` | The host snapshot of a Windows machine (same clause) |
 | `rung1-probe.sh` | Reads the install state of a Linux node for rung 1 |
 
@@ -93,10 +93,17 @@ else the commands of the clause print is compared.
 
 | State left out | Where | Why |
 |---|---|---|
-| Link reference counts (`promiscuity`, `allmulti`) and bridge `*_timer` values | `ip -d link show` | Counters and running timers |
+| Link reference counts `promiscuity` and `allmulti` | `ip -d link show` | Counters |
+| Every `*_timer` value of a bridge or bridge port: `hello_timer`, `tcn_timer`, `topology_change_timer`, `gc_timer`, `message_age_timer`, `forward_delay_timer`, `hold_timer`, `mcast_querier_ipv4_other_timer`, `mcast_querier_ipv6_other_timer` | `ip -d link show` | Running timers |
+| Bridge `fdb_n_learned` | `ip -d link show` | The number of MAC addresses the bridge has learned. It changes whenever a guest or a LAN host sends traffic (`fdb_max_learned`, the limit, is kept) |
+| Bridge port `mcast_n_groups` | `ip -d link show` | The number of multicast groups snooped on the port (`mcast_max_groups`, the limit, is kept) |
+| Bridge `mcast_querier_ipv4_addr`, `mcast_querier_ipv4_port`, and the `ipv6` pair | `ip -d link show` | The multicast querier the bridge last heard on the LAN, learned from traffic (`mcast_querier`, the setting, is kept) |
+| Bridge `topology_change` and `topology_change_detected`, bridge port `topology_change_ack` and `config_pending` | `ip -d link show` | STP flags that the kernel sets on a port change and that the timers above clear |
+| Bond port `link_failure_count` | `ip -d link show` | A counter |
+| CAN `berr-counter` | `ip -d link show` | Bus error counters |
 | Address `valid_lft` and `preferred_lft` in seconds (`forever` is kept) | `ip address show` | Remaining lifetimes count down |
 | Route `expires` | `ip route`, `ip -6 route` | Remaining lifetimes count down |
-| Rule counters, quota usage, `last used` ages, set element `expires` | `nft list ruleset` | Counters and countdowns |
+| Rule and set element counters, the `packets` and `bytes` of a named counter object, quota usage, `last used` ages, set element `expires` | `nft list ruleset` | Counters and countdowns |
 | Comment lines and chain packet and byte counters | `iptables-save`, `ip6tables-save` | The comments carry the time of the dump; counters |
 | `net.netfilter.nf_conntrack_count` | `sysctl -a` | A counter |
 | Units in the state `transient` or `generated` | `systemctl list-unit-files` | No install places them. systemd makes transient units at run time, such as the `session-<n>.scope` of each login, this check's SSH logins included. Generators make generated units from other configuration, such as `.mount` units |
@@ -105,6 +112,16 @@ else the commands of the clause print is compared.
 | Every property not named in `host-snapshot.ps1`, among them adapter link speeds and address and route lifetimes | Every Windows section | Measured rates and countdowns. The named properties are the ones an install or a configuration change sets |
 | Service `Status` (the start type is kept) | `Get-Service` | Windows starts and stops demand-start and trigger-start services on its own |
 
+For `ip -d link show` the value is removed and the attribute's name is kept, so
+an attribute that appears or disappears still shows. Every other attribute
+there is configuration or state that holds still on an idle machine, and is
+compared: among them `state`, the STP results `designated_root`, `root_port`,
+and `root_path_cost`, a bond's LACP `ad_info`, and a tap's `numqueues`. The
+other commands of the clause print no counter, statistic, or timestamp beyond
+the ones in the table: `ip rule`, `getent`, `/etc/resolv.conf`, and the
+Proxmox VE guest list and configurations print only configuration and state,
+and the `net.` sysctls other than `nf_conntrack_count` are settings.
+
 After an install, the comparison also drops the unit or service `alloyd` and,
 on Windows, takes the `PATH` entry the install appends as expected, as clause
 3.17.6 allows. On a Proxmox VE node the three Proxmox VE sections are compared
@@ -112,9 +129,9 @@ as their own checks, not left out.
 
 Things that do change on their own and are kept can still fail a comparison:
 an IPv6 temporary address that rotates, a DHCP lease that moves to another
-address, a Proxmox VE key rotation, or a Windows firewall rule that another
-program adds while the check runs. Rerun the check when one of those shows in
-the differences.
+address, a Proxmox VE key rotation, an element that a rule adds to an nftables
+set from traffic, or a Windows firewall rule that another program adds while
+the check runs. Rerun the check when one of those shows in the differences.
 
 ### The HA status files under /etc/pve
 
@@ -136,6 +153,28 @@ neither is present, or a file is not valid JSON, the file is hashed raw and
 `(raw: ...)` says so, and its digest is then expected to differ between
 snapshots. Every other file under `/etc/pve` is hashed raw, so any change to
 its bytes shows.
+
+## Checking that snapshots are stable
+
+Before a rung run, check that two snapshots of each idle machine, taken a few
+seconds apart, are equal. A difference is a value that changes on its own: it
+would fail every comparison of the rung, and the snapshot script must remove
+it. On a Linux node, the self-check mode of `host-snapshot.sh` takes the two
+snapshots on the node and prints one `PASS` or `FAIL` line, the differences,
+and a `SUMMARY` line, and exits 0 when they are equal and 1 when not (add
+`--proxmox` on a Proxmox VE host):
+
+```
+ssh root@<node-a> sh -s -- --self-check 20 < tests/e2e/host-snapshot.sh
+ssh root@<node-b> sh -s -- --proxmox --self-check 20 < tests/e2e/host-snapshot.sh
+```
+
+On the Windows client, from an elevated PowerShell at the repository root. It
+prints `equal` and exits 0, or prints the differences and exits 1:
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -Command '$a = & tests\e2e\host-snapshot.ps1; Start-Sleep -Seconds 20; $b = & tests\e2e\host-snapshot.ps1; $d = @(Compare-Object $a $b -CaseSensitive); if ($d.Count -eq 0) { ''equal'' } else { $d; exit 1 }'
+```
 
 ## Checking the scripts
 
