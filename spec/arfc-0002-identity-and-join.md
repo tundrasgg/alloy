@@ -638,9 +638,10 @@ rule below refuses, so the data directory stays on the volume that holds
 `%ProgramData%`. An **Alloy data directory** meets all of these:
 
 - On Linux, it is not a symbolic link, is owned by user id 0, and has mode
-  `0700`. Every directory above it is owned by user id 0 and is not writable by
-  its group or by others. Its host file is owned by user id 0 and has mode
-  `0600`.
+  `0700`. Every directory above it is not a symbolic link, is owned by user
+  id 0, and is not writable by its group or by others, so the directories
+  checked are the ones the path resolves through. Its host file is owned by
+  user id 0 and has mode `0600`.
 - On Windows, it is not a reparse point, its owner is `SYSTEM` or the
   `Administrators` group, and its access control list is protected from
   inheritance and grants full control to `SYSTEM` and `Administrators` and no
@@ -674,6 +675,26 @@ it reads any secret, that its data directory is an Alloy data directory. When
 it is not, `alloyd` reads no secret, serves nothing, starts no process, writes
 nothing, and logs the reason every 60 seconds.
 
+`alloy` and `alloyd` do all of this through the `disk-io` seam (ARFC 0005
+clause 3.1.15). The `root` of their `os` instance (ARFC 0005 section 4.2) is
+`/` on Linux and, on Windows, the root of the volume that holds
+`%ProgramData%`, and they name the data directory by `rt_path` of its native
+path. They read each owner, mode, access control list, and link or reparse
+point fact the rules name with `security`, which does not follow a link at
+the path itself, on the data directory, its host file, and each directory
+above it up to the root, one `security` call per entry. When `security`
+returns an error for any entry it reads, the entry fails the rules: `init`
+and `join` exit 5 and `alloyd` reads no secret, as for any other failure,
+and the message names that entry and the error, and names the entry's owner
+as `unknown` when it could not be read. They create the data directory with
+`Protection::PrivateRoot`, and every file and directory under it with
+`Protection::Private`, which on Windows gives it owner `Administrators` and
+the list it inherits from the data directory. On Linux they set an adopted
+directory's mode with `set_mode` and complete `sync_dir` of it before writing
+in it. A file under the data directory that a library opens itself, such as a
+`native` store file (ARFC 0006 clause 5.2), is first created through the seam
+as ARFC 0005 clause 3.1.15 describes.
+
 On Windows, after an unprivileged local user creates the directory `Alloy` in
 `%ProgramData%`, `alloy join` must exit 5 naming that directory and its owner,
 and the directory must stay empty. Without that directory, `join` creates it,
@@ -681,7 +702,12 @@ and `icacls` on it lists only `SYSTEM` and `Administrators`, each with full
 control and neither inherited. After an administrator adds to `%ProgramData%`
 an entry that grants the local group `Users` `FILE_DELETE_CHILD` on it, `alloy
 join` must exit 5 naming `%ProgramData%` and that group, and `alloyd`, when it next starts,
-must read no secret and log the same reason.
+must read no secret and log the same reason. After an unprivileged local user
+creates the directory `Alloy` in `%ProgramData%` with a list protected from
+inheritance that grants only that user, `alloy join` must exit 5 naming that
+directory and its owner as `unknown`, and the directory must stay empty. On
+Linux, when `/var/lib` is a symbolic link to a directory that meets every
+other rule, `alloy join` must exit 5 naming `/var/lib`, and write nothing.
 
 ### 3.13 Node channel
 
