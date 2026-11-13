@@ -47,7 +47,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0021 | spec | architect | done | none | Resolve NAT spec issues found by R-0003 |
 | T-0022 | spec | architect | done | none | Apply PB-0001 to ARFC 0002 and ARFC 0019 |
 | T-0023 | spec | architect | done | none | Specify user access keys and the local admin path |
-| T-0024 | spec | architect | queued | T-0090 | Fix the default mesh port and TCP 443 sharing |
+| T-0024 | spec | architect | queued | M11 rung 1 | Fix the default mesh port and TCP 443 sharing |
 | T-0025 | process | architect | done | none | Let parallel tasks share append-only index files |
 | T-0026 | spec | architect | done | none | Make the ARFC 0003 handshake implementable on Noise libraries |
 | T-0027 | process | architect | done | none | Align core delegation and the lead role with shared index files |
@@ -113,7 +113,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0087 | product | product | done | none | Set the design standard for the CLI, console, and APIs |
 | T-0088 | spec | architect | done | none | Specify install, uninstall, and the Windows client node |
 | T-0089 | build | developer | done | none | Let binary crates set their exit code |
-| T-0090 | spec | architect | review | none | Keep path checks apart from probe-set challenges |
+| T-0090 | spec | architect | done | none | Keep path checks apart from probe-set challenges |
 | T-0091 | build | developer | active | none | Create the alloy and alloyd binaries |
 | T-0092 | build | developer | active | none | Build the release workflow and the install scripts |
 | T-0093 | verify | verifier | active | none | Write the M11 rung 1 install and uninstall check |
@@ -190,6 +190,8 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 - Spec: ARFC 0004 section 8 states the probe reflection bound from section 3.2 (T-0021 follow-up).
 
 ## M11 notes
+
+- From T-0090 re-review (fold into T-0024, the next ARFC 0004 task): F1, the T-0090 behavior changes need an ADR superseding ADR 0061; F2, when an answer is sealed relative to the 2 s probe bound. T-0024 also takes the default mesh port and excluding `al*` addresses from candidates (T-0088 issues); rung 2 needs it.
 
 - From T-0083 re-review (note): on Windows, 8.3 short names and case variants alias long names in `os` `disk-io`, so `list` omits names `open` accepts; fold into the next `alloy-rt` task.
 
