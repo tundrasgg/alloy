@@ -14,10 +14,11 @@ use std::time::Duration;
 use alloy_rt::WallTime;
 use alloy_seam::Detail;
 
-use crate::exec::{Executor, Polled, drop_quietly, lock, panic_text};
+use crate::core::{MAX_NANOS, Shared};
+use crate::exec::{Owner, Polled, drop_quietly, lock, panic_text};
 use crate::stream::Stream;
 use crate::trace::{Closed, Kept, kind_name};
-use crate::world::{MAX_NANOS, Shared, World};
+use crate::world::World;
 
 /// Task polls at one world instant before the run ends with `liveness`
 /// (section 7).
@@ -172,8 +173,7 @@ where
     F: FnOnce(World) -> Fut,
     Fut: Future<Output = Result<(), Failure>> + Send + 'static,
 {
-    let shared = Arc::new(Shared::new(config.seed));
-    let mut exec = Executor::new();
+    let shared = Arc::new(Shared::new(config.seed, config.wall_start.0));
     match config.check() {
         Err(cause) => lock(&shared.trace).outcome.fail(cause),
         Ok(()) => {
@@ -182,7 +182,7 @@ where
             }
             let world = World::new(Arc::clone(&shared));
             match catch_unwind(AssertUnwindSafe(|| scenario(world))) {
-                Ok(control) => drive(&shared, &mut exec, control, &config, max_polls),
+                Ok(control) => drive(&shared, control, &config, max_polls),
                 Err(payload) => {
                     let text = panic_text(payload.as_ref());
                     drop_quietly(payload);
@@ -193,48 +193,48 @@ where
             }
         }
     }
-    finish(&shared, exec)
+    finish(&shared)
 }
 
 /// Runs the world until the run ends (clause 3.2.7 steps 3 and 4).
-fn drive<Fut>(
-    shared: &Shared,
-    exec: &mut Executor,
-    control: Fut,
-    config: &RunConfig,
-    max_polls: u64,
-) where
+fn drive<Fut>(shared: &Arc<Shared>, control: Fut, config: &RunConfig, max_polls: u64)
+where
     Fut: Future<Output = Result<(), Failure>> + Send + 'static,
 {
     let output: Arc<Mutex<Option<Result<(), Failure>>>> = Arc::default();
     let slot = Arc::clone(&output);
-    let control = exec.spawn(Box::pin(async move {
+    let future = Box::pin(async move {
         let result = control.await;
         *lock(&slot) = Some(result);
-    }));
+    });
+    let control = lock(&shared.core)
+        .exec
+        .insert(Owner::Control, Some(future), None);
     let budget = u64::try_from(config.budget.as_nanos()).unwrap_or(MAX_NANOS);
     let mut schedule = Stream::new(shared.seed(), b"schedule", &[]);
     let mut polls_here: u64 = 0;
-    let fail = |text: String| lock(&shared.trace).outcome.fail(Detail::new(&text));
+    let fail = |cause: Detail| {
+        shared.fail(cause);
+        shared.flush();
+    };
     let liveness = |text: String| lock(&shared.trace).outcome.liveness(Detail::new(&text));
     loop {
         if shared.has_ended() {
             return;
         }
-        if let Some(key) = exec.pick(&mut schedule) {
-            let polled = exec.poll(key);
+        if let Some((key, polled)) = shared.poll_one(&mut schedule) {
             polls_here += 1;
             if key == control {
                 match polled {
                     Polled::Pending => {}
                     Polled::Completed => {
                         if let Some(Err(Failure(cause))) = lock(&output).take() {
-                            lock(&shared.trace).outcome.fail(cause);
+                            fail(cause);
                         }
                         return;
                     }
                     Polled::Panicked(text) => {
-                        fail(format!("the control task panicked: {text}"));
+                        fail(Detail::new(&format!("the control task panicked: {text}")));
                         return;
                     }
                 }
@@ -248,7 +248,7 @@ fn drive<Fut>(
             }
             continue;
         }
-        match shared.next_deadline() {
+        match shared.next_event() {
             None => {
                 liveness(format!(
                     "nothing is runnable and no event is pending at world time {} ns, before the budget of {budget} ns",
@@ -256,21 +256,17 @@ fn drive<Fut>(
                 ));
                 return;
             }
-            Some(deadline) if deadline > budget => {
+            Some(at) if at > budget => {
                 shared.set_now(budget);
                 liveness(format!("the run reached its budget of {budget} ns"));
                 return;
             }
-            Some(deadline) => {
-                if deadline > shared.now_nanos() {
-                    shared.set_now(deadline);
+            Some(at) => {
+                if at > shared.now_nanos() {
+                    shared.set_now(at);
                     polls_here = 0;
                 }
-                let mut due = shared.take_due(deadline);
-                schedule.shuffle(&mut due);
-                for waker in due {
-                    waker.wake();
-                }
+                shared.process_due(&mut schedule);
             }
         }
     }
@@ -279,12 +275,12 @@ fn drive<Fut>(
 /// Ends the run (clause 3.2.7 step 5): writes `run-end`, drops every task
 /// and object of the world, and writes the failure output and the summary
 /// line.
-fn finish(shared: &Shared, mut exec: Executor) -> RunSummary {
+fn finish(shared: &Shared) -> RunSummary {
     shared.end();
+    shared.flush();
     let time = shared.now_nanos();
-    let closed = lock(&shared.trace).finish(shared.hook(), time);
-    exec.clear();
-    drop_quietly(shared.clear_timers());
+    let closed = lock(&shared.trace).finish(time);
+    shared.clear();
     let Closed {
         hash,
         events,

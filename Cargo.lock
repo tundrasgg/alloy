@@ -58,6 +58,7 @@ dependencies = [
  "alloy-crypto",
  "alloy-rt",
  "alloy-seam",
+ "conformance-rt",
  "thiserror",
 ]
 

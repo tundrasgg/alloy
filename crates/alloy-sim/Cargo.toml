@@ -13,5 +13,8 @@ alloy-rt = { path = "../alloy-rt" }
 alloy-seam = { path = "../alloy-seam" }
 thiserror.workspace = true
 
+[dev-dependencies]
+conformance-rt = { path = "../../tests/conformance/rt" }
+
 [lints]
 workspace = true
