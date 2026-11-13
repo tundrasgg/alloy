@@ -81,11 +81,11 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0060, R-0001 to R-0008
 | T-0056 | process | architect | done | none | Let parallel tasks add crates to the shared workspace files |
 | T-0057 | spec | architect | done | none | Keep stored seam configuration readable across releases |
 | T-0058 | process | architect | done | none | Align core and lead rules with shared workspace files |
-| T-0059 | spec | architect | review | none | Discard sessions a failed handover's successor touched |
+| T-0059 | spec | architect | done | none | Discard sessions a failed handover's successor touched |
 | T-0060 | spec | architect | cancelled | none | Settle the open fragment and queue details in ARFC 0003 |
 | T-0061 | build | developer | active | none | Add fuzz targets for every alloy-wire decoder |
 | T-0062 | build | developer | done | none | Allow thiserror and proptest in the dependency allowlist |
-| T-0063 | spec | architect | queued | T-0059 | Shrink the AL transport header to 25 bytes of overhead |
+| T-0063 | spec | architect | active | none | Shrink the AL transport header to 25 bytes of overhead |
 | T-0064 | build | developer | queued | T-0063 | Rework alloy-wire for the compact transport header |
 | T-0065 | spec | architect | done | none | State break-glass reach into tenant data accurately |
 | T-0066 | spec | architect | active | none | Close the open stored-binding and interface gaps in ARFC 0001 |
@@ -148,6 +148,7 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 - Build: a fuzz target for `ConfigValue::from_bytes` in `alloy-seam` (T-0007 review, T-0069).
 - Testing rule: crates that use `proptest` set a fixed seed and no time-based shrink limit, since its `std` feature reads `Instant::now()` and OS entropy by default (T-0062 review note F1); state it in `agent/eng/testing.md` by a `process` task before the first crate adopts `proptest`.
 - From T-0066: decide whether consensus groups refuse binding writes from releases older than `R` during the finalization check (the one case that still stalls finalization until a resource is rebound); ARFC 0006 section 2.2 and ARFC 0002 section 2 cross-reference ARFC 0001 clause 3.13 and ARFC 0017 clause 3.11; the upgrade conformance item extends `tests/conformance/upgrade/` from ARFC 0017 clause 3.12. At merge, ARFC 0017's `Decisions` line combines T-0059's and T-0066's: `0029, 0056, 0057, 0059`.
+- Note (T-0059 re-review F1): after a failed handover, a peer whose only session was made by the successor gets no re-handshake and waits up to 120 s.
 - Process: a task that supersedes an ADR needs that ADR's status line and its index row in `touches`; the shared index rule has no append-only way to mark a superseded row (T-0044).
 - Spec: ARFC 0014 maps native errors, including `Unauthenticated`, to S3 errors; add `Unauthenticated` to `proto/alloy/common/errors.proto` when it is written (T-0044).
 - Process: a dependency policy for npm packages, since `deny.toml` covers Cargo only (T-0035).
