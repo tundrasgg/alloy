@@ -11,8 +11,8 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0073 |
-| Decision `D-` | D-0028 |
+| Task `T-` | T-0079 |
+| Decision `D-` | D-0030 |
 | ADR | 0061 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0002 |
@@ -31,7 +31,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0060, R-0001 to R-0008
 | T-0006 | spec | architect | done | none | Specify the alloy-rt and alloy-seam interfaces |
 | T-0007 | interface | developer | done | none | Define the alloy-rt and alloy-seam interface crates |
 | T-0008 | verify | verifier | queued | T-0066 | Write conformance suites for the runtime seams |
-| T-0009 | build | developer | active | none | Build the alloy-sim deterministic simulator |
+| T-0009 | build | developer | cancelled | none | Build the alloy-sim deterministic simulator |
 | T-0010 | verify | verifier | active | none | Write determinism and fault tests for the simulator |
 | T-0011 | build | developer | queued | T-0009, T-0021 | Build the NAT models in alloy-natlab |
 | T-0012 | verify | verifier | queued | T-0007, T-0021 | Write NAT model tests and the matrix file |
@@ -67,7 +67,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0060, R-0001 to R-0008
 | T-0042 | build | developer | done | none | Close the check-repo gaps found in review |
 | T-0043 | spec | architect | review | none | Settle the path class rule and bound return path moves |
 | T-0044 | spec | architect | done | none | Make access key recovery and deleted-key requests well defined |
-| T-0045 | spec | architect | queued | T-0052 | Close join, local admin, and API CA gaps in ARFC 0002 and 0019 |
+| T-0045 | spec | architect | queued | D-0028 | Close join, local admin, and API CA gaps in ARFC 0002 and 0019 |
 | T-0046 | build | developer | done | none | Enforce direct-io with Clippy on resolved paths |
 | T-0047 | spec | architect | cancelled | none | Protect the last cloud-admin and mark ADR 0041 superseded |
 | T-0048 | research | researcher | done | none | Research the rustls provider and a P-256 signing source |
@@ -95,6 +95,12 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0060, R-0001 to R-0008
 | T-0070 | spec | architect | done | none | State plainly that root on a control node reads all tenant data |
 | T-0071 | process | architect | done | none | Record the NCSA exception for libfuzzer-sys in ADR 0060 |
 | T-0072 | build | developer | review | none | Run the commit message check in CI from the current cut |
+| T-0073 | process | architect | active | none | Adopt lean task sizing and review rules |
+| T-0074 | build | developer | active | none | Create alloy-crypto with BLAKE3 content hashing |
+| T-0075 | build | developer | queued | T-0073, T-0074 | Build the alloy-sim executor, runs, and trace |
+| T-0076 | build | developer | queued | T-0075 | Build alloy-sim hosts, mem runtime, and faults |
+| T-0077 | build | developer | queued | T-0076 | Build alloy-sim networks, UDP, and the echo scenario |
+| T-0078 | build | developer | queued | T-0077 | Build alloy-sim mem streams |
 
 ## First dispatch
 
