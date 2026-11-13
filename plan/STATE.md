@@ -11,8 +11,8 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0083 |
-| Decision `D-` | D-0032 |
+| Task `T-` | T-0088 |
+| Decision `D-` | D-0034 |
 | ADR | 0062 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0002 |
@@ -109,6 +109,11 @@ CI on main fails on Linux since the T-0068 merge: `clippy_fixture_other_crates_f
 | T-0080 | spec | architect | active | none | Replace path-move heuristics with verify-before-move |
 | T-0081 | build | developer | done | none | Update the alloy-wire fuzz targets to the compact layout |
 | T-0082 | build | developer | active | none | Make xtask output parsing independent of terminal color |
+| T-0083 | build | developer | active | none | Build the os implementations of the runtime seams |
+| T-0084 | verify | verifier | queued | T-0083 | Run the runtime conformance suites against os |
+| T-0085 | build | developer | active | none | Build the AL handshake and transport crypto in alloy-crypto |
+| T-0086 | verify | verifier | queued | T-0085 | Write fixed IKpsk2 handshake vectors for ARFC 0003 |
+| T-0087 | product | product | active | none | Set the design standard for the CLI, console, and APIs |
 
 ## First dispatch
 
@@ -145,7 +150,6 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 - From `plan/reports/T-0040.architect.1.md` (cut after T-0022 merges): ARFC 0019 revokes a context's stored key when a login stores another user's key (F6); ARFC 0002 bounds the login code table and keeps each unspent code's issuer, including the access key behind an issuing session token; state the meaning of `key_id` in the token payload; `tests/conformance/authn` cases listed in that report.
 - From `plan/reports/T-0023.architect.1.md` (cut after T-0022 merges and T-0023 review): the issues on ARFC 0008, 0002, 0019, 0006, and 0020, the last `cloud-admin` binding, PB-0001 local admin errors, the `SO_PEERCRED` research question, glossary terms, and `tests/conformance/authn` cases.
 
-- Verify: a fixed `IKpsk2` handshake vector for ARFC 0003 sections 3.1 and 3.3 (keys, psk, message bytes, `i2r`, `r2i`, `salt`) in the ARFC 0003 conformance suite (T-0026 follow-up).
 - Spec (with the hybrid handshake ARFC, M10): how a node learns a peer supports a later `version` or the hybrid flag before sending it, since version 1 drops both silently (T-0026 re-review note F2).
 - Verify: ARFC 0003 section 6 operation counts per packet through `alloy-crypto` on the simulator, and the 3.1 cookie validity across a secret rotation (T-0030).
 - Verify and recut: T-0011, T-0012, and conformance suites for the new ARFC 0004 musts after T-0031 merges (answer count and size, probing window, challenge placement and lifetime, 64 outstanding challenges, 5 s home keepalive).
@@ -164,7 +168,7 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 - From T-0066: decide whether consensus groups refuse binding writes from releases older than `R` during the finalization check (the one case that still stalls finalization until a resource is rebound); ARFC 0006 section 2.2 and ARFC 0002 section 2 cross-reference ARFC 0001 clause 3.13 and ARFC 0017 clause 3.11; the upgrade conformance item extends `tests/conformance/upgrade/` from ARFC 0017 clause 3.12. At merge, ARFC 0017's `Decisions` line combines T-0059's and T-0066's: `0029, 0056, 0057, 0059`.
 - Note (T-0059 re-review F1): after a failed handover, a peer whose only session was made by the successor gets no re-handshake and waits up to 120 s.
 - Notes from T-0066 re-review (fold into the next ARFC 0001 or 0017 task): ARFC 0017 clause 3.12 lacks scenarios for four rules added in T-0066 round 2 (F1); the clause 3.11 conclusion about written running releases (F2); a global-group recover from a node without the switch re-allows rollback (F3).
-- Notes from T-0074 review (fold into the next task on these files): restore the space before `reason` in the `alloy-rt` entry of `deny.toml`; `alloy-crypto`'s `Hasher` doc overstates its buffer (one 64-byte block plus a chaining value).
+- Note from T-0074 review: restore the space before `reason` in the `alloy-rt` entry of `deny.toml` (the `Hasher` doc note is folded into T-0085).
 - Notes from T-0063 review (fold into the next ARFC 0003 task): an unbound VNI idle across a rekey loses its first packets (F1); the 4-sessions-per-peer cap can discard the working session during handshake retries (F2); bind replies reveal which VNIs a node hosts to any session peer (F3); the 2^31 stop rule does not match session choice (F4).
 - Accepted residuals (D-0028, no further `check-repo` hardening): a direct OS call under `#[cfg(not(clippy))]`, and a build script that sets `CLIPPY_CONF_DIR` or `CLIPPY_ARGS` for its own crate, both bypass the Clippy ban; code review catches deliberate evasion (T-0068 review F1, F2).
 - From T-0008 (fold into the next ARFC 0005 task): cap the path MTU at 65,535 or `max_payload` at 65,507/65,527 (clause 3.1.8); the Unix socket permission bits in clause 3.1.9 are not observable through a seam; no deterministic trigger for `PermissionDenied` on a port. Next verify tasks: a `mem` harness for `tests/conformance/rt` after T-0078, and an `os` harness after the `os` implementations; `alloy-rt` exports `OsHost` and `register_os` (section 2.6) in the `os` build task.
