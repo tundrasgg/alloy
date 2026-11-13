@@ -469,10 +469,11 @@ impl DiskFile for OsDiskFile {
         let shared = Arc::clone(&self.shared);
         let ticket = self.inflight.issue();
         let unit = self.direct.then_some(self.block_size as usize);
+        let device_len = (self.kind == EntryKind::Block).then_some(self.device_len);
         let task = self.host.blocking(move || {
             let _ticket = ticket;
             ops.into_iter()
-                .map(|op| read_one(&shared.file, op, unit))
+                .map(|op| read_one(&shared.file, op, unit, device_len))
                 .collect::<Vec<_>>()
         });
         Box::pin(async move {
@@ -551,32 +552,70 @@ impl DiskFile for OsDiskFile {
 }
 
 /// Reads `op` whole, or up to the end of the file. On a direct handle `unit`
-/// is the block size: a platform read that ends off a block boundary has
-/// reached the end of the file, and reading on from there would hand the
-/// platform an unaligned offset and buffer, which it refuses.
-fn read_one(file: &File, op: ReadOp, unit: Option<usize>) -> ReadDone {
+/// is the block size; `device_len` is the length of a block device, and
+/// `None` for a regular file, whose length is read when it is needed.
+fn read_one(file: &File, op: ReadOp, unit: Option<usize>, device_len: Option<u64>) -> ReadDone {
     let ReadOp { offset, mut buf } = op;
+    let len = || match device_len {
+        Some(len) => Ok(len),
+        None => file.metadata().map(|meta| meta.len()),
+    };
+    let result = fill(
+        &mut buf,
+        offset,
+        unit,
+        |b, at| platform::read_at(file, b, at),
+        len,
+    );
+    ReadDone { buf, result }
+}
+
+/// Fills `buf` from `offset` with `read`, until it is full, a read returns 0,
+/// or the file of length `len` ends (ARFC 0005 clause 3.1.11).
+///
+/// On a direct handle (`unit` is the block size) a read may stop off a block
+/// boundary. That is the end of the file only if `len` says so. Reading on
+/// from there would hand the platform an unaligned offset and buffer, which
+/// it may refuse, so inside the file the read starts again at the last block
+/// boundary. A read that stops inside the file short of the next boundary
+/// makes no progress, and fails with [`DiskError::Io`] rather than loop.
+fn fill(
+    buf: &mut [u8],
+    offset: u64,
+    unit: Option<usize>,
+    mut read: impl FnMut(&mut [u8], u64) -> io::Result<usize>,
+    len: impl Fn() -> io::Result<u64>,
+) -> Result<usize, DiskError> {
     let mut done = 0;
-    let result = loop {
+    loop {
         if done == buf.len() {
-            break Ok(done);
+            return Ok(done);
         }
         let Some(at) = offset.checked_add(done as u64) else {
-            break Err(invalid("the operation passes offset 2^64"));
+            return Err(invalid("the operation passes offset 2^64"));
         };
-        match platform::read_at(file, &mut buf[done..], at) {
-            Ok(0) => break Ok(done),
+        match read(&mut buf[done..], at) {
+            Ok(0) => return Ok(done),
             Ok(n) => {
+                let before = done;
                 done += n;
-                if unit.is_some_and(|unit| !done.is_multiple_of(unit)) {
-                    break Ok(done);
+                let Some(unit) = unit else { continue };
+                if done.is_multiple_of(unit) {
+                    continue;
+                }
+                let end = u128::from(offset) + done as u128;
+                if end >= u128::from(len().map_err(|e| errors::disk(&e))?) {
+                    return Ok(done);
+                }
+                done -= done % unit;
+                if done == before {
+                    return Err(DiskError::Io);
                 }
             }
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-            Err(e) => break Err(errors::disk(&e)),
+            Err(e) => return Err(errors::disk(&e)),
         }
-    };
-    ReadDone { buf, result }
+    }
 }
 
 fn write_one(file: &File, op: WriteOp) -> WriteDone {

@@ -388,7 +388,10 @@ fn a_direct_read_across_the_end_returns_the_bytes_before_it() {
         Err(DiskError::Unsupported) => return s.finish(),
         Err(e) => panic!("{e:?}"),
     };
-    let len = block + 904;
+    // The tail past the first block is shorter than a block and not a multiple
+    // of 512: 904 bytes when the block is 4,096, 392 when it is 512.
+    let tail = 904 % block;
+    let len = block + tail;
     let bytes: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
     let file = s.open("/f", Access::ReadWrite, Create::New).unwrap();
     assert_eq!(
@@ -403,13 +406,79 @@ fn a_direct_read_across_the_end_returns_the_bytes_before_it() {
         read(0, 2 * block),
         read(2 * block as u64, block),
     ]));
-    assert_eq!(done[0].result, Ok(904));
-    assert_eq!(&done[0].buf[..904], &bytes[block..]);
+    assert_eq!(done[0].result, Ok(tail));
+    assert_eq!(&done[0].buf[..tail], &bytes[block..]);
     assert_eq!(done[1].result, Ok(len));
     assert_eq!(&done[1].buf[..len], &bytes[..]);
     assert_eq!(done[2].result, Ok(0));
     drop(file);
     s.finish();
+}
+
+/// A platform read over `file` that returns at most `limit(offset)` bytes.
+fn scripted<'a>(
+    file: &'a [u8],
+    limit: impl Fn(u64) -> usize + 'a,
+) -> impl FnMut(&mut [u8], u64) -> io::Result<usize> + 'a {
+    move |buf, at| {
+        let start = usize::try_from(at).unwrap().min(file.len());
+        let n = buf.len().min(file.len() - start).min(limit(at));
+        buf[..n].copy_from_slice(&file[start..start + n]);
+        Ok(n)
+    }
+}
+
+#[test]
+fn a_direct_read_ends_only_at_the_end_of_the_file() {
+    let file: Vec<u8> = (0..3 * 4_096 + 904).map(|i| (i % 251) as u8).collect();
+    let len = || Ok(file.len() as u64);
+    let unit = Some(4_096);
+
+    // Short reads that stop on a 512-byte sector inside the file: the read
+    // starts again at the last block boundary and fills the buffer.
+    let mut buf = vec![0; 3 * 4_096];
+    let sectors = scripted(&file, |at| {
+        if at == 0 {
+            4_096 + 1_536
+        } else {
+            4_096 + 2_560
+        }
+    });
+    assert_eq!(fill(&mut buf, 0, unit, sectors, len), Ok(3 * 4_096));
+    assert_eq!(buf, file[..3 * 4_096]);
+
+    // A short read that stops at the end of the file ends the read there.
+    let mut buf = vec![0; 2 * 4_096];
+    let whole = scripted(&file, |_| usize::MAX);
+    assert_eq!(fill(&mut buf, 2 * 4_096, unit, whole, len), Ok(4_096 + 904));
+    assert_eq!(buf[..4_096 + 904], file[2 * 4_096..]);
+
+    // A read past the end of the file returns no bytes.
+    let mut buf = vec![0; 4_096];
+    let whole = scripted(&file, |_| usize::MAX);
+    assert_eq!(fill(&mut buf, 4 * 4_096, unit, whole, len), Ok(0));
+
+    // A read that keeps stopping inside the file short of the next block
+    // boundary makes no progress and fails.
+    let mut buf = vec![0; 4_096];
+    let stuck = scripted(&file, |_| 512);
+    assert_eq!(fill(&mut buf, 0, unit, stuck, len), Err(DiskError::Io));
+
+    // The length is read only when a read stops off a block boundary.
+    let mut buf = vec![0; 2 * 4_096];
+    let whole = scripted(&file, |_| usize::MAX);
+    let no_len = || Err(io::Error::other("the length is not needed"));
+    assert_eq!(fill(&mut buf, 0, unit, whole, no_len), Ok(2 * 4_096));
+}
+
+#[test]
+fn a_buffered_read_goes_on_until_a_read_returns_zero() {
+    let file: Vec<u8> = (0..5_000).map(|i| (i % 251) as u8).collect();
+    let no_len = || Err(io::Error::other("a buffered read never needs the length"));
+    let mut buf = vec![0; 6_000];
+    let short = scripted(&file, |_| 333);
+    assert_eq!(fill(&mut buf, 0, None, short, no_len), Ok(5_000));
+    assert_eq!(buf[..5_000], file[..]);
 }
 
 #[test]
