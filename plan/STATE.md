@@ -84,7 +84,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0059, R-0001 to R-0008
 | T-0059 | spec | architect | review | none | Discard sessions a failed handover's successor touched |
 | T-0060 | spec | architect | cancelled | none | Settle the open fragment and queue details in ARFC 0003 |
 | T-0061 | build | developer | active | none | Add fuzz targets for every alloy-wire decoder |
-| T-0062 | build | developer | review | none | Allow thiserror and proptest in the dependency allowlist |
+| T-0062 | build | developer | done | none | Allow thiserror and proptest in the dependency allowlist |
 | T-0063 | spec | architect | queued | T-0059 | Shrink the AL transport header to 25 bytes of overhead |
 | T-0064 | build | developer | queued | T-0063 | Rework alloy-wire for the compact transport header |
 | T-0065 | spec | architect | active | none | State break-glass reach into tenant data accurately |
@@ -141,6 +141,7 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 - From T-0052 (after it merges): I-02 in `agent/domain/invariants.md` names the break-glass action as the second way across an org boundary; a spec task names the `iam` methods for users, roles, and policies and what `cloud-admin` allows, before any build task cites ARFC 0007 clause 3.10.7; PB-0001 mentions the `local-admin-used` warning; `tests/conformance/authn` cases listed in `plan/reports/T-0052.architect.1.md`.
 - Interface (after T-0007 and T-0057 merge): add ARFC 0001 clause 3.19 to `alloy-seam` (`ConfigCodec`, `register_config`, `config`, `configs`) and the `PartialEq` bound on `SeamConfig`, with its verify pair.
 - From T-0057 (after it and T-0059 merge; the ARFC 0017 clause 3.7 part is in T-0066): ARFC 0017 clause 3.10 names the upgrade conformance suite; ARFC 0006 clause 3.10 says how a backup restore handles versioned state across releases.
+- Testing rule: crates that use `proptest` set a fixed seed and no time-based shrink limit, since its `std` feature reads `Instant::now()` and OS entropy by default (T-0062 review note F1); state it in `agent/eng/testing.md` by a `process` task before the first crate adopts `proptest`.
 - Process: a task that supersedes an ADR needs that ADR's status line and its index row in `touches`; the shared index rule has no append-only way to mark a superseded row (T-0044).
 - Spec: ARFC 0014 maps native errors, including `Unauthenticated`, to S3 errors; add `Unauthenticated` to `proto/alloy/common/errors.proto` when it is written (T-0044).
 - Process: a dependency policy for npm packages, since `deny.toml` covers Cargo only (T-0035).
