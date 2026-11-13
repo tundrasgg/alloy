@@ -81,6 +81,7 @@ or supersede it.
 |---|---|
 | [0026](0026-the-native-api-is-the-source-of-truth-ec2-and-s3-are-compati.md) | The native API is the source of truth, EC2 and S3 are compatibility surfaces |
 | [0048](0048-the-api-ca-and-api-server-certificates-use-ecdsa-p-256.md) | The API CA and API server certificates use ECDSA P-256 |
+| [0053](0053-p-256-signs-through-rustcrypto-and-rustls-uses-aws-lc-rs.md) | P-256 signs through RustCrypto, and rustls uses aws-lc-rs |
 
 ## Network
 

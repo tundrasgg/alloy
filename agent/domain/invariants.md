@@ -21,7 +21,10 @@ simulation test.
 
 - **I-06** Every packet accepted from the underlay is authenticated before any
   state changes beyond a bounded, attacker-independent cost.
-- **I-07** A nonce is never used twice with the same key.
+- **I-07** A nonce is never used twice with the same key. This covers the
+  ECDSA P-256 nonce `k`, with one allowed repeat: RFC 6979 section 3.2 derives
+  `k` from the key and the message alone, so `k` repeats only when the same key
+  signs the same message, which yields an identical signature.
 - **I-08** Loss of every anchor breaks no established direct path.
 - **I-09** A node whose record is revoked or expired is unable to open or keep
   sessions after the validity bound in `spec/arfc-0002-identity-and-join.md`.
