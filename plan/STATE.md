@@ -12,8 +12,8 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0096 |
-| Decision `D-` | D-0044 |
+| Task `T-` | T-0097 |
+| Decision `D-` | D-0045 |
 | ADR | 0063 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0002 |
@@ -100,8 +100,8 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0074 | build | developer | done | none | Create alloy-crypto with BLAKE3 content hashing |
 | T-0075 | build | developer | done | none | Build the alloy-sim executor, runs, and trace |
 | T-0076 | build | developer | done | none | Build alloy-sim hosts, mem runtime, and faults |
-| T-0077 | build | developer | active | none | Build alloy-sim networks, UDP, and the echo scenario |
-| T-0078 | build | developer | queued | T-0077 | Build alloy-sim mem streams |
+| T-0077 | build | developer | paused | D-0044 | Build alloy-sim networks, UDP, and the echo scenario |
+| T-0078 | build | developer | paused | D-0044 | Build alloy-sim mem streams |
 | T-0079 | build | developer | done | none | Run the commit check inside cargo xtask ci |
 | T-0080 | spec | architect | done | none | Replace path-move heuristics with verify-before-move |
 | T-0081 | build | developer | done | none | Update the alloy-wire fuzz targets to the compact layout |
@@ -116,9 +116,10 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0090 | spec | architect | done | none | Keep path checks apart from probe-set challenges |
 | T-0091 | build | developer | done | none | Create the alloy and alloyd binaries |
 | T-0092 | build | developer | active | none | Build the release workflow and the install scripts |
-| T-0093 | verify | verifier | active | none | Write the M11 rung 1 install and uninstall check |
+| T-0093 | verify | verifier | review | none | Write the M11 rung 1 install and uninstall check |
 | T-0094 | build | developer | done | none | Build the alloy-sim mem disk-io model |
 | T-0095 | build | developer | done | none | Fix the os direct read across end of file on Linux |
+| T-0096 | process | architect | active | none | Cut process overhead in reports, reads, and research |
 
 ## First dispatch
 
