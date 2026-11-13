@@ -13,7 +13,7 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 | Series | Next |
 |---|---|
 | Task `T-` | T-0104 |
-| Decision `D-` | D-0047 |
+| Decision `D-` | D-0048 |
 | ADR | 0065 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0002 |
@@ -125,8 +125,8 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0099 | verify | verifier | done | none | Run the rung 1 driver's remote scripts over SSH stdin |
 | T-0100 | verify | verifier | done | none | Drop Proxmox status timestamps from the host snapshot |
 | T-0101 | verify | verifier | done | none | Drop live link counters from the host snapshot |
-| T-0102 | spec | architect | review | none | Specify rung 2 identity, join, API transport, and ports |
-| T-0103 | spec | architect | blocked | T-0102 | Specify the rung 2 control plane, heartbeats, and node list |
+| T-0102 | spec | architect | active | none | Specify rung 2 identity, join, API transport, and ports |
+| T-0103 | spec | architect | active | none | Specify the rung 2 control plane, heartbeats, and node list |
 
 ## First dispatch
 
