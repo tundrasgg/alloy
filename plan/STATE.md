@@ -97,13 +97,13 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0072 | build | developer | cancelled | none | Run the commit message check in CI from the current cut |
 | T-0073 | process | architect | done | none | Adopt lean task sizing and review rules |
 | T-0074 | build | developer | done | none | Create alloy-crypto with BLAKE3 content hashing |
-| T-0075 | build | developer | review | none | Build the alloy-sim executor, runs, and trace |
+| T-0075 | build | developer | active | none | Build the alloy-sim executor, runs, and trace |
 | T-0076 | build | developer | queued | T-0075 | Build alloy-sim hosts, mem runtime, and faults |
 | T-0077 | build | developer | queued | T-0076 | Build alloy-sim networks, UDP, and the echo scenario |
 | T-0078 | build | developer | queued | T-0077 | Build alloy-sim mem streams |
 | T-0079 | build | developer | active | none | Run the commit check inside cargo xtask ci |
 | T-0080 | spec | architect | review | none | Replace path-move heuristics with verify-before-move |
-| T-0081 | build | developer | active | none | Update the alloy-wire fuzz targets to the compact layout |
+| T-0081 | build | developer | done | none | Update the alloy-wire fuzz targets to the compact layout |
 
 ## First dispatch
 
