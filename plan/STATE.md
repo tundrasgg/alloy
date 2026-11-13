@@ -11,8 +11,8 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0046 |
-| Decision `D-` | D-0017 |
+| Task `T-` | T-0047 |
+| Decision `D-` | D-0018 |
 | ADR | 0052 |
 | Research `R-` | R-0008 |
 | Brief `PB-` | PB-0002 |
@@ -40,7 +40,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0051, R-0001 to R-0007, and PB-0001 are allo
 | T-0015 | spec | architect | done | none | Record repository hosting and CI runners in ADR 0037 |
 | T-0016 | build | developer | done | none | Run cargo xtask ci in GitHub Actions |
 | T-0017 | process | architect | done | none | Adopt Conventional Commits for commits on main |
-| T-0018 | build | developer | queued | T-0042 | Check commit messages on main in xtask |
+| T-0018 | build | developer | active | none | Check commit messages on main in xtask |
 | T-0019 | research | researcher | done | none | Research licenses inside the Cloud Hypervisor UEFI images |
 | T-0020 | spec | architect | done | none | Resolve the per-guest seccomp clause in ARFC 0011 |
 | T-0021 | spec | architect | done | none | Resolve NAT spec issues found by R-0003 |
@@ -64,10 +64,11 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0051, R-0001 to R-0007, and PB-0001 are allo
 | T-0039 | spec | architect | cancelled | none | Bound probe sets and return path moves in ARFC 0004 |
 | T-0040 | spec | architect | done | none | Bound lineage state and close gaps in ARFC 0007 section 3.9 |
 | T-0041 | spec | architect | review | none | Use a browser-compatible key type for the API CA |
-| T-0042 | build | developer | review | none | Close the check-repo gaps found in review |
+| T-0042 | build | developer | done | none | Close the check-repo gaps found in review |
 | T-0043 | spec | architect | active | none | Settle the path class rule and bound return path moves |
 | T-0044 | spec | architect | active | none | Make access key recovery and deleted-key requests well defined |
 | T-0045 | spec | architect | queued | T-0041 | Close join, local admin, and API CA gaps in ARFC 0002 and 0019 |
+| T-0046 | build | developer | queued | T-0018 | Enforce direct-io with Clippy on resolved paths |
 
 ## First dispatch
 
