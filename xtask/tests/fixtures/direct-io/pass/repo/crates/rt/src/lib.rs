@@ -1,12 +1,13 @@
-//! The runtime crate, found by its package name, may call the operating system.
+//! The runtime crate, found by its package name, may switch the ban off.
 
-use std::fs;
-use std::time::Instant;
+// alloy-rt implements the runtime seams, so it calls the operating system.
+#![allow(
+    clippy::disallowed_methods,
+    clippy::disallowed_types,
+    reason = "alloy-rt implements the runtime seams"
+)]
 
-pub fn now() -> Instant {
-    Instant::now()
-}
-
-pub fn read(path: &str) -> std::io::Result<Vec<u8>> {
-    fs::read(path)
+pub fn seed() -> u64 {
+    use rand::TryRngCore;
+    rand::rngs::OsRng.try_next_u64().unwrap_or(0)
 }

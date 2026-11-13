@@ -1,0 +1,19 @@
+# The Clippy fixture for the `direct-io` ban, a workspace of its own: the test in
+# `xtask/src/clippy_fixture.rs` runs Clippy over it with the repository's
+# `clippy.toml`. It is not a member of the repository workspace and nothing in
+# the repository depends on it. Its dependencies are the crates whose paths
+# `clippy.toml` names, so that the test can show each path resolves.
+
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+rand = "=0.9.5"
+tokio = { version = "=1.54.1", features = ["fs", "macros", "net", "process", "rt-multi-thread", "time"] }

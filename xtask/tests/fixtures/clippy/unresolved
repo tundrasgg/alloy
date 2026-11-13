@@ -1,0 +1,15 @@
+getrandom::SysRng
+getrandom::getrandom
+getrandom::getrandom_uninit
+rand::make_rng
+rand_core::SeedableRng::from_entropy
+std::os::unix::net::UnixDatagram windows
+std::os::unix::net::UnixListener windows
+std::os::unix::net::UnixStream windows
+tokio::fs::symlink windows
+tokio::fs::symlink_dir unix
+tokio::fs::symlink_file unix
+tokio::net::UnixDatagram windows
+tokio::net::UnixListener windows
+tokio::net::UnixSocket windows
+tokio::net::UnixStream windows

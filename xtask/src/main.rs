@@ -5,7 +5,17 @@
 //! policy checks, in that order, and stops at the first step that fails.
 
 #![forbid(unsafe_code)]
+// xtask is the repository's build tool, not part of Alloy: it runs cargo and
+// git and reads the tree, so it calls the operating system directly. The
+// `direct-io` ban covers the crates under `crates/` (ARFC 0005 clause 3.1.1).
+#![allow(
+    clippy::disallowed_methods,
+    clippy::disallowed_types,
+    reason = "xtask is the build tool, outside the runtime seams; it runs cargo and git"
+)]
 
+#[cfg(test)]
+mod clippy_fixture;
 mod commits;
 mod rules;
 mod text;
@@ -209,6 +219,10 @@ const CI_STEPS: [Step; 5] = [
             "--",
             "-D",
             "warnings",
+            "-D",
+            "clippy::disallowed_methods",
+            "-D",
+            "clippy::disallowed_types",
         ],
         hint: None,
         tool: None,
@@ -577,7 +591,15 @@ mod tests {
             .collect();
         assert_eq!(cargo_args[0], ["fmt", "--all", "--", "--check"]);
         assert_eq!(cargo_args[1][0], "clippy");
-        assert!(cargo_args[1].ends_with(&["--", "-D", "warnings"]));
+        assert!(cargo_args[1].ends_with(&[
+            "--",
+            "-D",
+            "warnings",
+            "-D",
+            "clippy::disallowed_methods",
+            "-D",
+            "clippy::disallowed_types"
+        ]));
         assert_eq!(cargo_args[2][..2], ["test", "--workspace"]);
         assert_eq!(cargo_args[3], ["deny", "--locked", "--workspace", "check"]);
     }

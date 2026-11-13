@@ -41,3 +41,22 @@ pub fn f(x: Option<u8>) -> u8 {
     }
     0
 }
+
+pub struct S {
+    #[cfg(test)]
+    pub a: u8,
+}
+
+pub fn after_field(x: Option<u8>) -> u8 {
+    x.unwrap()
+}
+
+pub fn in_match(v: u8, x: Option<u8>) -> u8 {
+    match v {
+        #[cfg(test)]
+        0 => 0,
+        _ => {
+            x.unwrap()
+        }
+    }
+}

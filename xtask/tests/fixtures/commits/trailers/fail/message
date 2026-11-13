@@ -3,4 +3,4 @@ ci(ci): run cargo xtask ci in GitHub Actions
 One workflow runs cargo xtask ci for pushes to main and pull requests.
 
 Task: T-0101
-Co-Authored-By: An Assistant <assistant@example.invalid>
+Co-Authored-By:An Assistant <assistant@example.invalid>

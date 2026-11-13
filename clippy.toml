@@ -1,0 +1,175 @@
+# Clippy configuration for the whole workspace.
+#
+# The `direct-io` ban (ARFC 0005 clause 3.1.1, `agent/eng/rust.md` rule 2, D-0017):
+# only `alloy-rt` and `alloy-sim` call the operating system for time, network,
+# storage, randomness, or concurrency. Every other crate goes through the
+# `alloy-rt` traits. Clippy resolves each path below to the item it names, so a
+# grouped, renamed, or glob import, or a call that a macro generates, is caught
+# as surely as a call written out in full. `cargo xtask ci` runs Clippy with
+# `-D clippy::disallowed_methods -D clippy::disallowed_types`.
+#
+# `alloy-rt` and `alloy-sim` opt out with a crate-level
+# `#![allow(clippy::disallowed_methods, clippy::disallowed_types, reason = "...")]`.
+# `cargo xtask check-repo` rejects that `allow`, or any other way to switch these
+# lints off in source, in every other crate under `crates/`, and rejects any
+# Clippy configuration file other than this one.
+#
+# `allow-invalid = true` marks a path that does not resolve in every crate: one
+# from a crate that a crate need not depend on, from one version of a crate, or
+# from one platform. Without it, Clippy warns in each such crate. The fixture
+# test in `xtask/src/clippy_fixture.rs` checks that every path resolves where
+# its crate is present.
+
+disallowed-methods = [
+    # The clock.
+    { path = "std::time::Instant::now", reason = "the clock: use the `alloy-rt` clock" },
+    { path = "std::time::SystemTime::now", reason = "the clock: use the `alloy-rt` clock" },
+    { path = "std::thread::sleep", reason = "the clock: use the `alloy-rt` clock" },
+    { path = "tokio::time::Instant::now", reason = "the clock: use the `alloy-rt` clock", allow-invalid = true },
+    { path = "tokio::time::sleep", reason = "the clock: use the `alloy-rt` clock", allow-invalid = true },
+    { path = "tokio::time::sleep_until", reason = "the clock: use the `alloy-rt` clock", allow-invalid = true },
+    { path = "tokio::time::interval", reason = "the clock: use the `alloy-rt` clock", allow-invalid = true },
+    { path = "tokio::time::interval_at", reason = "the clock: use the `alloy-rt` clock", allow-invalid = true },
+    { path = "tokio::time::timeout", reason = "the clock: use the `alloy-rt` clock", allow-invalid = true },
+    { path = "tokio::time::timeout_at", reason = "the clock: use the `alloy-rt` clock", allow-invalid = true },
+
+    # The network.
+    { path = "std::net::ToSocketAddrs::to_socket_addrs", reason = "the network: use the `alloy-rt` network" },
+    { path = "tokio::net::lookup_host", reason = "the network: use the `alloy-rt` network", allow-invalid = true },
+
+    # The file system.
+    { path = "std::fs::canonicalize", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "std::fs::copy", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "std::fs::create_dir", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "std::fs::create_dir_all", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "std::fs::exists", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "std::fs::hard_link", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "std::fs::metadata", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "std::fs::read", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "std::fs::read_dir", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "std::fs::read_link", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "std::fs::read_to_string", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "std::fs::remove_dir", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "std::fs::remove_dir_all", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "std::fs::remove_file", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "std::fs::rename", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "std::fs::set_permissions", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "std::fs::soft_link", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "std::fs::symlink_metadata", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "std::fs::write", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "std::path::Path::canonicalize", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "std::path::Path::exists", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "std::path::Path::is_dir", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "std::path::Path::is_file", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "std::path::Path::is_symlink", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "std::path::Path::metadata", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "std::path::Path::read_dir", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "std::path::Path::read_link", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "std::path::Path::symlink_metadata", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "std::path::Path::try_exists", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "tokio::fs::canonicalize", reason = "the file system: use the `alloy-rt` storage", allow-invalid = true },
+    { path = "tokio::fs::copy", reason = "the file system: use the `alloy-rt` storage", allow-invalid = true },
+    { path = "tokio::fs::create_dir", reason = "the file system: use the `alloy-rt` storage", allow-invalid = true },
+    { path = "tokio::fs::create_dir_all", reason = "the file system: use the `alloy-rt` storage", allow-invalid = true },
+    { path = "tokio::fs::hard_link", reason = "the file system: use the `alloy-rt` storage", allow-invalid = true },
+    { path = "tokio::fs::metadata", reason = "the file system: use the `alloy-rt` storage", allow-invalid = true },
+    { path = "tokio::fs::read", reason = "the file system: use the `alloy-rt` storage", allow-invalid = true },
+    { path = "tokio::fs::read_dir", reason = "the file system: use the `alloy-rt` storage", allow-invalid = true },
+    { path = "tokio::fs::read_link", reason = "the file system: use the `alloy-rt` storage", allow-invalid = true },
+    { path = "tokio::fs::read_to_string", reason = "the file system: use the `alloy-rt` storage", allow-invalid = true },
+    { path = "tokio::fs::remove_dir", reason = "the file system: use the `alloy-rt` storage", allow-invalid = true },
+    { path = "tokio::fs::remove_dir_all", reason = "the file system: use the `alloy-rt` storage", allow-invalid = true },
+    { path = "tokio::fs::remove_file", reason = "the file system: use the `alloy-rt` storage", allow-invalid = true },
+    { path = "tokio::fs::rename", reason = "the file system: use the `alloy-rt` storage", allow-invalid = true },
+    { path = "tokio::fs::set_permissions", reason = "the file system: use the `alloy-rt` storage", allow-invalid = true },
+    { path = "tokio::fs::symlink", reason = "the file system: use the `alloy-rt` storage", allow-invalid = true },
+    { path = "tokio::fs::symlink_dir", reason = "the file system: use the `alloy-rt` storage", allow-invalid = true },
+    { path = "tokio::fs::symlink_file", reason = "the file system: use the `alloy-rt` storage", allow-invalid = true },
+    { path = "tokio::fs::symlink_metadata", reason = "the file system: use the `alloy-rt` storage", allow-invalid = true },
+    { path = "tokio::fs::try_exists", reason = "the file system: use the `alloy-rt` storage", allow-invalid = true },
+    { path = "tokio::fs::write", reason = "the file system: use the `alloy-rt` storage", allow-invalid = true },
+
+    # Threads and tasks.
+    { path = "std::thread::spawn", reason = "threads: spawn through the `alloy-rt` runtime" },
+    { path = "std::thread::scope", reason = "threads: spawn through the `alloy-rt` runtime" },
+    { path = "std::thread::park", reason = "threads: spawn through the `alloy-rt` runtime" },
+    { path = "std::thread::park_timeout", reason = "threads: spawn through the `alloy-rt` runtime" },
+    { path = "std::thread::yield_now", reason = "threads: spawn through the `alloy-rt` runtime" },
+    { path = "std::thread::available_parallelism", reason = "threads: spawn through the `alloy-rt` runtime" },
+    { path = "tokio::task::spawn", reason = "threads: spawn through the `alloy-rt` runtime", allow-invalid = true },
+    { path = "tokio::task::spawn_blocking", reason = "threads: spawn through the `alloy-rt` runtime", allow-invalid = true },
+    { path = "tokio::task::spawn_local", reason = "threads: spawn through the `alloy-rt` runtime", allow-invalid = true },
+    { path = "tokio::task::block_in_place", reason = "threads: spawn through the `alloy-rt` runtime", allow-invalid = true },
+
+    # Processes.
+    { path = "std::process::exit", reason = "processes: only the runtime ends the process" },
+    { path = "std::process::abort", reason = "processes: only the runtime ends the process" },
+    { path = "std::process::id", reason = "processes: ask the `alloy-rt` runtime" },
+
+    # Randomness. Paths for rand 0.8 to 0.10, rand_core 0.6 to 0.9, and
+    # getrandom 0.2 to 0.4; each resolves only in the versions that have it.
+    { path = "rand::thread_rng", reason = "randomness: use the seeded `alloy-rt` source", allow-invalid = true },
+    { path = "rand::rng", reason = "randomness: use the seeded `alloy-rt` source", allow-invalid = true },
+    { path = "rand::make_rng", reason = "randomness: use the seeded `alloy-rt` source", allow-invalid = true },
+    { path = "rand::random", reason = "randomness: use the seeded `alloy-rt` source", allow-invalid = true },
+    { path = "rand::random_iter", reason = "randomness: use the seeded `alloy-rt` source", allow-invalid = true },
+    { path = "rand::random_range", reason = "randomness: use the seeded `alloy-rt` source", allow-invalid = true },
+    { path = "rand::random_bool", reason = "randomness: use the seeded `alloy-rt` source", allow-invalid = true },
+    { path = "rand::random_ratio", reason = "randomness: use the seeded `alloy-rt` source", allow-invalid = true },
+    { path = "rand::fill", reason = "randomness: use the seeded `alloy-rt` source", allow-invalid = true },
+    { path = "rand_core::SeedableRng::from_entropy", reason = "randomness: use the seeded `alloy-rt` source", allow-invalid = true },
+    { path = "rand_core::SeedableRng::from_os_rng", reason = "randomness: use the seeded `alloy-rt` source", allow-invalid = true },
+    { path = "rand_core::SeedableRng::try_from_os_rng", reason = "randomness: use the seeded `alloy-rt` source", allow-invalid = true },
+    { path = "getrandom::getrandom", reason = "randomness: use the seeded `alloy-rt` source", allow-invalid = true },
+    { path = "getrandom::getrandom_uninit", reason = "randomness: use the seeded `alloy-rt` source", allow-invalid = true },
+    { path = "getrandom::fill", reason = "randomness: use the seeded `alloy-rt` source", allow-invalid = true },
+    { path = "getrandom::fill_uninit", reason = "randomness: use the seeded `alloy-rt` source", allow-invalid = true },
+    { path = "getrandom::u32", reason = "randomness: use the seeded `alloy-rt` source", allow-invalid = true },
+    { path = "getrandom::u64", reason = "randomness: use the seeded `alloy-rt` source", allow-invalid = true },
+]
+
+disallowed-types = [
+    # The network.
+    { path = "std::net::TcpListener", reason = "the network: use the `alloy-rt` network" },
+    { path = "std::net::TcpStream", reason = "the network: use the `alloy-rt` network" },
+    { path = "std::net::UdpSocket", reason = "the network: use the `alloy-rt` network" },
+    { path = "std::os::unix::net::UnixDatagram", reason = "the network: use the `alloy-rt` network", allow-invalid = true },
+    { path = "std::os::unix::net::UnixListener", reason = "the network: use the `alloy-rt` network", allow-invalid = true },
+    { path = "std::os::unix::net::UnixStream", reason = "the network: use the `alloy-rt` network", allow-invalid = true },
+    { path = "tokio::net::TcpListener", reason = "the network: use the `alloy-rt` network", allow-invalid = true },
+    { path = "tokio::net::TcpSocket", reason = "the network: use the `alloy-rt` network", allow-invalid = true },
+    { path = "tokio::net::TcpStream", reason = "the network: use the `alloy-rt` network", allow-invalid = true },
+    { path = "tokio::net::UdpSocket", reason = "the network: use the `alloy-rt` network", allow-invalid = true },
+    { path = "tokio::net::UnixDatagram", reason = "the network: use the `alloy-rt` network", allow-invalid = true },
+    { path = "tokio::net::UnixListener", reason = "the network: use the `alloy-rt` network", allow-invalid = true },
+    { path = "tokio::net::UnixSocket", reason = "the network: use the `alloy-rt` network", allow-invalid = true },
+    { path = "tokio::net::UnixStream", reason = "the network: use the `alloy-rt` network", allow-invalid = true },
+
+    # The file system.
+    { path = "std::fs::DirBuilder", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "std::fs::File", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "std::fs::OpenOptions", reason = "the file system: use the `alloy-rt` storage" },
+    { path = "tokio::fs::DirBuilder", reason = "the file system: use the `alloy-rt` storage", allow-invalid = true },
+    { path = "tokio::fs::File", reason = "the file system: use the `alloy-rt` storage", allow-invalid = true },
+    { path = "tokio::fs::OpenOptions", reason = "the file system: use the `alloy-rt` storage", allow-invalid = true },
+
+    # Threads, tasks, and runtimes. Every `#[tokio::main]` and `#[tokio::test]`
+    # expands to a `tokio::runtime::Builder`, so this rejects them too.
+    { path = "std::thread::Builder", reason = "threads: spawn through the `alloy-rt` runtime" },
+    { path = "tokio::runtime::Builder", reason = "threads: only `alloy-rt` builds a runtime", allow-invalid = true },
+    { path = "tokio::runtime::Handle", reason = "threads: spawn through the `alloy-rt` runtime", allow-invalid = true },
+    { path = "tokio::runtime::Runtime", reason = "threads: only `alloy-rt` builds a runtime", allow-invalid = true },
+    { path = "tokio::task::JoinSet", reason = "threads: spawn through the `alloy-rt` runtime", allow-invalid = true },
+    { path = "tokio::task::LocalSet", reason = "threads: spawn through the `alloy-rt` runtime", allow-invalid = true },
+
+    # Processes.
+    { path = "std::process::Child", reason = "processes: only the runtime starts processes" },
+    { path = "std::process::Command", reason = "processes: only the runtime starts processes" },
+    { path = "tokio::process::Child", reason = "processes: only the runtime starts processes", allow-invalid = true },
+    { path = "tokio::process::Command", reason = "processes: only the runtime starts processes", allow-invalid = true },
+
+    # Randomness.
+    { path = "rand::rngs::ThreadRng", reason = "randomness: use the seeded `alloy-rt` source", allow-invalid = true },
+    { path = "rand_core::OsRng", reason = "randomness: use the seeded `alloy-rt` source", allow-invalid = true },
+    { path = "getrandom::SysRng", reason = "randomness: use the seeded `alloy-rt` source", allow-invalid = true },
+]

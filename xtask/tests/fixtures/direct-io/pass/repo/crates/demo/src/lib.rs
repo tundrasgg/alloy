@@ -1,8 +1,13 @@
-//! Other crates use address values, and mention std::fs only in comments.
+//! Other crates leave the ban on. Mentions in comments do not count:
+//! `#![allow(clippy::disallowed_methods)]` and `OsRng`.
+
+#![deny(clippy::all)]
+#![warn(clippy::disallowed_methods)]
+#![cfg_attr(test, allow(dead_code))]
 
 use std::net::{IpAddr, SocketAddr};
 
-/// Takes time from the runtime, never from `Instant::now`.
+#[allow(clippy::needless_return, reason = "a lint that holds no ban")]
 pub fn describe(addr: SocketAddr) -> (IpAddr, &'static str) {
-    (addr.ip(), "std::fs and SystemTime::now in a string do not count")
+    return (addr.ip(), "#[allow(clippy::all)] and OsRng in a string do not count");
 }

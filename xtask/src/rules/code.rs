@@ -4,6 +4,11 @@
 //! Sources are lexed so that comments and string contents never match a code
 //! pattern. The lexer is line based and approximate: it knows comments, string,
 //! raw string, and character literals, and nothing else of Rust's grammar.
+//!
+//! Clippy enforces the `direct-io` ban itself, on resolved paths, through
+//! `disallowed-methods` and `disallowed-types` in the root `clippy.toml`
+//! (D-0017). The `direct-io` rule here keeps that ban in force: it rejects the
+//! ways to switch it off, and the values Clippy cannot see.
 
 use super::{Rule, Violation};
 use crate::text::{find_token, is_ident, package_name};
@@ -16,38 +21,48 @@ const IO_CRATES: [&str; 2] = ["alloy-rt", "alloy-sim"];
 /// Crates that may contain `unsafe` (`agent/eng/rust.md`, section Unsafe).
 const UNSAFE_CRATES: [&str; 3] = ["alloy-rt", "alloy-net", "alloy-store"];
 
-/// Paths that reach the operating system for time, network, files, threads,
-/// processes, or randomness, with what each one reaches. Address types such as
-/// `std::net::SocketAddr` are plain values and are not listed.
-const IO_PATTERNS: [(&str, &str); 28] = [
-    ("Instant::now", "the clock"),
-    ("SystemTime::now", "the clock"),
-    ("tokio::time", "the clock"),
-    ("std::net::TcpListener", "the network"),
-    ("std::net::TcpStream", "the network"),
-    ("std::net::UdpSocket", "the network"),
-    ("TcpListener::bind", "the network"),
-    ("TcpStream::connect", "the network"),
-    ("UdpSocket::bind", "the network"),
-    ("to_socket_addrs", "the network"),
-    ("tokio::net", "the network"),
-    ("std::os::unix::net", "the network"),
-    ("std::fs", "the file system"),
-    ("tokio::fs", "the file system"),
-    ("std::thread", "threads"),
-    ("tokio::spawn", "threads"),
-    ("tokio::task", "threads"),
-    ("tokio::runtime", "threads"),
-    ("std::process", "processes"),
-    ("tokio::process", "processes"),
-    ("thread_rng", "randomness"),
-    ("rand::rng", "randomness"),
-    ("rand::random", "randomness"),
-    ("OsRng", "randomness"),
-    ("getrandom", "randomness"),
-    ("from_entropy", "randomness"),
-    ("from_os_rng", "randomness"),
-    ("ThreadRng", "randomness"),
+/// Unit structs that reach operating system randomness when used as a value,
+/// as in `OsRng.try_next_u64()`. Clippy's `disallowed_types` sees a type only
+/// where it is named as a type, never as a value, so these stay text patterns.
+const IO_VALUES: [&str; 2] = ["OsRng", "SysRng"];
+
+/// The lints that carry the `direct-io` ban and the lint groups that hold
+/// them, as an `allow` or `expect` names them. A source attribute overrides the
+/// `-D` that `cargo xtask ci` passes on the command line. The singular names
+/// are the lints' former names, which rustc still applies to them.
+const BAN_LINTS: [&str; 6] = [
+    "clippy::disallowed_methods",
+    "clippy::disallowed_types",
+    "clippy::disallowed_method",
+    "clippy::disallowed_type",
+    "clippy::style",
+    "clippy::all",
+];
+
+/// The one Clippy configuration file. Clippy reads the nearest `clippy.toml` or
+/// `.clippy.toml` at or above a crate's manifest, so any other would replace
+/// this one, and its `direct-io` ban, for the crates below it.
+const CLIPPY_CONFIG: &str = "clippy.toml";
+
+/// Keywords that start an item. A test attribute on an item that starts with
+/// one applies up to the item's body or `;`; on anything else, such as a
+/// field, a match arm, or a statement, it also ends at a `,`.
+const ITEM_KEYWORDS: [&str; 15] = [
+    "async",
+    "const",
+    "enum",
+    "extern",
+    "fn",
+    "impl",
+    "macro_rules",
+    "mod",
+    "static",
+    "struct",
+    "trait",
+    "type",
+    "union",
+    "unsafe",
+    "use",
 ];
 
 /// One source line, split into code and comment text.
@@ -234,6 +249,7 @@ fn squeeze(code: &str) -> String {
 /// True when `code` holds an attribute that marks the next item as test code:
 /// `#[test]`, `#[cfg(test)]`, or `#[<path>::test]`, the last with or without
 /// arguments. A call such as `checks::test(1)` is not an attribute.
+#[cfg(test)]
 fn has_test_attribute(code: &str) -> bool {
     code.match_indices("#[")
         .any(|(at, open)| is_test_attribute(&code[at + open.len()..]))
@@ -257,37 +273,94 @@ fn is_test_attribute(attr: &str) -> bool {
         && (after.starts_with(']') || after.starts_with('('))
 }
 
-/// For each line, whether it is inside test code: an item marked `#[test]` or
-/// `#[cfg(test)]`, found by brace matching.
+/// What a test attribute applies to, as far as the first word after it tells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Target {
+    /// No word yet, or only `pub`.
+    Unknown,
+    /// An item: it ends at its body or at a `;`.
+    Item,
+    /// A field, variant, match arm, statement, or expression: it ends at its
+    /// body, a `;`, or a `,`.
+    Other,
+}
+
+/// A test attribute whose target has not reached its body yet.
+#[derive(Debug, Clone, Copy)]
+struct Pending {
+    /// The bracket depth of the attribute, which is also its target's.
+    depth: usize,
+    target: Target,
+}
+
+/// For each line, whether it is inside test code: the target of a `#[test]` or
+/// `#[cfg(test)]` attribute and that target's body, found by bracket matching.
+///
+/// A target with no body of its own, such as a struct field, a match arm, or
+/// `mod tests;`, ends at the `,` or `;` after it, or at the bracket that closes
+/// around it, so its attribute never reaches the next unrelated body.
 fn test_lines(lines: &[Line]) -> Vec<bool> {
     let mut depth = 0usize;
     let mut regions: Vec<usize> = Vec::new();
-    let mut pending = false;
+    let mut pending: Option<Pending> = None;
     lines
         .iter()
         .map(|line| {
-            let mut in_test = !regions.is_empty();
-            if has_test_attribute(&line.code) {
-                pending = true;
-                in_test = true;
-            }
-            for c in line.code.chars() {
+            let code = line.code.as_str();
+            let mut in_test = !regions.is_empty() || pending.is_some();
+            let mut chars = code.char_indices().peekable();
+            while let Some((at, c)) = chars.next() {
+                let rest = &code[at + c.len_utf8()..];
+                if c == '#' && rest.strip_prefix('[').is_some_and(is_test_attribute) {
+                    pending = Some(Pending {
+                        depth,
+                        target: Target::Unknown,
+                    });
+                    in_test = true;
+                    continue;
+                }
+                if is_ident(c) {
+                    let end = rest
+                        .find(|w: char| !is_ident(w))
+                        .map_or(code.len(), |n| at + c.len_utf8() + n);
+                    while chars.next_if(|&(next, _)| next < end).is_some() {}
+                    let word = &code[at..end];
+                    if let Some(p) = pending.as_mut()
+                        && p.depth == depth
+                        && p.target == Target::Unknown
+                        && word != "pub"
+                    {
+                        p.target = if ITEM_KEYWORDS.contains(&word) {
+                            Target::Item
+                        } else {
+                            Target::Other
+                        };
+                    }
+                    continue;
+                }
+                let at_target = pending.is_some_and(|p| p.depth == depth);
                 match c {
-                    '{' => {
-                        depth += 1;
-                        if pending {
-                            regions.push(depth);
-                            pending = false;
+                    '{' | '(' | '[' => {
+                        if c == '{' && at_target {
+                            regions.push(depth + 1);
+                            pending = None;
                             in_test = true;
                         }
+                        depth += 1;
                     }
-                    '}' => {
+                    '}' | ')' | ']' => {
                         if regions.last() == Some(&depth) {
                             regions.pop();
                         }
                         depth = depth.saturating_sub(1);
+                        if pending.is_some_and(|p| p.depth > depth) {
+                            pending = None;
+                        }
                     }
-                    ';' => pending = false,
+                    ';' if at_target => pending = None,
+                    ',' if at_target && pending.is_some_and(|p| p.target != Target::Item) => {
+                        pending = None;
+                    }
                     _ => {}
                 }
             }
@@ -407,25 +480,120 @@ fn invariant_above(lines: &[Line], index: usize) -> bool {
         .is_some_and(|line| line.code.is_empty() && !line.comment.is_empty())
 }
 
-/// `direct-io`: operating system calls outside the runtime crates.
+/// `direct-io`: what keeps the Clippy ban on operating system calls in force
+/// outside the runtime crates. Rejects any Clippy configuration file but the
+/// root `clippy.toml`; and, in every crate under `crates/` except `alloy-rt`
+/// and `alloy-sim`, an `allow` or `expect` of a lint in [`BAN_LINTS`] and the
+/// values in [`IO_VALUES`].
 pub(super) fn check_direct_io(tree: &Tree) -> Vec<Violation> {
-    with_sources(tree, Rule::DirectIo, |src, out| {
+    let mut out: Vec<Violation> = tree
+        .files()
+        .filter(|path| is_clippy_config(path) && *path != CLIPPY_CONFIG)
+        .map(|path| {
+            Violation::new(
+                Rule::DirectIo,
+                path,
+                None,
+                format!("only the root `{CLIPPY_CONFIG}` configures Clippy; this file would replace it, and its direct-io ban, for the crates below it"),
+            )
+        })
+        .collect();
+    out.extend(with_sources(tree, Rule::DirectIo, |src, out| {
         if IO_CRATES.contains(&src.krate.as_str()) {
             return;
         }
+        for (index, level, lint) in lint_switches(&src.lines) {
+            out.push(Violation::new(
+                Rule::DirectIo,
+                src.path,
+                Some(index + 1),
+                format!("`{level}` of `{lint}` switches off the Clippy direct-io ban; only `alloy-rt` and `alloy-sim` may call the operating system"),
+            ));
+        }
         for (index, line) in src.lines.iter().enumerate() {
-            for (pattern, what) in IO_PATTERNS {
-                if find_token(&line.code, pattern).is_some() {
+            for value in IO_VALUES {
+                if find_token(&line.code, value).is_some() {
                     out.push(Violation::new(
                         Rule::DirectIo,
                         src.path,
                         Some(index + 1),
-                        format!("`{pattern}` reaches {what}; only `alloy-rt` and `alloy-sim` call the operating system, everything else goes through the `alloy-rt` traits"),
+                        format!("`{value}` reaches randomness; only `alloy-rt` and `alloy-sim` call the operating system, everything else goes through the `alloy-rt` traits"),
                     ));
                 }
             }
         }
-    })
+    }));
+    out
+}
+
+/// True for a file that Clippy reads as its configuration.
+fn is_clippy_config(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    name == "clippy.toml" || name == ".clippy.toml"
+}
+
+/// The byte index of the bracket that closes the `open_with` at byte `open` of
+/// `text`, or `None` when it is not closed.
+fn closing(text: &str, open: usize, open_with: char, close_with: char) -> Option<usize> {
+    let mut depth = 0usize;
+    for (at, c) in text.get(open..)?.char_indices() {
+        if c == open_with {
+            depth += 1;
+        } else if c == close_with {
+            depth = depth.saturating_sub(1);
+            if depth == 0 {
+                return Some(open + at);
+            }
+        }
+    }
+    None
+}
+
+/// Every lint in [`BAN_LINTS`] that an `allow(...)` or `expect(...)` inside an
+/// attribute names, as `(line index, level, lint)`. An attribute may span
+/// lines, and may wrap the level in `cfg_attr`.
+fn lint_switches(lines: &[Line]) -> Vec<(usize, &'static str, &'static str)> {
+    let mut code = String::new();
+    let mut starts = Vec::new();
+    for line in lines {
+        starts.push(code.len());
+        code.push_str(&line.code);
+        code.push('\n');
+    }
+    let line_of = |at: usize| {
+        starts
+            .partition_point(|&start| start <= at)
+            .saturating_sub(1)
+    };
+    let mut found = Vec::new();
+    for (hash, _) in code.match_indices('#') {
+        let rest = &code[hash + 1..];
+        let open = if rest.starts_with("![") {
+            hash + 2
+        } else if rest.starts_with('[') {
+            hash + 1
+        } else {
+            continue;
+        };
+        let close = closing(&code, open, '[', ']').unwrap_or(code.len());
+        let attr = &code[open..close];
+        for level in ["allow", "expect"] {
+            let call = format!("{level}(");
+            let mut from = 0;
+            while let Some(offset) = find_token(&attr[from..], &call) {
+                let paren = from + offset + level.len();
+                let end = closing(attr, paren, '(', ')').unwrap_or(attr.len());
+                let group = &attr[paren..end];
+                for lint in BAN_LINTS {
+                    if let Some(at) = find_token(group, lint) {
+                        found.push((line_of(open + paren + at), level, lint));
+                    }
+                }
+                from = paren + 1;
+            }
+        }
+    }
+    found
 }
 
 /// `unsafe`: the keyword outside the crates that may use it.
@@ -494,7 +662,104 @@ mod tests {
             [false, true, true, true, true, false, true]
         );
         let declared = "#[cfg(test)]\nmod tests;\nfn e() {}";
-        assert_eq!(test_lines(&lex(declared)), [true, false, false]);
+        assert_eq!(test_lines(&lex(declared)), [true, true, false]);
+    }
+
+    #[test]
+    fn a_test_attribute_on_a_field_or_arm_ends_with_it() {
+        let src = "pub struct S {
+    #[cfg(test)]
+    pub a: u8,
+}
+pub fn after_field(x: Option<u8>) -> u8 {
+    x.unwrap()
+}
+pub struct T {
+    #[cfg(test)]
+    a: u8
+}
+pub fn after_last_field(x: Option<u8>) -> u8 {
+    x.unwrap()
+}
+pub fn in_match(v: u8, x: Option<u8>) -> u8 {
+    match v {
+        #[cfg(test)]
+        0 => 0,
+        _ => {
+            x.unwrap()
+        }
+    }
+}";
+        let tests = test_lines(&lex(src));
+        for line in [6, 13, 20] {
+            assert!(!tests[line - 1], "line {line} is not test code");
+        }
+        assert!(tests[2] && tests[9] && tests[17], "attributed lines are");
+    }
+
+    #[test]
+    fn a_test_attribute_reaches_the_body_of_its_own_item() {
+        let src = "#[test]
+fn f<A, B>(a: [u8; 2], b: (u8, u8)) where A: Copy, B: Copy {
+    x.unwrap();
+}
+fn g() {
+    match v {
+        #[cfg(test)]
+        0 => {
+            x.unwrap()
+        }
+        _ => 0,
+    }
+    #[cfg(test)]
+    let y = vec![1, 2];
+    z.unwrap();
+}";
+        assert_eq!(
+            test_lines(&lex(src)),
+            [
+                true, true, true, true, false, false, true, true, true, true, false, false, true,
+                true, false, false
+            ]
+        );
+    }
+
+    fn switches(src: &str) -> Vec<(usize, &'static str, &'static str)> {
+        lint_switches(&lex(src))
+    }
+
+    #[test]
+    fn lint_switches_are_found_across_lines_and_in_cfg_attr() {
+        let src = "#![allow(
+    clippy::disallowed_methods,
+    reason = \"no\"
+)]
+#![cfg_attr(test, expect(clippy::disallowed_types))]
+#[allow(dead_code, clippy::style)]
+#[expect(clippy::all)]
+#[allow(clippy::disallowed_method)]
+fn f() {}";
+        assert_eq!(
+            switches(src),
+            [
+                (1, "allow", "clippy::disallowed_methods"),
+                (4, "expect", "clippy::disallowed_types"),
+                (5, "allow", "clippy::style"),
+                (6, "expect", "clippy::all"),
+                (7, "allow", "clippy::disallowed_method"),
+            ]
+        );
+    }
+
+    #[test]
+    fn other_lint_levels_and_lints_are_not_switches() {
+        let src = "#![deny(clippy::all)]
+#![warn(clippy::disallowed_methods)]
+#![cfg_attr(test, deny(clippy::style), allow(dead_code))]
+#[allow(clippy::all_kinds, clippy::needless_return)]
+// #[allow(clippy::disallowed_methods)]
+fn f() { let s = \"#[allow(clippy::all)]\"; disallow(clippy::all); }";
+        assert_eq!(switches(src), []);
     }
 
     #[test]

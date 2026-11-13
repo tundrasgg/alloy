@@ -210,22 +210,20 @@ impl<'a> Message<'a> {
     }
 }
 
-/// Splits a footer or trailer line, `Key: value`, into the key and the text
-/// after the colon. The key is `BREAKING CHANGE` or a word of ASCII letters,
-/// digits, and hyphens starting with a letter. `None` for any other line.
+/// Splits a line that git would parse as a trailer into the key and the text
+/// after the colon. The key is `BREAKING CHANGE`, or, as git's
+/// `interpret-trailers` reads it, a run of ASCII letters, digits, and hyphens,
+/// which spaces or tabs may separate from the colon. Nothing needs to follow
+/// the colon, so `Task:T-18` is a trailer with key `Task`. `None` for any other
+/// line. The footer rules then require the exact `Key: value` form.
 fn trailer(line: &str) -> Option<(&str, &str)> {
-    let (key, value) = match line.strip_prefix("BREAKING CHANGE:") {
-        Some(value) => ("BREAKING CHANGE", value),
-        None => {
-            let (key, value) = line.split_once(':')?;
-            let mut chars = key.chars();
-            let first = chars.next()?;
-            let is_word =
-                first.is_ascii_alphabetic() && chars.all(|c| c.is_ascii_alphanumeric() || c == '-');
-            is_word.then_some((key, value))?
-        }
-    };
-    (value.is_empty() || value.starts_with(' ')).then_some((key, value))
+    if let Some(value) = line.strip_prefix("BREAKING CHANGE:") {
+        return Some(("BREAKING CHANGE", value));
+    }
+    let (head, value) = line.split_once(':')?;
+    let key = head.trim_end_matches([' ', '\t']);
+    let is_token = !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    is_token.then_some((key, value))
 }
 
 /// Judges one commit. Returns every breach, in the order of [`CommitRule::ALL`]
@@ -268,7 +266,7 @@ pub(crate) fn check(message: &Message<'_>, facts: &Facts) -> Vec<Breach> {
                 ),
                 Some(_) => {}
             }
-            if s.description.ends_with('.') {
+            if s.description.trim_end().ends_with('.') {
                 add(
                     CommitRule::TrailingPeriod,
                     "the subject ends with a period".to_owned(),
@@ -312,17 +310,20 @@ pub(crate) fn check(message: &Message<'_>, facts: &Facts) -> Vec<Breach> {
         }
         last_rank = last_rank.max(Some(rank));
         present[rank] = true;
-        let text = value
-            .strip_prefix(' ')
+        let exact = line
+            .strip_prefix(key)
+            .and_then(|rest| rest.strip_prefix(": "))
             .filter(|v| !v.is_empty() && !v.starts_with(char::is_whitespace));
-        let Some(text) = text else {
+        if exact.is_none() {
             add(
                 CommitRule::Footers,
-                format!("`{key}:` needs one space and a value"),
+                format!(
+                    "`{line}` is not `{key}: <value>`, with no space before the colon and one after it"
+                ),
             );
-            continue;
-        };
-        if key == "Task" && !text.split(", ").all(is_task_id) {
+        }
+        let text = exact.unwrap_or_else(|| value.trim());
+        if key == "Task" && !text.is_empty() && !text.split(", ").all(is_task_id) {
             add(
                 CommitRule::TaskId,
                 format!("`Task: {text}` is not a list of `T-NNNN` ids separated by `, `"),
@@ -601,6 +602,47 @@ mod tests {
         );
         let text = "feat(xtask): add x\n\nCo-Authored-By: a\nmore prose\n\nTask: T-0001";
         assert_eq!(rules(text, &Facts::default()), ["trailers"]);
+    }
+
+    #[test]
+    fn lines_git_reads_as_trailers_are_trailers() {
+        assert_eq!(trailer("Task:T-18"), Some(("Task", "T-18")));
+        assert_eq!(trailer("Task : T-0001"), Some(("Task", " T-0001")));
+        assert_eq!(trailer("Co-Authored-By:a"), Some(("Co-Authored-By", "a")));
+        assert_eq!(trailer("Spec:"), Some(("Spec", "")));
+        assert_eq!(
+            trailer("BREAKING CHANGE: x"),
+            Some(("BREAKING CHANGE", " x"))
+        );
+        for not_one in [
+            "- item: x",
+            " Task: T-0001",
+            "Two words: x",
+            ": x",
+            "no colon",
+        ] {
+            assert_eq!(trailer(not_one), None, "{not_one}");
+        }
+    }
+
+    #[test]
+    fn trailers_without_a_space_are_judged() {
+        let text = "chore(plan): probe a trailer with no space\n\nCo-Authored-By:Someone <someone@example.invalid>";
+        assert_eq!(rules(text, &Facts::default()), ["trailers"]);
+        let text = "chore(plan): probe a malformed task footer\n\nTask:T-18";
+        assert_eq!(rules(text, &Facts::default()), ["footers", "task-id"]);
+        let text = "feat(xtask): add x\n\nTask : T-0001";
+        assert_eq!(rules(text, &Facts::default()), ["footers"]);
+        let text = "feat(xtask): add x\n\nBody.\nCo-Authored-By:a\n\nTask: T-0001";
+        assert_eq!(rules(text, &Facts::default()), ["trailers"]);
+        let message = Message::parse("feat(xtask): x\n\nTask:T-0001");
+        assert_eq!(message.task_ids(), ["T-0001"]);
+    }
+
+    #[test]
+    fn trailing_whitespace_does_not_hide_a_trailing_period() {
+        let text = "feat(xtask): probe a trailing period. \t\n\nTask: T-0001";
+        assert_eq!(rules(text, &Facts::default()), ["trailing-period"]);
     }
 
     #[test]
