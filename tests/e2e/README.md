@@ -21,11 +21,14 @@ found and not expected.
 | File | What |
 |---|---|
 | `rung1.ps1` | Rung 1 driver: install and uninstall on every machine |
+| `rung2.ps1` | Rung 2 driver: init, join, node list, and uninstall with `--purge` |
+| `e2e-lib.ps1` | The functions the drivers share: checks, SSH, snapshots and their comparison, probes, the reserved objects of ARFC 0017 clause 3.17, and node lists |
 | `host-snapshot.sh` | The host snapshot of a Linux machine (ARFC 0017 clause 3.17.6), and its stability self-check |
 | `host-snapshot.ps1` | The host snapshot of a Windows machine (same clause) |
-| `rung1-probe.sh` | Reads the install state of a Linux node for rung 1 |
+| `rung1-probe.sh` | Reads the install state of a Linux node. Rung 2 uses it too |
+| `rung2-probe.sh` | Reads the hostname of a Linux node and its hardware virtualization check, from which rung 2 expects the node's name and roles |
 
-The snapshot scripts only read. Later rungs reuse them.
+The snapshot and probe scripts only read. Later rungs reuse them.
 
 ## Rung 1: install and uninstall
 
@@ -84,6 +87,86 @@ elevated PowerShell for the Windows client:
 ssh root@<node-b> sh -s -- --proxmox < tests/e2e/host-snapshot.sh
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\e2e\host-snapshot.ps1
 ```
+
+## Rung 2: join and node list
+
+Checks ARFC 0002 sections 3.1 (init), 3.2 (join token), 3.3 (join), 3.9
+(leave), and 3.11 (client nodes), ARFC 0006 clause 3.15 (node state), ARFC
+0019 clause 3.1.15 (node list), and ARFC 0017 clauses 3.16 (uninstall) and
+3.17.6 (host snapshot), on the same machines as rung 1. Before you start, every
+machine is clean, as for rung 1. Then, from an elevated 64-bit PowerShell on
+the Windows client, at the repository root:
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\e2e\rung2.ps1 -Version <version> -LinuxNode root@<node-a>, root@<node-b> -ProxmoxNode root@<node-b>
+```
+
+`init` runs on the first `-LinuxNode`. `-TimeoutSeconds` (default 30) bounds
+each wait for a node list to reach the expected state. The driver:
+
+1. Reads each machine's hostname and, on Linux, whether `/dev/kvm` opens for
+   reading and writing. From these it expects each node's name (the default
+   name of ARFC 0002 section 3.3) and roles: every role on `<node-a>`,
+   `compute,storage` on each other Linux node, each without `compute` when
+   `/dev/kvm` does not open, and none on the Windows client. It checks that
+   each machine is clean and takes a host snapshot.
+2. Installs the release on every machine, as rung 1 does.
+3. Runs `alloy init` on the Windows client, which must exit 1 at its host
+   check and create no data directory.
+4. Runs `alloy init` on `<node-a>`. It must exit 0 within 30 seconds and print
+   one join token and one login code, once each, on standard output only.
+   Then `alloy login <login code>` there, after which the node list shows
+   `<node-a>` alone and `active`. A second `init` must exit 5. `alloy login
+   --issue-code` there prints one login code for each other machine.
+5. On each other Linux node, `alloy join` with a token changed in one
+   character must exit 2 and create no data directory. Then, on each other
+   Linux node and then on the Windows client, `alloy join <join token>` must
+   exit 0, and the node must show `active` in the node list of `<node-a>` less
+   than 10 seconds after the join started. This time includes SSH and the
+   polling. A second `join` must exit 5. Then `alloy login <login code>` runs
+   on that machine.
+6. On every machine, `alloy node list --output json` must show exactly the
+   three nodes, each with its roles and `active`, which is how the node list
+   of rung 2 shows a node healthy (ARFC 0006 clause 3.15). The table of
+   `alloy node list` must have the columns, widths, order, and values of ARFC
+   0019 clause 3.1.15.
+7. Takes a snapshot of each machine. It must differ from the one taken before
+   the install only in the reserved objects of clause 3.17, those named below.
+8. Uninstalls with `--purge --yes`, the Windows client first, then the other
+   Linux nodes, then `<node-a>`. The client leaves, and it must leave the node
+   list of `<node-a>`. A Linux node's `leave` is refused, since its `file` disk
+   is in pool `default` (ARFC 0002 section 3.3 step 7) and, on `<node-a>`,
+   since it is the last control node (section 3.9). So that uninstall must exit
+   5 and leave the node listed. The driver then runs it again with `--force`.
+   After each uninstall no installed path, data directory, or service remains,
+   and the snapshot equals the first one.
+
+When a step that later steps need fails, the driver skips them, and then
+uninstalls with `--purge --yes --force` from the install script every machine
+it installed on, so that a rerun starts clean.
+
+Every join token and login code in the output is shown as `alyt_(hidden)` or
+`alyc_(hidden)`.
+
+### Reserved objects in a joined node's snapshot
+
+To compare a joined node's snapshot with the one taken before the install, the
+driver removes these objects from the joined node's snapshot only. A clean
+machine holds none of them, so one found before the install shows as a
+difference:
+
+| Section | Removed |
+|---|---|
+| `ip -d link show`, `ip address show` | The block of each interface named `al` or `alv` then a digit |
+| `ip route show table all`, `ip -6 route show table all` | Each route whose every device is such an interface, in the table `main`, or in the table `local` with `proto kernel`, which the kernel adds for an address on the interface |
+| `nft list ruleset` | Each table named `alloy` or starting with `alloy_` |
+| `sysctl -a (net.)` | The parameters under `net.ipv4.conf.<interface>`, `net.ipv6.conf.<interface>`, `net.ipv4.neigh.<interface>`, and `net.ipv6.neigh.<interface>` of such an interface. The kernel makes the `neigh` ones with the interface |
+| `systemctl list-unit-files` | `alloyd.service` and units whose names start with `alloyd-` |
+| `Get-NetAdapter`, `Get-NetIPAddress`, `Get-NetRoute` | Each adapter named `al` then a digit, and the addresses and routes on it |
+| `Get-Service` | The service `alloyd` |
+| `machine PATH` | The entry `%ProgramFiles%\Alloy`, when appended as clause 3.15 step 6 appends it |
+
+Every other section, the Proxmox VE sections included, must be unchanged.
 
 ## What a comparison ignores
 
