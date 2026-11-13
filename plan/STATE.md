@@ -115,8 +115,8 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0089 | build | developer | done | none | Let binary crates set their exit code |
 | T-0090 | spec | architect | done | none | Keep path checks apart from probe-set challenges |
 | T-0091 | build | developer | done | none | Create the alloy and alloyd binaries |
-| T-0092 | build | developer | review | none | Build the release workflow and the install scripts |
-| T-0093 | verify | verifier | review | none | Write the M11 rung 1 install and uninstall check |
+| T-0092 | build | developer | done | none | Build the release workflow and the install scripts |
+| T-0093 | verify | verifier | done | none | Write the M11 rung 1 install and uninstall check |
 | T-0094 | build | developer | done | none | Build the alloy-sim mem disk-io model |
 | T-0095 | build | developer | done | none | Fix the os direct read across end of file on Linux |
 | T-0096 | process | architect | done | none | Cut process overhead in reports, reads, and research |
@@ -191,6 +191,8 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 - Spec: ARFC 0004 section 8 states the probe reflection bound from section 3.2 (T-0021 follow-up).
 
 ## M11 notes
+
+- From T-0092 and T-0093 (fold into the next ARFC 0017 or packaging task): files installed as root are copied from an extracted tree the invoking user can write (T-0092 review F3); uninstall output omits some removed holder directories (re-review note); the snapshot spec issues and the acceptance command forms in T-0093's report; linux-aarch64, windows-aarch64, and macOS archives are not built yet.
 
 - From T-0091 review (fold into the next `alloy`/`alloyd` task, rung 2): F1, `alloyd` reads join state from a data directory without the ARFC 0002 data directory checks; F2, a `Try:` line can suggest a command that is itself a usage error or does not run as printed (T5); F3 (note), usage errors echo control characters to the terminal unescaped.
 
