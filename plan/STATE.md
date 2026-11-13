@@ -11,13 +11,13 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0047 |
+| Task `T-` | T-0048 |
 | Decision `D-` | D-0018 |
-| ADR | 0052 |
+| ADR | 0053 |
 | Research `R-` | R-0008 |
 | Brief `PB-` | PB-0002 |
 
-ADR 0036, ADR 0042, ADR 0046 to ADR 0051, R-0001 to R-0007, and PB-0001 are allocated to the tasks below.
+ADR 0036, ADR 0042, ADR 0046 to ADR 0052, R-0001 to R-0007, and PB-0001 are allocated to the tasks below.
 
 ## Board
 
@@ -66,9 +66,10 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0051, R-0001 to R-0007, and PB-0001 are allo
 | T-0041 | spec | architect | review | none | Use a browser-compatible key type for the API CA |
 | T-0042 | build | developer | done | none | Close the check-repo gaps found in review |
 | T-0043 | spec | architect | active | none | Settle the path class rule and bound return path moves |
-| T-0044 | spec | architect | active | none | Make access key recovery and deleted-key requests well defined |
-| T-0045 | spec | architect | queued | T-0041 | Close join, local admin, and API CA gaps in ARFC 0002 and 0019 |
+| T-0044 | spec | architect | review | none | Make access key recovery and deleted-key requests well defined |
+| T-0045 | spec | architect | queued | T-0041, T-0044 | Close join, local admin, and API CA gaps in ARFC 0002 and 0019 |
 | T-0046 | build | developer | queued | T-0018 | Enforce direct-io with Clippy on resolved paths |
+| T-0047 | spec | architect | queued | T-0044 | Protect the last cloud-admin and mark ADR 0041 superseded |
 
 ## First dispatch
 
@@ -107,6 +108,8 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 - Spec: ARFC 0008 defines the browser-callable protocol so section 3.10 holds for the console; resolve `prost` in `agent/eng/deps.md` against connect-rust's `buffa` (R-0007).
 - Research: observe a Safari TLS handshake with an Ed25519 chain on Apple hardware, and check previous-major Chromium and Firefox in real browsers (R-0006 follow-up).
 - Build: `check-repo` rejects all of `std::process` outside `alloy-rt` and `alloy-sim`, which includes `ExitCode` and `exit`; the first binary crate needs a narrower pattern or an exit path through `alloy-rt`. `banned-patterns` scans only `crates/`, not `tests/` or `fuzz/` (T-0042).
+- Process: a task that supersedes an ADR needs that ADR's status line and its index row in `touches`; the shared index rule has no append-only way to mark a superseded row (T-0044).
+- Spec: ARFC 0014 maps native errors, including `Unauthenticated`, to S3 errors; add `Unauthenticated` to `proto/alloy/common/errors.proto` when it is written (T-0044).
 - Process: a dependency policy for npm packages, since `deny.toml` covers Cargo only (T-0035).
 - Research then ADR: the `rustls` crypto provider (`aws-lc-rs` needs a C build and license review; `ring` release cadence), which must sign ECDSA P-256 with RFC 6979 nonces, and the crate that builds X.509 certificates for the API CA. From R-0004 and T-0041.
 - Spec (M6): a key type for the ingress ACME certificates in ARFC 0010 clause 3.6 (T-0041).
