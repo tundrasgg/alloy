@@ -119,7 +119,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0093 | verify | verifier | review | none | Write the M11 rung 1 install and uninstall check |
 | T-0094 | build | developer | done | none | Build the alloy-sim mem disk-io model |
 | T-0095 | build | developer | done | none | Fix the os direct read across end of file on Linux |
-| T-0096 | process | architect | active | none | Cut process overhead in reports, reads, and research |
+| T-0096 | process | architect | done | none | Cut process overhead in reports, reads, and research |
 
 ## First dispatch
 
