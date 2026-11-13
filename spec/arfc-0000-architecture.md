@@ -31,7 +31,8 @@ A node holds any subset of four roles, set at join time and changeable later.
 | `storage` | Contributes disks to pools |
 
 The first node holds all four. Roles are independent: losing the only anchor must
-not cost the control plane its quorum.
+not cost the control plane its quorum. A node with no roles is a **client node**:
+a person's computer in the mesh, defined in ARFC 0002 section 3.11.
 
 ### 2.3 Processes
 
@@ -46,7 +47,9 @@ not cost the control plane its quorum.
 
 `alloyd` is the only process that talks to the control plane. The others take
 configuration from `alloyd` over a local socket and keep serving their last
-configuration when `alloyd` is down.
+configuration when `alloyd` is down. A client node runs `alloyd` and `alloy-net`
+only. How each process is installed, and what it may change on its host, is in
+ARFC 0017 clauses 3.15 to 3.17.
 
 ### 2.4 Layers
 
@@ -90,7 +93,14 @@ EC2 surface, and S3 control operations are clients of it.
 
 3.8 Supported hosts: Linux 6.1 or later on x86_64 and aarch64. A node without
 hardware virtualization may hold `anchor`, `control`, and `storage`, and may hold
-`compute` only under the restriction in ARFC 0011.
+`compute` only under the restriction in ARFC 0011. A client node may also run on
+Windows build 17763 or later on x86_64 and aarch64, which takes in Windows 10
+version 1809, Windows 11, and Windows Server 2019 and later. The CLI runs on
+Linux, macOS, and Windows (ARFC 0019 section 2).
+
+3.9 Alloy coexists with what a host already runs: it changes only the host
+objects it owns, and uses no address range that overlaps one in use (ARFC 0017
+clause 3.17).
 
 ## 6. Failure behavior
 

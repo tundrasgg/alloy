@@ -1,9 +1,9 @@
 # ARFC 0002: Identity and join
 
 - Status: accepted
-- Depends on: 0000, 0003, 0007, 0017
+- Depends on: 0000, 0003, 0007, 0009, 0017
 - Crates: alloy-id, alloy-crypto
-- Decisions: 0012, 0015, 0018, 0040, 0041, 0048
+- Decisions: 0012, 0015, 0018, 0040, 0041, 0048, 0062
 
 ## 1. Purpose
 
@@ -67,8 +67,8 @@ hold the keys and handshake counter of a failed join attempt (section 6).
 ### 3.1 Init
 
 `alloy init` takes `--advertise <addr>[,<addr>...]`, `--name`, `--mesh-port`,
-`--api-port`, and `--data-dir` (default `/var/lib/alloy`), none of them
-required. It does this:
+`--api-port`, and `--data-dir` (default `/var/lib/alloyd`, section 3.12), none
+of them required. It does this:
 
 1. It runs the checks of section 3.8, in the order stated there. They include
    that it runs as root on Linux, and that the local join state is `unjoined`,
@@ -156,12 +156,12 @@ time, so that a later attempt can be told why it was refused.
 
 | Flag | Default |
 |---|---|
-| `--roles <list>` | The token's preset roles, else `compute,storage`. `compute` is left out of this default when the virtualization check of section 3.8 is `warn` |
+| `--roles <list>` | The token's preset roles, else `compute,storage`. `compute` is left out of this default when the virtualization check of section 3.8 is `warn`. On Windows, `none`. `none` names no roles: the node is a client node (section 3.11) |
 | `--zone <name>` | The token's preset zone, else `default` |
 | `--name <name>` | From the hostname, by the rule below |
 | `--advertise <addr>[,...]` | As in section 3.1 step 2, except that with no default route the node gets no advertise address, which is a usage error only when its roles include `anchor` or `control` |
 | `--mesh-port <port>` | The default mesh port of ARFC 0004 |
-| `--data-dir <path>` | `/var/lib/alloy` |
+| `--data-dir <path>` | `/var/lib/alloyd`. On Windows, `Alloy` in the folder Windows reports as `%ProgramData%`. Either way it follows section 3.12 |
 | `--no-wait` | Off. When on, the command returns with exit 0 once `alloyd` holds the request |
 
 The default name is the hostname in lower case, cut at the first dot, with every
@@ -173,14 +173,18 @@ cutting the base so the result stays within 63 characters. A name given with
 whose virtualization check is `warn` is a usage error, since such a node holds
 `compute` only after a cloud admin dedicates it to one organization (ARFC 0011
 section 3.6). `--roles` that differs from non-zero preset roles in the token is a
-usage error, found before any machine is contacted.
+usage error, found before any machine is contacted. On Windows, any roles other
+than `none`, given with `--roles` or preset in the token, are a usage error found
+at the same point.
 
 1. The CLI runs the checks of section 3.8, in the order stated there. Among
    them, it refuses with `Conflict`, changing nothing, when the local join state
    is `joined`, or `joining` with another token. When it is `joining` with the
    same token, it skips the remaining checks and resumes waiting at step 7.
 2. It enables and starts `alloyd`, which holds the request from here on and
-   carries out steps 3 to 7. The local join state is now `joining`.
+   carries out steps 3 to 7. The local join state is now `joining`. On Windows,
+   enabling sets the start type of the service `alloyd` (ARFC 0017 clause 3.15)
+   to automatic.
 3. `alloyd` generates node keys, or reuses the keys and handshake counter kept
    from an earlier failed attempt (section 6), and opens an AL session to an
    anchor from the token as an unregistered initiator. It tries every address of
@@ -196,7 +200,10 @@ usage error, found before any machine is contacted.
    cluster key rotation (section 3.6) the reply also carries the previous
    cluster public key and its signature over the current one. A joiner is
    accepted when its `MAJOR.MINOR` is the lowest minor release L that any node
-   runs, or the next minor release after L (ARFC 0017 sections 3.1 and 7). The
+   runs, or the next minor release after L (ARFC 0017 sections 3.1 and 7).
+   When the joiner or any node runs a preview release (ARFC 0017 clause 3.13),
+   the joiner is accepted only when every node runs exactly the joiner's
+   release. The
    joiner must check that `cluster_key_fp` equals the first 16 bytes of
    `BLAKE3` over the current key, or over the previous key when the reply
    carries it with a valid signature over the current key; that the record is
@@ -205,8 +212,8 @@ usage error, found before any machine is contacted.
    session and sends nothing more.
 6. The joiner sends `{token_id, secret, identity_pub, mesh_pub, name,
    name_is_default, roles, zone, advertise, facts}`, with `roles` and `zone`
-   empty when not given, and `facts` being architecture, cores, memory,
-   virtualization support, and disks. It waits at most 10 seconds for the
+   empty when not given, and `facts` being operating system, architecture,
+   cores, memory, virtualization support, and disks. It waits at most 10 seconds for the
    answer. The control plane checks, in this order:
    1. The secret, as below. An unknown `token_id` or a wrong secret is refused
       with `token_refused`.
@@ -272,17 +279,48 @@ the node must become `active` within 10 seconds while an anchor is reachable.
 Each cluster has an infrastructure prefix `fd00::/8` plus 40 bits from
 `cluster_id`, giving a `/48`. A node's infrastructure address is that prefix, a
 zero subnet, and 64 bits from `BLAKE3(mesh_pub)`. Control plane, storage, and
-migration traffic use these addresses over the mesh interface `al0`.
+migration traffic use these addresses over the mesh interface `al0`. Every node,
+a client node included, holds its infrastructure address on `al0` with prefix
+length 64, so the cluster's zero subnet is reached through `al0`, and holds no
+other address there. On Windows `al0` is a Wintun adapter (ADR 0062). The
+address and its route follow ARFC 0017 clause 3.17.
 
 ### 3.5 Validity, renewal, revocation
 
 Node records are valid for 24 hours. A node renews at half life by signing a
-request with its identity key. Removing a node deletes its record: peers drop its
+request with its identity key, and, when it could not then, as a computer that
+was asleep could not, as soon as it can while its record is valid. Removing a
+node deletes its record: peers drop its
 sessions when the map update arrives, and in the worst case, a partitioned peer,
 when the record expires (I-09). Renewal needs the control plane, so a cluster
 without quorum for more than 12 hours starts losing node records. Records in
 that situation are extended by a signed "grace" statement only when a cloud admin
 runs `alloy cluster grace` on a quorum-less recovery, see ARFC 0006.
+
+**Expired record.** A node in local join state `joined` whose own record has
+expired renews through the join service of an anchor, since peers no longer
+accept it as a registered node. Its `alloyd` tries the anchors of its last view
+by the mesh keys and addresses their last records there hold, expired or not,
+as an unregistered initiator, with the steps, time limits, rate limits, and
+checks of section 3.3 steps 3 to 5. It then sends `{node_id, serial,
+signature}`, where `serial` is that of its expired record and `signature` is
+its identity key's signature over the bytes `alloy-renew-v1`, `cluster_id`,
+`node_id`, and `serial` (8 bytes, big endian). The control plane answers within
+10 seconds. It issues a new record when the node exists, the signature verifies
+against the node's `identity_pub`, and the mesh key the AL session
+authenticated is the node's `mesh_pub`. Otherwise it refuses with
+`node_unknown`, byte for byte the same for a deleted node, an unknown
+`node_id`, a bad signature, and another mesh key. A renewal needs no token and
+counts no use.
+
+While the renewal fails, `alloyd` tries again every 60 seconds, logs that the
+record expired each time, and `alloy node list` shows the node `unreachable`.
+Once it succeeds the node is `active` within 10 seconds, with no command from
+its user. On `node_unknown`, or when an anchor answers and fails the cluster key
+check of section 3.3 step 5 because the cluster key was rotated after the
+node's record expired (section 3.6), `alloyd` stops trying and logs that the
+machine is no longer a node of the cluster and that `alloy node leave --force`,
+then `alloy join` with a new token, makes it one again.
 
 ### 3.6 Rotation
 
@@ -366,15 +404,25 @@ before any machine is contacted.
 Once their arguments parse, `init` and `join` run the `host` check first: when
 it fails, nothing else runs. A join token is checked as part of argument parsing
 (section 3.2), so an invalid one ends `join` with exit 2 before any check. They
-then exit 4 when not run as root, then check the local join state (sections 3.1
-and 3.3), exiting 5 on `Conflict`, and then run the other checks in table order:
+then exit 4 when not run as root, or on Windows from an elevated administrator
+process, then check the local join state (sections 3.1 and 3.3), exiting 5 on
+`Conflict`, and then run the other checks in table order:
 
 | Check | `ok` | `warn` | `fail`, exit code |
 |---|---|---|---|
-| host | Linux 6.1 or later on x86_64 or aarch64 | | Anything else, 1 |
+| host | Linux 6.1 or later on x86_64 or aarch64. For `join` of a client node, also Windows build 17763 or later on x86_64 or aarch64 | | Anything else, 1 |
 | hardware virtualization | `/dev/kvm` opens for reading and writing | Otherwise | |
 | ports | The mesh UDP port is free, and every TCP port the node's roles listen on (ARFC 0004 section 3.6, ARFC 0008 section 3.8) | | A port is in use, 5. The message names the process and pid holding it when they can be found |
+| data directory | The data directory does not exist, or is an Alloy data directory, or is a directory that section 3.12 lets `init` and `join` adopt | | Any other directory or file at its path, 5. The message names the path and its owner |
+| names | No object that ARFC 0017 clause 3.17 reserves by name exists, other than an Alloy data directory and the install's files and service. On Linux, every id of the guest id range is free (ARFC 0017 clause 3.17.7) | | One exists, or an id is held, 5. The message names the object, or the entry, line, or process that holds the id |
+| addresses | The cluster's infrastructure prefix (section 3.4) overlaps no route and no address, as ARFC 0017 clause 3.17.3 says | | An overlap, 5. The message names the route or the interface and address |
 | free space | At least 10 GiB free under the data directory | 1 to 10 GiB | Under 1 GiB, 1 |
+
+For a client node the hardware virtualization check does not run, and free
+space is `ok` from 1 GiB, with no `warn`. `join` takes the `cluster_id` for the
+addresses check from the token. `init` draws its `cluster_id` before the checks,
+draws again while the prefix overlaps, at most 16 draws in all, and fails the
+check only when all 16 overlap.
 
 The roles that the ports check uses are known before any machine is contacted:
 for `init` the roles of section 3.1, for `join` those of `--roles`, else the
@@ -399,12 +447,19 @@ for confirmation as any destructive command does (ARFC 0019 section 3.1.6).
   disk that belongs to a pool. Otherwise it deletes the node (ARFC 0006 section
   3.6).
 
-Then `alloyd` is stopped and disabled, and the node's keys, handshake counter,
-and cluster state under the data directory are removed, leaving the local join
-state `unjoined`. When the control plane does not answer within 10 seconds,
-`leave` fails with `Unavailable` and changes nothing, unless `--force` is given:
-then it removes the local state anyway, and the node record lasts until it
-expires (section 3.5) or a cloud admin deletes it.
+Then `leave` stops every process of ARFC 0000 section 2.3 that runs on the
+machine, VMMs included, and removes every object that a line of the host file
+matches (ARFC 0017 section 4.2), interfaces with their addresses and routes.
+`alloyd` is stopped and disabled, on Windows by setting the start type of its
+service to `Disabled`. The node's keys, handshake counter, and cluster state
+under the data directory are removed, and the host file is left saying `join
+unjoined` and listing no object. The machine then holds no reserved object of
+ARFC 0017 clause 3.17 other than its data directory and the install's files and
+service, so `join` on it passes the `names` check of section 3.8, and a `join`
+after a `leave` succeeds as a first join does. When the control plane does not
+answer within 10 seconds, `leave` fails with `Unavailable` and changes nothing,
+unless `--force` is given: then it removes the local state anyway, and the node
+record lasts until it expires (section 3.5) or a cloud admin deletes it.
 
 ### 3.10 Advertise addresses
 
@@ -428,13 +483,86 @@ returns, the advertise addresses are changed, or the node holds neither role.
 contexts depend on them. Addresses that were not on the node's interfaces when
 set are not watched.
 
+### 3.11 Client nodes
+
+A **client node** is a node with no roles. It lets a person's computer take part
+in the mesh and reach VPC addresses by ARFC 0009 clause 3.13, which the spec
+task of M11 rung 6 adds. It is a node in
+every other sense: a cloud admin's join token admits it (ADR 0018), it holds a
+node record, and `alloy node list` shows it with its state and mesh path.
+
+- It runs on Linux, as any node, after `alloy join --roles none`, and on
+  Windows, where `join` makes every node a client node. It runs `alloyd` and
+  `alloy-net` and none of the other processes of ARFC 0000 section 2.3. On
+  Windows `alloyd` runs as the service `alloyd` (ARFC 0017 clause 3.15). macOS
+  client nodes are not supported in this version (ARFC 0017 section 9).
+- Its mesh address is its infrastructure address on `al0` (section 3.4). It
+  reaches other nodes through the path manager of ARFC 0004 like any node.
+- It holds no role, so it relays for no other node, admits no join, serves no
+  API, votes in no consensus group, runs no guest, and contributes no disk. An
+  `UpdateNode` that adds a role to a client node on Windows fails with
+  `InvalidArgument` and changes nothing. A client node on Linux may be given
+  roles, and is then no longer a client node.
+- Its view (I-03) holds its own record, the records of the anchors it homes on,
+  and the records of the peers it holds sessions with, and of guest, volume, and
+  VPC state only what ARFC 0009 clause 3.13 gives it.
+- It may be off or asleep for days. Its record then expires (section 3.5), and
+  once the machine is back on a network, its `alloyd` renews it as section 3.5
+  says, with no command from its user.
+- `init` refuses on Windows at its `host` check. `alloy node leave` works as
+  section 3.9 says.
+
+### 3.12 Data directory
+
+The data directory holds a node's keys, its handshake counter, its cluster
+state, and its host file (ARFC 0017 section 4.2). An **Alloy data directory**
+meets all of these:
+
+- On Linux, it is not a symbolic link, is owned by user id 0, and has mode
+  `0700`. Every directory above it is owned by user id 0 and is not writable by
+  its group or by others. Its host file is owned by user id 0 and has mode
+  `0600`.
+- On Windows, it is not a reparse point, its owner is `SYSTEM` or the
+  `Administrators` group, and its access control list is protected from
+  inheritance and grants full control to `SYSTEM` and `Administrators` and no
+  access to anyone else. Its host file has the same owner and inherits that
+  list.
+- It holds a host file whose first line is `alloy-host 1`.
+
+`init` and `join` use a data directory that is an Alloy data directory or that
+does not exist. They create a missing one with its owner and its mode or access
+control list set when it is created, on Windows in the call that creates it,
+and write the host file in it before anything else. On Linux they also adopt an
+empty directory that is not a symbolic link, is owned by user id 0, is not
+writable by its group or by others, and whose parent directories meet the rule
+above, as a mount point often is, and set its mode to `0700` first. Any other
+directory or file at the path fails the `data directory` check of section 3.8,
+and nothing is written in it. On Windows no existing directory is adopted,
+whoever owns it, since a local user may have created it or may hold it open.
+The local join state that `init`, `join`, `leave`, and `alloyd` act on is the
+`join` line of the host file of an Alloy data directory, and is `unjoined` when
+the path holds none.
+
+Every file and directory that Alloy writes under the data directory grants no
+access beyond the data directory's own. `alloyd` checks at every start, before
+it reads any secret, that its data directory is an Alloy data directory. When
+it is not, `alloyd` reads no secret, serves nothing, starts no process, writes
+nothing, and logs the reason every 60 seconds.
+
+On Windows, after an unprivileged local user creates the directory `Alloy` in
+`%ProgramData%`, `alloy join` must exit 5 naming that directory and its owner,
+and the directory must stay empty. Without that directory, `join` creates it,
+and `icacls` on it lists only `SYSTEM` and `Administrators`, each with full
+control and neither inherited.
+
 ## 6. Failure behavior
 
 A join attempt fails when it gets a refusal, when no address passes section 3.3
 step 5 within 10 seconds, or when no answer to step 6 arrives within 10 seconds.
 Receiving `pending` is not a failure. A failed attempt leaves on the joiner only
-its generated keys and its handshake counter (ARFC 0003 section 3.2), with
-`alloyd` stopped and disabled and the local join state `unjoined`. The next
+its generated keys, its handshake counter (ARFC 0003 section 3.2), and its host
+file listing no object, with every process of ARFC 0000 section 2.3 stopped,
+`alloyd` disabled, and the local join state `unjoined`. The next
 attempt reuses both, so that its initiations are not dropped as replays.
 
 A retry with the same token and those keys must get the node's current record,
@@ -483,7 +611,14 @@ a login code only after the API certificate verified against `api_ca_fp`.
 Refusal reasons are given only after the secret matches, so a guessed
 `token_id` or `code_id` learns nothing. A retry is recognized only by a mesh key
 that the AL session authenticated together with the matching secret, so it
-hands a record to no one but the holder of the admitted node's keys.
+hands a record to no one but the holder of the admitted node's keys, and so
+does the renewal of an expired record, which also needs the node to exist. The
+node's secrets sit in a data directory that only `SYSTEM` and `Administrators`,
+or user id 0, can open (section 3.12), and that `init`, `join`, and `alloyd`
+refuse to use otherwise. A client
+node is bounded as ARFC 0020 clause 3.3 bounds a compromised compute node that
+serves no guest, volume, or VPC: holding no role, it can read only traffic
+addressed to itself and can write only its own status.
 Unauthenticated exchange calls are bounded per source and in total before they
 reach the store or the audit log. Upholds I-09, I-14, I-15, I-21, I-22.
 
