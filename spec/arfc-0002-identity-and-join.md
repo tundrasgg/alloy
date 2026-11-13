@@ -3,7 +3,7 @@
 - Status: accepted
 - Depends on: 0000, 0003, 0007, 0017
 - Crates: alloy-id, alloy-crypto
-- Decisions: 0012, 0015, 0018, 0040, 0041
+- Decisions: 0012, 0015, 0018, 0040, 0041, 0048
 
 ## 1. Purpose
 
@@ -18,7 +18,28 @@ admits another machine, and how a machine leaves.
 | cluster key | Ed25519 | control plane | Signs node records and the cluster map |
 | node identity key | Ed25519 | node | Signs the node's requests to the control plane |
 | node mesh key | X25519 | node | Static key of the AL handshake (ARFC 0003) |
-| API CA key | Ed25519 | control plane | Issues TLS certificates for API endpoints |
+| API CA key | ECDSA P-256 | control plane | Issues TLS certificates for API endpoints |
+
+The API CA key is the one signing key that is not Ed25519, because the browsers
+of ARFC 0019 clause 3.2.4 verify ECDSA P-256 in a TLS certificate chain and do
+not verify Ed25519 (ADR 0048, R-0006). The API CA and the certificates it
+issues must meet these rules:
+
+- The API CA certificate is self-signed. It and every certificate the API CA
+  issues carry an ECDSA P-256 public key, encoded as a SubjectPublicKeyInfo
+  (RFC 5280 section 4.1.2.7) with algorithm `id-ecPublicKey` and named curve
+  `secp256r1` (RFC 5480 section 2.1.1) and the point uncompressed (RFC 5480
+  section 2.2). In DER that SubjectPublicKeyInfo is 91 bytes.
+- Every signature the API CA key makes, on its own certificate and on each
+  certificate it issues, is ECDSA with SHA-256, algorithm `ecdsa-with-SHA256`
+  (RFC 5758 section 3.2). No certificate it issues carries any other signature
+  algorithm.
+- Every ECDSA P-256 signature Alloy makes, by the API CA key or by an API
+  server certificate key, derives its per-signature nonce deterministically by
+  RFC 6979 section 3.2 with SHA-256. Signing therefore draws on no random
+  source, and the same key signing the same message yields the same signature.
+  The private keys themselves are generated from the `alloy-rt` randomness
+  trait.
 
 A **node record** is `{node_id, identity_pub, mesh_pub, roles, zone, infra_addr,
 advertise, capabilities, not_after, serial}` signed by the cluster key. `node_id`
@@ -282,7 +303,7 @@ big endian:
 |---|---|---|
 | version | 1 | `1` |
 | cluster_id | 16 | |
-| api_ca_fp | 16 | First 16 bytes of `BLAKE3` over the API CA's 32-byte public key |
+| api_ca_fp | 16 | First 16 bytes of `BLAKE3` over the DER encoding of the API CA certificate's SubjectPublicKeyInfo, the 91 bytes of section 2 |
 | code_id | 8 | Public lookup id |
 | secret | 16 | Random. The control plane stores only `BLAKE3(secret)` |
 | endpoint count | 1 | 1 to 4 |
@@ -306,8 +327,11 @@ before any machine is contacted.
   oldest.
 - To use a code, a client opens TLS 1.3 to its endpoints in order, for at most
   10 seconds in total. It must go on only when the presented chain verifies to a
-  CA certificate whose public key has the fingerprint `api_ca_fp`. Otherwise it
-  closes the connection having sent no request.
+  CA certificate whose SubjectPublicKeyInfo, as DER-encoded in that
+  certificate, has the fingerprint `api_ca_fp`. Otherwise it closes the
+  connection having sent no request. Because the fingerprint covers the
+  algorithm and curve identifiers as well as the point, a key of any other type
+  or encoding never matches.
 - It then calls `ExchangeLoginCode` in the `iam` service with `code_id`, the
   secret, `name`, and, when it holds one, `replaces` (ARFC 0007 clauses 3.9.3
   and 3.9.10). `ExchangeLoginCode` is the one method of the native API that

@@ -79,6 +79,7 @@ or supersede it.
 | ADR | Decision |
 |---|---|
 | [0026](0026-the-native-api-is-the-source-of-truth-ec2-and-s3-are-compati.md) | The native API is the source of truth, EC2 and S3 are compatibility surfaces |
+| [0048](0048-the-api-ca-and-api-server-certificates-use-ecdsa-p-256.md) | The API CA and API server certificates use ECDSA P-256 |
 
 ## Network
 

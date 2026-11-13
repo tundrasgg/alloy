@@ -3,7 +3,7 @@
 - Status: accepted
 - Depends on: 0006, 0007
 - Crates: alloy-proto, alloy-api
-- Decisions: 0026
+- Decisions: 0026, 0048
 
 ## 1. Purpose
 
@@ -49,7 +49,15 @@ authorized (ARFC 0007) and, when mutating, audited (ARFC 0018).
 3.8 The API is served on TLS 1.3 only, on port 443 of every control node, at
 `https://api.<cluster-domain>` or by address. The certificate comes from ACME when
 the cluster has a public name, otherwise from the API CA whose fingerprint the CLI
-pins at first login.
+pins at first login. Whichever source issues it, the API server certificate's key
+is ECDSA P-256, generated and encoded as ARFC 0002 section 2 says, and the server
+signs its TLS 1.3 `CertificateVerify` with the scheme `ecdsa_secp256r1_sha256`
+(RFC 8446 section 4.2.3) (ADR 0048). A certificate from the API CA is signed by
+the API CA with `ecdsa-with-SHA256`, and the server presents it followed by the
+API CA certificate, so every key and every signature in that chain is ECDSA
+P-256 and the browsers of ARFC 0019 clause 3.2.4 can verify it. An ACME
+certificate's own signature and the rest of its chain are the issuer's, and only
+its key is Alloy's choice.
 
 3.9 Rate limits apply per principal, default 100 requests per second with a burst
 of 200, and return `RateLimited` with a retry delay.

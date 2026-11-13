@@ -26,12 +26,19 @@
 |---|---|---|
 | AEAD, mesh transport and at rest | XChaCha20-Poly1305 | `chacha20poly1305` |
 | Key agreement | X25519 | `x25519-dalek` |
-| Signatures | Ed25519 | `ed25519-dalek` |
+| Signatures, except the two uses in the next row | Ed25519 | `ed25519-dalek` |
+| API CA key and API server certificate keys only | ECDSA P-256 with SHA-256, RFC 6979 nonces | The `rustls` crypto provider, once its ADR chooses one (R-0004) |
 | Hash and KDF in the handshake | BLAKE2s, HKDF | `blake2`, `hkdf` |
 | Content hashing | BLAKE3 | `blake3` |
 | Request signing compatibility (SigV4) | HMAC-SHA-256 | `hmac`, `sha2` |
 | Password hashing | Argon2id | `argon2` |
 | TLS for API endpoints | TLS 1.3 | `rustls` |
+
+ECDSA P-256 exists because browsers do not verify Ed25519 in a TLS chain
+(ADR 0048). It signs nothing but certificates and TLS handshakes for API
+endpoints, under the rules of `spec/arfc-0002-identity-and-join.md` section 2.
+Every other key that signs is Ed25519: the cluster key, node keys, session
+tokens, and anything new unless an ADR says otherwise.
 
 Adding or changing a row is a behavior change to
 `spec/arfc-0003-mesh-wire-protocol.md` or `spec/arfc-0002-identity-and-join.md`
