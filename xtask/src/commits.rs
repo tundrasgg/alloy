@@ -160,8 +160,8 @@ impl<'a> Subject<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Message<'a> {
     lines: Vec<&'a str>,
-    /// Index of the first footer line: the start of the last paragraph when that
-    /// paragraph opens with a `Key: value` line, else `lines.len()`.
+    /// Index of the first footer line: the start of the trailer block that
+    /// [`trailer_block_start`] finds, else `lines.len()`.
     footers_from: usize,
 }
 
@@ -169,12 +169,7 @@ impl<'a> Message<'a> {
     /// Total over any text. Trailing blank lines are ignored.
     pub(crate) fn parse(text: &'a str) -> Self {
         let lines: Vec<&str> = text.trim_end().lines().collect();
-        let footers_from = lines
-            .iter()
-            .rposition(|line| line.trim().is_empty())
-            .map(|blank| blank + 1)
-            .filter(|&start| lines.get(start).copied().and_then(trailer).is_some())
-            .unwrap_or(lines.len());
+        let footers_from = trailer_block_start(&lines);
         Self {
             lines,
             footers_from,
@@ -188,10 +183,6 @@ impl<'a> Message<'a> {
     /// The scope in the subject, when the subject has the expected shape.
     pub(crate) fn scope(&self) -> Option<&'a str> {
         Subject::parse(self.subject_line()).and_then(|s| s.scope)
-    }
-
-    fn body(&self) -> &[&'a str] {
-        self.lines.get(1..self.footers_from).unwrap_or_default()
     }
 
     fn footers(&self) -> &[&'a str] {
@@ -224,6 +215,70 @@ fn trailer(line: &str) -> Option<(&str, &str)> {
     let key = head.trim_end_matches([' ', '\t']);
     let is_token = !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
     is_token.then_some((key, value))
+}
+
+/// Prefixes git counts as trailers it generated itself.
+const GIT_GENERATED: [&str; 2] = ["Signed-off-by: ", "(cherry picked from commit "];
+
+/// Whether git's `isspace` holds for `c`.
+fn is_git_space(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\r')
+}
+
+/// Whether git counts the line as blank: empty or only spaces.
+fn is_blank(line: &str) -> bool {
+    line.chars().all(is_git_space)
+}
+
+/// The index of the first line of the trailer block, or `lines.len()` when the
+/// message has none.
+///
+/// This is `find_trailer_block_start` in git's `trailer.c`, which
+/// `git interpret-trailers --parse` and `%(trailers)` use, with the default
+/// comment character `#` and no `trailer.*` configuration. The block can only
+/// be the last paragraph after the title, and it is one when every line in it
+/// is a trailer or a continuation line indented under one, or when it holds a
+/// git-generated trailer and at least a quarter of its lines are trailers. A
+/// `Key: value` line in any earlier paragraph is body text. One deviation:
+/// `BREAKING CHANGE:` counts as a trailer, as Conventional Commits 1.0.0 says,
+/// though git's key grammar has no space.
+fn trailer_block_start(lines: &[&str]) -> usize {
+    let none = lines.len();
+    let title_end = lines.iter().position(|line| is_blank(line)).unwrap_or(none);
+    let mut only_blank = true;
+    let mut generated = false;
+    let mut trailers = 0_usize;
+    let mut others = 0_usize;
+    let mut continuations = 0_usize;
+    for (index, line) in lines.iter().enumerate().skip(title_end).rev() {
+        if line.starts_with('#') {
+            others += continuations;
+            continuations = 0;
+        } else if is_blank(line) {
+            if only_blank {
+                continue;
+            }
+            others += continuations;
+            let block = (generated && trailers * 3 >= others) || (trailers > 0 && others == 0);
+            return if block { index + 1 } else { none };
+        } else {
+            only_blank = false;
+            if GIT_GENERATED.iter().any(|prefix| line.starts_with(prefix)) {
+                generated = true;
+                trailers += 1;
+                continuations = 0;
+            } else if trailer(line).is_some() {
+                trailers += 1;
+                continuations = 0;
+            } else if line.starts_with(is_git_space) {
+                continuations += 1;
+            } else {
+                others += 1 + continuations;
+                continuations = 0;
+            }
+        }
+    }
+    none
 }
 
 /// Judges one commit. Returns every breach, in the order of [`CommitRule::ALL`]
@@ -328,16 +383,6 @@ pub(crate) fn check(message: &Message<'_>, facts: &Facts) -> Vec<Breach> {
                 CommitRule::TaskId,
                 format!("`Task: {text}` is not a list of `T-NNNN` ids separated by `, `"),
             );
-        }
-    }
-    for line in message.body() {
-        match trailer(line) {
-            Some((key, _)) if FOOTERS.contains(&key) => add(
-                CommitRule::Footers,
-                format!("`{key}:` is not in the footers, the paragraph that ends the message"),
-            ),
-            Some((key, _)) if key.contains('-') => add(CommitRule::Trailers, not_allowed(key)),
-            _ => {}
         }
     }
 
@@ -594,14 +639,80 @@ mod tests {
     }
 
     #[test]
-    fn footers_in_the_body_and_body_trailers_are_found() {
+    fn key_value_lines_in_the_body_are_not_footers() {
+        let text = "chore(plan): send T-0006 back for round 2, T-0043 to review\n\nT-0006: one block (mem stream buffer bound, I-21) and six fixes.\n\nTask: T-0006, T-0043";
+        assert!(rules(text, &Facts::default()).is_empty());
+        let message = Message::parse(text);
+        assert_eq!(message.task_ids(), ["T-0006", "T-0043"]);
+        let text = "feat(xtask): add x\n\nCo-Authored-By: a\nmore prose\n\nTask: T-0001";
+        assert!(rules(text, &Facts::default()).is_empty());
         let text = "feat(xtask): add x\n\nBody.\nTask: T-0001\n\nSigned-off-by: someone";
         assert_eq!(
             rules(text, &Facts::default()),
-            ["trailers", "footers", "task-required"]
+            ["trailers", "task-required"]
         );
-        let text = "feat(xtask): add x\n\nCo-Authored-By: a\nmore prose\n\nTask: T-0001";
-        assert_eq!(rules(text, &Facts::default()), ["trailers"]);
+        let message = Message::parse("feat(xtask): x\n\nTask: T-0001\n\nprose");
+        assert!(message.task_ids().is_empty());
+    }
+
+    /// Each case is a message and its trailer block. The block is empty exactly
+    /// where `git interpret-trailers --parse` (git 2.44.0) printed nothing, and
+    /// is otherwise the paragraph whose trailers it printed.
+    #[test]
+    fn the_trailer_block_is_where_git_finds_it() {
+        let cases: [(&str, &[&str]); 13] = [
+            (
+                "chore(plan): x\n\nT-0006: one block (I-21) and six fixes.\n\nTask: T-0006, T-0043",
+                &["Task: T-0006, T-0043"],
+            ),
+            ("feat(xtask): x\n\nprose\nCo-Authored-By: a", &[]),
+            (
+                "feat(xtask): x\n\nprose\nSigned-off-by: a",
+                &["prose", "Signed-off-by: a"],
+            ),
+            (
+                "feat(xtask): x\n\nprose\nmore\nmore\nmore\nSigned-off-by: a",
+                &[],
+            ),
+            (
+                "feat(xtask): x\n\nTask: T-0001\n  continued",
+                &["Task: T-0001", "  continued"],
+            ),
+            ("feat(xtask): x\n\n  indented\nTask: T-0001", &[]),
+            ("feat(xtask): x\nTask: T-0001", &[]),
+            (
+                "feat(xtask): x\n\nTask: T-0001\n# comment",
+                &["Task: T-0001", "# comment"],
+            ),
+            (
+                "chore(plan): x\n\nT-0006: one block",
+                &["T-0006: one block"],
+            ),
+            ("Task: T-0001", &[]),
+            (
+                "feat(xtask): x\n\nBody.\nCo-Authored-By:a\n\nTask: T-0001",
+                &["Task: T-0001"],
+            ),
+            ("feat(xtask): x\n\nTask: T-0001\nprose", &[]),
+            (
+                "feat(xtask): x\n\nTask: T-0001\n\n\n \t\n",
+                &["Task: T-0001"],
+            ),
+        ];
+        for (text, block) in cases {
+            assert_eq!(Message::parse(text).footers(), block, "{text:?}");
+        }
+    }
+
+    /// git finds no trailer here, because its key grammar has no space;
+    /// Conventional Commits 1.0.0 makes `BREAKING CHANGE` a footer token.
+    #[test]
+    fn a_breaking_change_footer_is_in_the_trailer_block() {
+        let text = "feat(xtask)!: x\n\nTask: T-0001\nSpec: a\nBREAKING CHANGE: b";
+        assert_eq!(
+            Message::parse(text).footers(),
+            ["Task: T-0001", "Spec: a", "BREAKING CHANGE: b"]
+        );
     }
 
     #[test]
@@ -633,7 +744,7 @@ mod tests {
         assert_eq!(rules(text, &Facts::default()), ["footers", "task-id"]);
         let text = "feat(xtask): add x\n\nTask : T-0001";
         assert_eq!(rules(text, &Facts::default()), ["footers"]);
-        let text = "feat(xtask): add x\n\nBody.\nCo-Authored-By:a\n\nTask: T-0001";
+        let text = "feat(xtask): add x\n\nBody.\n\nTask: T-0001\nCo-Authored-By:a";
         assert_eq!(rules(text, &Facts::default()), ["trailers"]);
         let message = Message::parse("feat(xtask): x\n\nTask:T-0001");
         assert_eq!(message.task_ids(), ["T-0001"]);
@@ -709,7 +820,8 @@ mod tests {
 #[cfg(test)]
 mod fixture_tests {
     //! Each rule has `xtask/tests/fixtures/commits/<rule>/pass/` and
-    //! `.../fail/`. A case holds `message`, the commit message, and optionally
+    //! `.../fail/`, and may have more cases named `pass-<what>/` and
+    //! `fail-<what>/`. A case holds `message`, the commit message, and optionally
     //! `changed`, one changed path per line, `crates`, one crate name per line,
     //! and `parent/plan/tasks/`, task files as they are at the first parent. A
     //! passing case breaks no rule; a failing case breaks its rule once and no
@@ -720,11 +832,41 @@ mod fixture_tests {
 
     use super::*;
 
-    fn case_dir(rule: CommitRule, case: &str) -> PathBuf {
+    fn rule_dir(rule: CommitRule) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/commits")
             .join(rule.name())
-            .join(case)
+    }
+
+    /// The rule's cases of one kind, `pass` or `fail`, sorted. The case named
+    /// `kind` must be among them, and every case must be named for a kind.
+    fn cases(rule: CommitRule, kind: &str) -> Vec<String> {
+        let is_kind = |name: &str, kind: &str| {
+            name.strip_prefix(kind)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
+        };
+        let mut names: Vec<String> = fs::read_dir(rule_dir(rule))
+            .expect("each rule has a fixture directory")
+            .map(|entry| {
+                let entry = entry.expect("fixture directory is readable");
+                entry.file_name().to_string_lossy().into_owned()
+            })
+            .collect();
+        names.sort();
+        for name in &names {
+            assert!(
+                is_kind(name, "pass") || is_kind(name, "fail"),
+                "{}: case `{name}` is not named `pass[-*]` or `fail[-*]`",
+                rule.name()
+            );
+        }
+        names.retain(|name| is_kind(name, kind));
+        assert!(
+            names.iter().any(|name| name == kind),
+            "{}: there is no `{kind}` case",
+            rule.name()
+        );
+        names
     }
 
     fn lines(dir: &Path, name: &str) -> Vec<String> {
@@ -738,7 +880,7 @@ mod fixture_tests {
     }
 
     fn run(rule: CommitRule, case: &str) -> Vec<&'static str> {
-        let dir = case_dir(rule, case);
+        let dir = rule_dir(rule).join(case);
         let text = fs::read_to_string(dir.join("message")).expect("each case has a message");
         let mut task_types = BTreeMap::new();
         if let Ok(entries) = fs::read_dir(dir.join("parent/plan/tasks")) {
@@ -765,12 +907,20 @@ mod fixture_tests {
             $(
                 #[test]
                 fn $pass() {
-                    assert_eq!(run(CommitRule::$rule, "pass"), Vec::<&str>::new());
+                    for case in cases(CommitRule::$rule, "pass") {
+                        assert_eq!(run(CommitRule::$rule, &case), Vec::<&str>::new(), "{case}");
+                    }
                 }
 
                 #[test]
                 fn $fail() {
-                    assert_eq!(run(CommitRule::$rule, "fail"), [CommitRule::$rule.name()]);
+                    for case in cases(CommitRule::$rule, "fail") {
+                        assert_eq!(
+                            run(CommitRule::$rule, &case),
+                            [CommitRule::$rule.name()],
+                            "{case}"
+                        );
+                    }
                 }
             )*
 
