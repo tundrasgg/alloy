@@ -142,7 +142,7 @@ simulated region meets the latency bounds in ARFCs 0006 and 0011, every boundary
 in ARFC 0020 has a passing hostile scenario, and every limit in every ARFC has a
 test at the limit.
 
-## E1: First deployment
+## M11: First deployment
 
 Pilot direction (D-0034). A vertical slice through M1, M2, and M3 on real
 hardware: two Linux compute nodes, one of them a Proxmox VE host, and one Windows
