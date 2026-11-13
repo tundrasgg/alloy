@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/alloy-crypto",
     "crates/alloy-rt",
     "crates/alloy-seam",
     "crates/alloy-wire",
@@ -16,6 +17,10 @@ publish = false
 # Crates inherit these with `<name> = { workspace = true }`. The trees behind
 # them are on the `deny.toml` allowlist.
 [workspace.dependencies]
+# Only alloy-crypto depends on this (agent/eng/crypto.md rule 1). `pure` selects
+# the Rust implementations, so the build compiles no C or assembly. `std` keeps
+# runtime CPU feature detection for the Rust SIMD paths.
+blake3 = { version = "=1.8.7", default-features = false, features = ["std", "pure"] }
 # Dev-dependency only. The default `fork` and `timeout` features run each test
 # in a child process under a wall clock timeout, and agent/eng/testing.md bars
 # wall clock reads in tests, so only `std` is enabled.
