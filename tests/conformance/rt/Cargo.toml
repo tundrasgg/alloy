@@ -1,0 +1,18 @@
+[package]
+name = "conformance-rt"
+version = "0.0.0"
+description = "Conformance suites for the runtime seams clock, net, disk-io, rng, and spawn (ARFC 0005)."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+alloy-rt = { path = "../../../crates/alloy-rt" }
+alloy-seam = { path = "../../../crates/alloy-seam" }
+
+[lints]
+workspace = true
