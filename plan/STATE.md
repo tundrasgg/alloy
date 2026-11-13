@@ -11,13 +11,13 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0044 |
+| Task `T-` | T-0045 |
 | Decision `D-` | D-0016 |
-| ADR | 0050 |
+| ADR | 0051 |
 | Research `R-` | R-0008 |
 | Brief `PB-` | PB-0002 |
 
-ADR 0036, ADR 0040, ADR 0042, ADR 0046 to ADR 0049, R-0001 to R-0007, and PB-0001 are allocated to the tasks below.
+ADR 0036, ADR 0040, ADR 0042, ADR 0046 to ADR 0050, R-0001 to R-0007, and PB-0001 are allocated to the tasks below.
 
 ## Board
 
@@ -62,10 +62,11 @@ ADR 0036, ADR 0040, ADR 0042, ADR 0046 to ADR 0049, R-0001 to R-0007, and PB-000
 | T-0037 | build | developer | review | none | Run the check-repo path lock in CI |
 | T-0038 | spec | architect | active | none | Specify probe bytes and probe replay protection in ARFC 0003 |
 | T-0039 | spec | architect | cancelled | none | Bound probe sets and return path moves in ARFC 0004 |
-| T-0040 | spec | architect | review | none | Bound lineage state and close gaps in ARFC 0007 section 3.9 |
+| T-0040 | spec | architect | done | none | Bound lineage state and close gaps in ARFC 0007 section 3.9 |
 | T-0041 | spec | architect | queued | T-0022 | Use a browser-compatible key type for the API CA |
 | T-0042 | build | developer | active | none | Close the check-repo gaps found in review |
 | T-0043 | spec | architect | active | none | Settle the path class rule and bound return path moves |
+| T-0044 | spec | architect | active | none | Make access key recovery and deleted-key requests well defined |
 
 ## First dispatch
 
