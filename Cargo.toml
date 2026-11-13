@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/alloy",
     "crates/alloy-crypto",
+    "crates/alloy-link",
     "crates/alloy-rt",
     "crates/alloy-seam",
     "crates/alloy-sim",

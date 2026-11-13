@@ -42,6 +42,7 @@ allow = [
     { crate = "aead", reason = "chacha20poly1305 dependency: the AEAD traits" },
     { crate = "alloy", reason = "workspace member: the CLI (ARFC 0019)" },
     { crate = "alloy-crypto", reason = "workspace member: the only crate with cryptographic dependencies (agent/eng/crypto.md)" },
+    { crate = "alloy-link", reason = "workspace member: AL handshake and session state machines (ARFC 0003)" },
     { crate = "alloy-rt", reason = "workspace member: runtime seams (ARFC 0005)" },
     { crate = "alloy-seam", reason = "workspace member: seam registry (ARFC 0001)" },
     { crate = "alloy-sim", reason = "workspace member: deterministic simulator (ARFC 0005)" },
