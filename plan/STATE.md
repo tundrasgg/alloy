@@ -70,8 +70,8 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0054, R-0001 to R-0008, and PB-0001 are allo
 | T-0045 | spec | architect | queued | T-0044 | Close join, local admin, and API CA gaps in ARFC 0002 and 0019 |
 | T-0046 | build | developer | queued | T-0018 | Enforce direct-io with Clippy on resolved paths |
 | T-0047 | spec | architect | queued | T-0044 | Protect the last cloud-admin and mark ADR 0041 superseded |
-| T-0048 | research | researcher | active | none | Research the rustls provider and a P-256 signing source |
-| T-0049 | process | architect | queued | T-0048 | Fix the P-256 rules in the crypto engineering file |
+| T-0048 | research | researcher | done | none | Research the rustls provider and a P-256 signing source |
+| T-0049 | process | architect | active | none | Fix the P-256 rules in the crypto engineering file |
 | T-0050 | spec | architect | queued | T-0006 | Specify the alloy-sim world and scenario interface |
 | T-0051 | build | developer | queued | T-0018 | Run the commit message check in CI |
 
