@@ -23,7 +23,8 @@ const TYPES: [&str; 11] = [
     "revert", "feat", "fix", "perf", "refactor", "test", "spec", "docs", "build", "ci", "chore",
 ];
 
-/// The scopes allowed besides the names of the crates under `crates/`.
+/// The scopes allowed besides the names of the crates under `crates/` and of
+/// the other top-level directories.
 const SCOPES: [&str; 11] = [
     "plan", "agent", "adr", "spec", "research", "product", "ui", "xtask", "tests", "ci", "repo",
 ];
@@ -40,7 +41,8 @@ pub(crate) enum CommitRule {
     SubjectLength,
     /// The type is one of [`TYPES`].
     Type,
-    /// The scope is present and is a crate name or one of [`SCOPES`].
+    /// The scope is present and is a crate name, the name of another top-level
+    /// directory, or one of [`SCOPES`].
     Scope,
     /// The subject does not end with a period.
     TrailingPeriod,
@@ -114,6 +116,9 @@ pub(crate) struct Facts {
     /// Package names of the crates under `crates/`, in the commit or its first
     /// parent. Only needed when the scope is not one of [`SCOPES`].
     pub(crate) crates: BTreeSet<String>,
+    /// Names of the top-level directories in the commit or its first parent.
+    /// Only needed when the scope is not one of [`SCOPES`].
+    pub(crate) dirs: BTreeSet<String>,
     /// For each task the `Task:` footer names, the `type` in its task file at
     /// the first parent, or `None` when there is no such file or field. Only
     /// needed when the commit changes a locked path.
@@ -382,6 +387,16 @@ fn trailer_block_start(lines: &[&str]) -> usize {
     none
 }
 
+/// Whether `scope` is one `agent/eng/git.md` allows: a crate under `crates/`
+/// by its name, any other top-level directory by its name, or one of
+/// [`SCOPES`]. The `crates` directory itself is never a scope: a change there
+/// takes the crate's name.
+fn scope_allowed(scope: &str, facts: &Facts) -> bool {
+    SCOPES.contains(&scope)
+        || facts.crates.contains(scope)
+        || (scope != "crates" && facts.dirs.contains(scope))
+}
+
 /// Judges one commit. Returns every breach, in the order of [`CommitRule::ALL`]
 /// within each part of the message.
 pub(crate) fn check(message: &Message<'_>, facts: &Facts) -> Vec<Breach> {
@@ -416,9 +431,11 @@ pub(crate) fn check(message: &Message<'_>, facts: &Facts) -> Vec<Breach> {
             }
             match s.scope {
                 None => add(CommitRule::Scope, "the subject has no scope".to_owned()),
-                Some(scope) if !SCOPES.contains(&scope) && !facts.crates.contains(scope) => add(
+                Some(scope) if !scope_allowed(scope, facts) => add(
                     CommitRule::Scope,
-                    format!("`{scope}` is neither a crate under crates/ nor an allowed scope"),
+                    format!(
+                        "`{scope}` is neither a crate under crates/, another top-level directory, nor an allowed scope"
+                    ),
                 ),
                 Some(_) => {}
             }
@@ -633,12 +650,14 @@ fn facts(root: &Path, entry: &Entry, message: &Message<'_>) -> Result<Facts, Str
         .map(str::to_owned)
         .collect();
     let mut crates = BTreeSet::new();
+    let mut dirs = BTreeSet::new();
     if message
         .scope()
         .is_some_and(|scope| !SCOPES.contains(&scope))
     {
         for rev in iter::once(entry.id.as_str()).chain(entry.parent.as_deref()) {
             crates.extend(crate_names(root, rev)?);
+            dirs.extend(top_level_dirs(root, rev)?);
         }
     }
     let mut task_types = BTreeMap::new();
@@ -656,8 +675,19 @@ fn facts(root: &Path, entry: &Entry, message: &Message<'_>) -> Result<Facts, Str
     Ok(Facts {
         changed,
         crates,
+        dirs,
         task_types,
     })
+}
+
+/// The names of the directories at the top of the tree at `rev`.
+fn top_level_dirs(root: &Path, rev: &str) -> Result<BTreeSet<String>, String> {
+    let listing = tree::git(root, &["ls-tree", "-d", "--name-only", "-z", rev])?;
+    Ok(listing
+        .split('\0')
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect())
 }
 
 /// The package names of the crates directly under `crates/` at `rev`.
@@ -729,6 +759,19 @@ mod tests {
         let text = "feat(alloy-link): add x\n\nTask: T-0001";
         assert!(rules(text, &crates(&["alloy-link"])).is_empty());
         assert_eq!(rules(text, &Facts::default()), ["scope"]);
+    }
+
+    #[test]
+    fn a_top_level_directory_is_a_scope_but_crates_is_not() {
+        let dirs = |names: &[&str]| Facts {
+            dirs: names.iter().map(|n| (*n).to_owned()).collect(),
+            ..Facts::default()
+        };
+        let fuzz = "test(fuzz): add x\n\nTask: T-0001";
+        assert!(rules(fuzz, &dirs(&["crates", "fuzz"])).is_empty());
+        assert_eq!(rules(fuzz, &dirs(&["crates"])), ["scope"]);
+        let whole = "feat(crates): add x\n\nTask: T-0001";
+        assert_eq!(rules(whole, &dirs(&["crates", "fuzz"])), ["scope"]);
     }
 
     #[test]
@@ -1112,6 +1155,7 @@ mod fixture_tests {
         let facts = Facts {
             changed: lines(&dir, "changed"),
             crates: lines(&dir, "crates").into_iter().collect(),
+            dirs: lines(&dir, "dirs").into_iter().collect(),
             task_types,
         };
         check(&Message::parse(&text), &facts)

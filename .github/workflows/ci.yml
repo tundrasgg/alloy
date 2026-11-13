@@ -30,7 +30,9 @@ jobs:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         # The path lock in `check-repo` diffs against the merge base with the
-        # base ref, so the whole history and every branch are fetched.
+        # base ref, and the commit check walks back to the commit before the
+        # push or to 5429bb9, so the whole history and every branch are
+        # fetched.
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -58,21 +60,29 @@ jobs:
       # commit, so the head branch is named. A push to main is judged against
       # the commit before it, and the branch is named so the verdict does not
       # depend on how the checkout left HEAD. A push with no previous commit
-      # has nothing to diff. Event values reach the shell only through the
-      # environment, never through expressions in the script.
+      # has nothing to diff.
+      #
+      # `--commits` makes the last step check the message of every commit a
+      # push to main adds, against `agent/eng/git.md` and the path lock
+      # (D-0016). Pull requests skip it: task branch commits are free-form and
+      # disappear in the squash. When the commit before the push is all zeros
+      # or not an ancestor of the commit after it, xtask starts the range at
+      # 5429bb9 instead (D-0037).
+      #
+      # Event values reach the shell only through the environment, never
+      # through expressions in the script.
       - name: Run the quality gate
         env:
           BEFORE: ${{ github.event.before }}
         run: |
           case "$GITHUB_EVENT_NAME" in
             pull_request)
-              cargo xtask ci --base "origin/$GITHUB_BASE_REF" --branch "$GITHUB_HEAD_REF"
+              options=(--base "origin/$GITHUB_BASE_REF" --branch "$GITHUB_HEAD_REF")
               ;;
             push)
-              if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
-                cargo xtask ci
-              else
-                cargo xtask ci --base "$BEFORE" --branch "$GITHUB_REF_NAME"
+              options=(--commits "$BEFORE..$GITHUB_SHA")
+              if [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+                options+=(--base "$BEFORE" --branch "$GITHUB_REF_NAME")
               fi
               ;;
             *)
@@ -80,3 +90,4 @@ jobs:
               exit 1
               ;;
           esac
+          cargo xtask ci "${options[@]}"

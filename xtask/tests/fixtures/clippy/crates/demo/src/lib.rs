@@ -132,6 +132,22 @@ pub fn unix_only() -> bool {
     link && owner && link_owner && fd_owner && root && pair && receiver.is_some() && sender.is_none()
 }
 
+/// Waits that end on the clock: on a channel and on a condition variable.
+#[allow(deprecated, reason = "the deprecated form waits on the clock too")]
+pub fn timed_waits(
+    rx: &std::sync::mpsc::Receiver<u8>,
+    lock: &std::sync::Mutex<bool>,
+    cv: &std::sync::Condvar,
+) -> Option<bool> {
+    let tick = std::time::Duration::from_millis(1);
+    let received = rx.recv_timeout(tick).is_ok();
+    let guard = lock.lock().ok()?;
+    let (guard, _) = cv.wait_timeout(guard, tick).ok()?;
+    let (guard, _) = cv.wait_timeout_ms(guard, 1).ok()?;
+    let (guard, _) = cv.wait_timeout_while(guard, tick, |ready| !*ready).ok()?;
+    Some(received && *guard)
+}
+
 #[cfg(test)]
 mod tests {
     #[tokio::test]

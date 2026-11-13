@@ -1,0 +1,6 @@
+test(fuzz): add fuzz targets for every alloy-wire decoder
+
+One libFuzzer target per public decoder, each checking that decoding
+never panics and that a decoded message encodes back to its bytes.
+
+Task: T-0061

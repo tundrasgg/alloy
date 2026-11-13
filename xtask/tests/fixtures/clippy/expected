@@ -39,8 +39,12 @@ crates/demo/src/lib.rs:129: tokio::net::unix::pipe::pipe unix
 crates/demo/src/lib.rs:130: tokio::net::unix::pipe::OpenOptions unix
 crates/demo/src/lib.rs:130: tokio::net::unix::pipe::Receiver unix
 crates/demo/src/lib.rs:131: tokio::net::unix::pipe::Sender unix
-crates/demo/src/lib.rs:137: tokio::runtime::Builder
-crates/demo/src/lib.rs:140: tokio::runtime::Builder
+crates/demo/src/lib.rs:143: std::sync::mpsc::Receiver::recv_timeout
+crates/demo/src/lib.rs:145: std::sync::Condvar::wait_timeout
+crates/demo/src/lib.rs:146: std::sync::Condvar::wait_timeout_ms
+crates/demo/src/lib.rs:147: std::sync::Condvar::wait_timeout_while
+crates/demo/src/lib.rs:153: tokio::runtime::Builder
+crates/demo/src/lib.rs:156: tokio::runtime::Builder
 crates/switches/src/lib.rs:9: warn(clippy::disallowed_methods)
 crates/switches/src/lib.rs:12: allow(clippy::disallowed_methods)
 crates/switches/src/lib.rs:26: allow(clippy::disallowed_methods)
