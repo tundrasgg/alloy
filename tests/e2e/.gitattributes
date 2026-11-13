@@ -1,0 +1,2 @@
+# The shell scripts run on Linux nodes. Keep them LF on every checkout.
+*.sh text eol=lf
