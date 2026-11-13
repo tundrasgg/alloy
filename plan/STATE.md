@@ -13,7 +13,7 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 | Series | Next |
 |---|---|
 | Task `T-` | T-0105 |
-| Decision `D-` | D-0048 |
+| Decision `D-` | D-0049 |
 | ADR | 0065 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0002 |
@@ -34,8 +34,8 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0008 | verify | verifier | done | none | Write conformance suites for the runtime seams |
 | T-0009 | build | developer | cancelled | none | Build the alloy-sim deterministic simulator |
 | T-0010 | verify | verifier | blocked | T-0077 | Write determinism and fault tests for the simulator |
-| T-0011 | build | developer | queued | T-0009, T-0021 | Build the NAT models in alloy-natlab |
-| T-0012 | verify | verifier | queued | T-0007, T-0021 | Write NAT model tests and the matrix file |
+| T-0011 | build | developer | cancelled | none | Build the NAT models in alloy-natlab |
+| T-0012 | verify | verifier | cancelled | none | Write NAT model tests and the matrix file |
 | T-0013 | product | product | done | none | Write the brief for init, join, and first login |
 | T-0014 | research | researcher | done | none | Research crates for consensus, storage, and crypto |
 | T-0015 | spec | architect | done | none | Record repository hosting and CI runners in ADR 0037 |
@@ -166,7 +166,7 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 
 - Spec (with the hybrid handshake ARFC, M10): how a node learns a peer supports a later `version` or the hybrid flag before sending it, since version 1 drops both silently (T-0026 re-review note F2).
 - Verify: ARFC 0003 section 6 operation counts per packet through `alloy-crypto` on the simulator, and the 3.1 cookie validity across a secret rotation (T-0030).
-- Verify and recut: T-0011, T-0012, and conformance suites for the new ARFC 0004 musts after T-0031 merges (answer count and size, probing window, challenge placement and lifetime, 64 outstanding challenges, 5 s home keepalive).
+- Recut after T-0077 (D-0048): a natlab build task and its verify pair (replacing cancelled T-0011 and T-0012), and conformance suites for the new ARFC 0004 musts (answer count and size, probing window, challenge placement and lifetime, 64 outstanding challenges, 5 s home keepalive).
 - Spec: ARFC 0008 defines the browser-callable protocol so section 3.10 holds for the console; resolve `prost` in `agent/eng/deps.md` against connect-rust's `buffa` (R-0007).
 - Research: observe a Safari TLS handshake with an Ed25519 chain on Apple hardware, and check previous-major Chromium and Firefox in real browsers (R-0006 follow-up).
 - Build: `banned-patterns` scans only `crates/`, not `tests/` or `fuzz/` (T-0042; the `ExitCode` part is T-0089).
