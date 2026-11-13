@@ -8,6 +8,15 @@ rust-version = "1.100"
 license = "MIT OR Apache-2.0"
 publish = false
 
+# Crates inherit these with `<name> = { workspace = true }`. The trees behind
+# them are on the `deny.toml` allowlist.
+[workspace.dependencies]
+# Dev-dependency only. The default `fork` and `timeout` features run each test
+# in a child process under a wall clock timeout, and agent/eng/testing.md bars
+# wall clock reads in tests, so only `std` is enabled.
+proptest = { version = "=1.12.0", default-features = false, features = ["std"] }
+thiserror = "=2.0.21"
+
 [workspace.lints.rust]
 missing_docs = "warn"
 missing_debug_implementations = "warn"

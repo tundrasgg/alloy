@@ -35,6 +35,28 @@ allow-wildcard-paths = true
 # named here. Nothing else builds.
 allow = [
     { crate = "alloy-wire", reason = "workspace member: AL message codec (ARFC 0003)" },
+    { crate = "autocfg", reason = "build dependency of num-traits, in the proptest tree" },
+    { crate = "bitflags", reason = "proptest dependency" },
+    { crate = "cfg-if", reason = "chacha20 and getrandom dependency, in the proptest tree" },
+    { crate = "chacha20", reason = "proptest dependency" },
+    { crate = "core_detect", reason = "proptest dependency" },
+    { crate = "cpufeatures", reason = "chacha20 dependency, in the proptest tree" },
+    { crate = "getrandom", reason = "rand dependency, in the proptest tree" },
+    { crate = "libc", reason = "cpufeatures and getrandom dependency, in the proptest tree" },
+    { crate = "num-traits", reason = "proptest dependency" },
+    { crate = "proc-macro2", reason = "thiserror-impl dependency" },
+    { crate = "proptest", reason = "standing choice for property tests (agent/eng/deps.md)" },
+    { crate = "quote", reason = "thiserror-impl dependency" },
+    { crate = "r-efi", reason = "getrandom dependency on UEFI targets, in the proptest tree" },
+    { crate = "rand", reason = "proptest dependency" },
+    { crate = "rand_core", reason = "rand dependency, in the proptest tree" },
+    { crate = "rand_xorshift", reason = "proptest dependency" },
+    { crate = "regex-syntax", reason = "proptest dependency" },
+    { crate = "syn", reason = "thiserror-impl dependency" },
+    { crate = "thiserror", reason = "standing choice for library error types (agent/eng/deps.md)" },
+    { crate = "thiserror-impl", reason = "thiserror dependency: its derive macro" },
+    { crate = "unarray", reason = "proptest dependency" },
+    { crate = "unicode-ident", reason = "proc-macro2 and syn dependency, in the thiserror tree" },
     { crate = "xtask", reason = "workspace member: repository automation" },
 ]
 
