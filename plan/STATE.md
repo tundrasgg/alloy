@@ -11,7 +11,7 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0060 |
+| Task `T-` | T-0063 |
 | Decision `D-` | D-0024 |
 | ADR | 0058 |
 | Research `R-` | R-0009 |
@@ -76,12 +76,15 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0057, R-0001 to R-0008
 | T-0051 | build | developer | blocked | T-0053 | Run the commit message check in CI |
 | T-0052 | spec | architect | active | none | Make the local admin a full break-glass administrator |
 | T-0053 | build | developer | queued | T-0046 | Parse commit trailers only from the last paragraph |
-| T-0054 | build | developer | active | none | Build alloy-wire for AL handshake and transport messages |
+| T-0054 | build | developer | review | none | Build alloy-wire for AL handshake and transport messages |
 | T-0055 | verify | verifier | queued | T-0054 | Write conformance vectors for AL handshake and transport bytes |
 | T-0056 | process | architect | done | none | Let parallel tasks add crates to the shared workspace files |
 | T-0057 | spec | architect | active | none | Keep stored seam configuration readable across releases |
 | T-0058 | process | architect | done | none | Align core and lead rules with shared workspace files |
 | T-0059 | spec | architect | review | none | Discard sessions a failed handover's successor touched |
+| T-0060 | spec | architect | queued | T-0059 | Settle the open fragment and queue details in ARFC 0003 |
+| T-0061 | build | developer | queued | T-0054 | Add fuzz targets for every alloy-wire decoder |
+| T-0062 | build | developer | active | none | Allow thiserror and proptest in the dependency allowlist |
 
 ## First dispatch
 
