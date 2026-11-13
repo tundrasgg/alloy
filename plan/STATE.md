@@ -21,7 +21,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 
 ## Paused
 
-The pilot paused dispatch. T-0075 round 2 finished after the pause and needs its re-review. T-0008 finished and merged after the pause. Still in flight when paused: T-0055, T-0079, and the T-0080 review. The next lead session processes their reports first (merge, or dispatch the review each needs), then continues with T-0076 to T-0078 and the board below.
+The pilot paused dispatch. T-0075 round 2 finished after the pause and needs its re-review. T-0008 finished and merged after the pause. T-0079 reported `blocked` after the pause; its question is in `plan/reports/T-0079.developer.1.md`. Still in flight when paused: T-0055, and the T-0080 review. The next lead session processes their reports first (merge, or dispatch the review each needs), then continues with T-0076 to T-0078 and the board below.
 
 Pilot-supplied note for the next session, not yet investigated: a Clippy run printed the `xtask/tests/fixtures/clippy` banned-call list for `crates/demo/src/lib.rs` (38 lines from `std::process::Command` at 8:19 through `tokio::runtime::Builder` at 140:5, including the `unix`-tagged `std::os::unix::fs` and `tokio::net::unix::pipe` items). T-0046 noted the `unix`-tagged fixture lines were only ever run on Windows and that the first Linux CI run is their check. Start by checking the latest GitHub Actions run on main and comparing this output with the fixture's `expected` file.
 
@@ -107,7 +107,7 @@ Pilot-supplied note for the next session, not yet investigated: a Clippy run pri
 | T-0076 | build | developer | queued | T-0075 | Build alloy-sim hosts, mem runtime, and faults |
 | T-0077 | build | developer | queued | T-0076 | Build alloy-sim networks, UDP, and the echo scenario |
 | T-0078 | build | developer | queued | T-0077 | Build alloy-sim mem streams |
-| T-0079 | build | developer | active | none | Run the commit check inside cargo xtask ci |
+| T-0079 | build | developer | blocked | none | Run the commit check inside cargo xtask ci |
 | T-0080 | spec | architect | review | none | Replace path-move heuristics with verify-before-move |
 | T-0081 | build | developer | done | none | Update the alloy-wire fuzz targets to the compact layout |
 
