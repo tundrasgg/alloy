@@ -90,7 +90,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0065 | spec | architect | done | none | State break-glass reach into tenant data accurately |
 | T-0066 | spec | architect | done | none | Close the open stored-binding and interface gaps in ARFC 0001 |
 | T-0067 | spec | architect | done | none | Settle timeout start and path joining in ARFC 0005 |
-| T-0068 | build | developer | active | none | Close the direct-io gaps and vet the Clippy fixture's crates |
+| T-0068 | build | developer | review | none | Close the direct-io gaps and vet the Clippy fixture's crates |
 | T-0069 | build | developer | done | none | Property-test the seam config codec and tidy the crates |
 | T-0070 | spec | architect | done | none | State plainly that root on a control node reads all tenant data |
 | T-0071 | process | architect | done | none | Record the NCSA exception for libfuzzer-sys in ADR 0060 |
