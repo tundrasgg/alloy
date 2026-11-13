@@ -12,8 +12,8 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0095 |
-| Decision `D-` | D-0042 |
+| Task `T-` | T-0096 |
+| Decision `D-` | D-0043 |
 | ADR | 0063 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0002 |
@@ -114,10 +114,11 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0088 | spec | architect | done | none | Specify install, uninstall, and the Windows client node |
 | T-0089 | build | developer | done | none | Let binary crates set their exit code |
 | T-0090 | spec | architect | active | none | Keep path checks apart from probe-set challenges |
-| T-0091 | build | developer | queued | T-0083 | Create the alloy and alloyd binaries |
+| T-0091 | build | developer | queued | T-0095 | Create the alloy and alloyd binaries |
 | T-0092 | build | developer | active | none | Build the release workflow and the install scripts |
 | T-0093 | verify | verifier | active | none | Write the M11 rung 1 install and uninstall check |
 | T-0094 | build | developer | queued | T-0076 | Build the alloy-sim mem disk-io model |
+| T-0095 | build | developer | active | none | Fix the os direct read across end of file on Linux |
 
 ## First dispatch
 
