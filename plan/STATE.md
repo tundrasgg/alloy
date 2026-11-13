@@ -72,7 +72,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0058, R-0001 to R-0008
 | T-0047 | spec | architect | cancelled | none | Protect the last cloud-admin and mark ADR 0041 superseded |
 | T-0048 | research | researcher | done | none | Research the rustls provider and a P-256 signing source |
 | T-0049 | process | architect | done | none | Fix the P-256 rules in the crypto engineering file |
-| T-0050 | spec | architect | active | none | Specify the alloy-sim world and scenario interface |
+| T-0050 | spec | architect | review | none | Specify the alloy-sim world and scenario interface |
 | T-0051 | build | developer | blocked | T-0053 | Run the commit message check in CI |
 | T-0052 | spec | architect | review | none | Make the local admin a full break-glass administrator |
 | T-0053 | build | developer | queued | T-0046 | Parse commit trailers only from the last paragraph |
