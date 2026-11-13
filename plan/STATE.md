@@ -121,8 +121,8 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0095 | build | developer | done | none | Fix the os direct read across end of file on Linux |
 | T-0096 | process | architect | done | none | Cut process overhead in reports, reads, and research |
 | T-0097 | verify | verifier | cancelled | none | Run the rung 1 driver's remote scripts over SSH stdin |
-| T-0098 | build | developer | active | none | Fix the Windows uninstall's empty path failure |
-| T-0099 | verify | verifier | active | none | Run the rung 1 driver's remote scripts over SSH stdin |
+| T-0098 | build | developer | done | none | Fix the Windows uninstall's empty path failure |
+| T-0099 | verify | verifier | done | none | Run the rung 1 driver's remote scripts over SSH stdin |
 
 ## First dispatch
 
