@@ -15,7 +15,9 @@
 # that the snapshot equals the first one, and runs the uninstall again.
 #
 # On a remote machine it runs only the snapshot script, the probe script (the
-# checks), the install, and the uninstall. It prints one PASS or FAIL line per
+# checks), the install, and the uninstall. It sends the snapshot and probe
+# scripts on the standard input of ssh.exe to `sh -s`, so nothing is copied to
+# the node. It prints one PASS or FAIL line per
 # check, then a summary, and exits 0 when every check passed, 1 when any
 # failed, and 2 on a usage error.
 
@@ -39,6 +41,9 @@ $ErrorActionPreference = 'Stop'
 $script:Passed = 0
 $script:Failed = 0
 $ReleaseBase = 'https://github.com/tundrasgg/alloy/releases/download'
+
+# The options of every SSH connection. Each is a word with no space or quote.
+$SshOptions = @('-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', '-o', 'ServerAliveInterval=15')
 
 function Exit-Usage {
     param([string]$Message)
@@ -180,24 +185,133 @@ function Invoke-Ssh {
         [string]$Command,
         [switch]$MergeError
     )
-    $arguments = @('-n', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15',
-        '-o', 'ServerAliveInterval=15', $Destination, $Command)
+    $arguments = @('-n') + @($SshOptions) + @($Destination, $Command)
     return Invoke-Native -FilePath 'ssh.exe' -Arguments $arguments -MergeError:$MergeError
 }
 
-# Runs one of the shell scripts next to this one on a Linux node, passing its
-# text in the command line so that nothing is copied to the node. Every
-# argument is a word with no shell metacharacters.
+# Quotes one argument for a Windows command line by the rules the C runtime
+# uses to split one, which ssh.exe uses, so that the program receives it
+# unchanged.
+function ConvertTo-CommandLineArgument {
+    param([string]$Argument)
+    if ($Argument.Length -gt 0 -and $Argument -notmatch '[\s"]') {
+        return $Argument
+    }
+    $out = New-Object System.Text.StringBuilder
+    [void]$out.Append('"')
+    $slashes = 0
+    foreach ($c in $Argument.ToCharArray()) {
+        if ($c -eq [char]'\') {
+            $slashes += 1
+            continue
+        }
+        if ($c -eq [char]'"') {
+            [void]$out.Append([char]'\', 2 * $slashes + 1)
+        } elseif ($slashes -gt 0) {
+            [void]$out.Append([char]'\', $slashes)
+        }
+        $slashes = 0
+        [void]$out.Append($c)
+    }
+    if ($slashes -gt 0) {
+        [void]$out.Append([char]'\', 2 * $slashes)
+    }
+    [void]$out.Append('"')
+    return $out.ToString()
+}
+
+# Runs one of the shell scripts next to this one on a Linux node as
+# `sh -s -- <arguments>`, writing the script's bytes to the standard input of
+# ssh.exe, so that nothing is copied to the node and the script's text never
+# passes through a command line. The command line holds only the SSH options,
+# the destination, and words that need no quoting on Windows or in a shell.
+# Standard error goes to the console. Returns the exit code and the standard
+# output lines.
 function Invoke-RemoteScript {
     param(
         [string]$Destination,
         [string]$ScriptName,
         [string[]]$Arguments = @()
     )
+    foreach ($word in $Arguments) {
+        if ($word -cnotmatch '^[A-Za-z0-9._+/=:@-]+$') {
+            throw "the argument '$word' for $ScriptName is not a plain word"
+        }
+    }
     $text = [IO.File]::ReadAllText((Join-Path $PSScriptRoot $ScriptName)) -replace "`r", ''
-    $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($text))
-    $command = "printf %s '$encoded' | base64 -d | sh -s -- " + (@($Arguments) -join ' ')
-    return Invoke-Ssh -Destination $Destination -Command $command
+    $utf8 = New-Object System.Text.UTF8Encoding $false
+    $bytes = $utf8.GetBytes($text)
+
+    $ssh = @(Get-Command 'ssh.exe' -CommandType Application)[0].Path
+    $words = @($SshOptions) + @('-T', $Destination, 'sh', '-s', '--') + @($Arguments)
+    $info = New-Object System.Diagnostics.ProcessStartInfo
+    $info.FileName = $ssh
+    $info.Arguments = (@($words | ForEach-Object { ConvertTo-CommandLineArgument $_ }) -join ' ')
+    $info.UseShellExecute = $false
+    $info.RedirectStandardInput = $true
+    $info.RedirectStandardOutput = $true
+    $info.StandardOutputEncoding = $utf8
+
+    # Windows PowerShell 5.1 runs on the .NET Framework, whose redirected
+    # standard input begins with the preamble of the console input encoding:
+    # a byte order mark when that is UTF-8, which the shell on the node would
+    # read as part of the script's first line. The console input encoding is
+    # set to UTF-8 without a preamble while the process starts. PowerShell 7
+    # writes no preamble.
+    $inputEncoding = $null
+    try {
+        $inputEncoding = [Console]::InputEncoding
+    } catch {
+        $null = $_
+    }
+    $restore = $false
+    if ($null -ne $inputEncoding -and $inputEncoding.GetPreamble().Length -gt 0) {
+        try {
+            [Console]::InputEncoding = $utf8
+            $restore = $true
+        } catch {
+            throw "cannot send $ScriptName without a byte order mark: the console input encoding cannot be set ($($_.Exception.Message))"
+        }
+    }
+    try {
+        $process = [System.Diagnostics.Process]::Start($info)
+    } finally {
+        if ($restore) {
+            [Console]::InputEncoding = $inputEncoding
+        }
+    }
+
+    try {
+        # Read standard output while the script is written, so that neither
+        # side waits on a full pipe.
+        $reading = $process.StandardOutput.ReadToEndAsync()
+        try {
+            $stream = $process.StandardInput.BaseStream
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Flush()
+        } catch [System.IO.IOException] {
+            # ssh.exe exited before it read the whole script. Its exit code and
+            # standard error say why.
+            $null = $_
+        } finally {
+            # The end of standard input ends the script on the node.
+            try {
+                $process.StandardInput.Close()
+            } catch [System.IO.IOException] {
+                $null = $_
+            }
+        }
+        $output = $reading.GetAwaiter().GetResult()
+        $process.WaitForExit()
+        $code = $process.ExitCode
+    } finally {
+        $process.Dispose()
+    }
+    $lines = @($output -split "`n" | ForEach-Object { $_.TrimEnd("`r") })
+    if ($lines.Count -gt 0 -and $lines[$lines.Count - 1] -eq '') {
+        $lines = @($lines | Select-Object -First ($lines.Count - 1))
+    }
+    return [pscustomobject]@{ Exit = $code; Lines = $lines }
 }
 
 # ---------------------------------------------------------------- snapshots
@@ -679,6 +793,12 @@ $windows = [pscustomobject]@{
 $machines += $windows
 
 Write-Output ("Alloy M11 rung 1: install and uninstall of {0} on {1} machine(s)" -f $Version, $machines.Count)
+if (@($LinuxNode).Count -gt 0) {
+    # A client built on the Cygwin or MSYS runtime, such as the one in Git for
+    # Windows, splits its command line by other rules than the Windows OpenSSH
+    # client. Name the one in use, for the record.
+    Write-Output ("SSH client: {0}" -f @(Get-Command 'ssh.exe' -CommandType Application)[0].Path)
+}
 
 foreach ($machine in $machines) {
     if ($machine.Kind -eq 'windows' -and [Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
