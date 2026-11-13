@@ -11,13 +11,13 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0080 |
-| Decision `D-` | D-0030 |
-| ADR | 0061 |
+| Task `T-` | T-0081 |
+| Decision `D-` | D-0031 |
+| ADR | 0062 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0002 |
 
-ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0060, R-0001 to R-0008, and PB-0001 are allocated to the tasks below.
+ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008, and PB-0001 are allocated to the tasks below.
 
 ## Board
 
@@ -46,7 +46,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0060, R-0001 to R-0008
 | T-0021 | spec | architect | done | none | Resolve NAT spec issues found by R-0003 |
 | T-0022 | spec | architect | done | none | Apply PB-0001 to ARFC 0002 and ARFC 0019 |
 | T-0023 | spec | architect | done | none | Specify user access keys and the local admin path |
-| T-0024 | spec | architect | queued | T-0043, T-0041 | Fix the default mesh port and TCP 443 sharing |
+| T-0024 | spec | architect | queued | T-0080 | Fix the default mesh port and TCP 443 sharing |
 | T-0025 | process | architect | done | none | Let parallel tasks share append-only index files |
 | T-0026 | spec | architect | done | none | Make the ARFC 0003 handshake implementable on Noise libraries |
 | T-0027 | process | architect | done | none | Align core delegation and the lead role with shared index files |
@@ -65,7 +65,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0060, R-0001 to R-0008
 | T-0040 | spec | architect | done | none | Bound lineage state and close gaps in ARFC 0007 section 3.9 |
 | T-0041 | spec | architect | done | none | Use a browser-compatible key type for the API CA |
 | T-0042 | build | developer | done | none | Close the check-repo gaps found in review |
-| T-0043 | spec | architect | review | none | Settle the path class rule and bound return path moves |
+| T-0043 | spec | architect | done | none | Settle the path class rule and bound return path moves |
 | T-0044 | spec | architect | done | none | Make access key recovery and deleted-key requests well defined |
 | T-0045 | spec | architect | queued | D-0028 | Close join, local admin, and API CA gaps in ARFC 0002 and 0019 |
 | T-0046 | build | developer | done | none | Enforce direct-io with Clippy on resolved paths |
@@ -102,6 +102,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0060, R-0001 to R-0008
 | T-0077 | build | developer | queued | T-0076 | Build alloy-sim networks, UDP, and the echo scenario |
 | T-0078 | build | developer | queued | T-0077 | Build alloy-sim mem streams |
 | T-0079 | build | developer | queued | T-0068 | Run the commit check inside cargo xtask ci |
+| T-0080 | spec | architect | active | none | Replace path-move heuristics with verify-before-move |
 
 ## First dispatch
 
