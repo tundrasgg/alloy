@@ -1,0 +1,271 @@
+# Publishes a release when its tag is pushed (ARFC 0017 clauses 3.13 and 3.14,
+# ADR 0044). The tag is `v` followed by the version. Until the release key of
+# clause 3.14 exists, only preview versions, 0.0.PATCH-preview.N, are
+# published, and always as a GitHub pre-release.
+#
+# The build jobs only read the repository. Only the last job may write: it
+# creates the release, and it signs the provenance attestations of the assets.
+# Every action is pinned to a commit SHA. Values from the event reach scripts
+# only through the environment.
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # The Wintun release zip of ADR 0062, pinned by version and SHA-256.
+  WINTUN_VERSION: 0.14.1
+  WINTUN_SHA256: 07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51
+
+jobs:
+  version:
+    name: Read the version from the tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - name: Check that the tag names a preview release
+        id: tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=${TAG#v}
+          if ! printf '%s\n' "$version" | grep -Eqx '0\.0\.(0|[1-9][0-9]*)-preview\.[1-9][0-9]*'; then
+            echo "release: $TAG is not v0.0.PATCH-preview.N. A release that is not a preview needs the release key of ARFC 0017 clause 3.14 first." >&2
+            exit 1
+          fi
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+
+  linux:
+    name: Build linux-${{ matrix.arch }}
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        include:
+          # A static musl build runs on Ubuntu 22.04 and later and on Debian 13.
+          - arch: x86_64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      TARGET: ${{ matrix.target }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned toolchain and the target
+        run: |
+          rustup toolchain install --no-self-update
+          rustup target add "$TARGET"
+          sudo apt-get update -q
+          sudo apt-get install -yq --no-install-recommends musl-tools
+
+      - name: Set the binaries' version to the tag's version
+        run: |
+          sh packaging/set-version.sh "$VERSION"
+          cargo update --workspace
+          git diff --stat
+
+      - name: Build alloy and alloyd
+        run: cargo build --release --locked --target "$TARGET" -p alloy -p alloyd
+
+      - name: Check that the binaries are static and print the version
+        run: |
+          for b in alloy alloyd; do
+            f="target/$TARGET/release/$b"
+            if readelf -l "$f" | grep -q 'program interpreter'; then
+              echo "release: $f is linked dynamically" >&2
+              exit 1
+            fi
+            out=$("$f" version)
+            if [ "$out" != "$VERSION" ]; then
+              echo "release: $b version printed '$out', not $VERSION" >&2
+              exit 1
+            fi
+          done
+
+      - name: Stage the binaries and their license texts
+        run: |
+          mkdir -p stage/bin
+          cp "target/$TARGET/release/alloy" "target/$TARGET/release/alloyd" stage/bin/
+          sh packaging/collect-licenses.sh "$TARGET" stage/licenses alloy alloyd
+
+      - name: Upload the staged files
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: stage-linux-${{ matrix.arch }}
+          path: stage/
+          if-no-files-found: error
+          retention-days: 1
+
+  windows:
+    name: Build windows-${{ matrix.arch }}
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: windows-2022
+            target: x86_64-pc-windows-msvc
+            wintun: amd64
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      TARGET: ${{ matrix.target }}
+      # The C runtime is linked statically, so the binaries need no Visual C++
+      # redistributable on the machine.
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned toolchain and the target
+        run: |
+          rustup toolchain install --no-self-update
+          rustup target add "$TARGET"
+
+      - name: Set the binaries' version to the tag's version
+        run: |
+          sh packaging/set-version.sh "$VERSION"
+          cargo update --workspace
+          git diff --stat
+
+      - name: Build alloy and alloyd
+        run: cargo build --release --locked --target "$TARGET" -p alloy -p alloyd
+
+      - name: Check that the binaries print the version
+        run: |
+          for b in alloy alloyd; do
+            out=$("target/$TARGET/release/$b.exe" version | tr -d '\r')
+            if [ "$out" != "$VERSION" ]; then
+              echo "release: $b.exe version printed '$out', not $VERSION" >&2
+              exit 1
+            fi
+          done
+
+      # ADR 0062: the DLL from the Wintun release zip, byte for byte, after the
+      # zip matches its pinned SHA-256 and the DLL's Authenticode signature
+      # verifies, with the license from the same zip.
+      - name: Fetch and check Wintun
+        shell: pwsh
+        env:
+          WINTUN_ARCH: ${{ matrix.wintun }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = "wintun-$env:WINTUN_VERSION.zip"
+          Invoke-WebRequest -Uri "https://www.wintun.net/builds/$zip" -OutFile $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $env:WINTUN_SHA256) { throw "$zip has the SHA-256 $hash, not the pinned $env:WINTUN_SHA256" }
+          Expand-Archive $zip -DestinationPath wintun-zip
+          $dll = "wintun-zip/wintun/bin/$env:WINTUN_ARCH/wintun.dll"
+          $sig = Get-AuthenticodeSignature $dll
+          if ($sig.Status -ne 'Valid') { throw "the Authenticode signature of $dll is $($sig.Status)" }
+          "Authenticode signature of ${dll}: $($sig.Status), $($sig.SignerCertificate.Subject)"
+          New-Item -ItemType Directory -Force stage/bin, stage/licenses | Out-Null
+          Copy-Item $dll stage/bin/wintun.dll
+          Copy-Item wintun-zip/wintun/LICENSE.txt stage/licenses/wintun.txt
+
+      - name: Stage the binaries and their license texts
+        run: |
+          cp "target/$TARGET/release/alloy.exe" "target/$TARGET/release/alloyd.exe" stage/bin/
+          sh packaging/collect-licenses.sh "$TARGET" stage/licenses alloy alloyd
+
+      - name: Upload the staged files
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: stage-windows-${{ matrix.arch }}
+          path: stage/
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish the release
+    needs: [version, linux, windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write # create the release and upload its assets
+      id-token: write # sign the provenance attestations
+      attestations: write # store them
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the release scripts
+        run: sh packaging/check.sh
+
+      - name: Download the staged files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: stage-*
+          path: staged
+
+      - name: Assemble the archives
+        run: |
+          for d in staged/stage-*; do
+            platform=${d#staged/stage-}
+            sh packaging/make-archive.sh "$VERSION" "${platform%%-*}" "${platform#*-}" "$d" dist
+          done
+
+      # Clause 3.14: the digests go into both install scripts before anything
+      # is published.
+      - name: Write the digests into the install scripts, and SHA256SUMS
+        run: sh packaging/stamp.sh "$VERSION" dist
+
+      - name: Attest the provenance of every asset
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "$VERSION" in
+            *-preview.*) prerelease=--prerelease ;;
+            *)
+              echo "release: $VERSION is not a preview" >&2
+              exit 1
+              ;;
+          esac
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG"
+          {
+            echo "Alloy $VERSION, a preview release: it makes no compatibility promise, and a cluster on it moves to another release only by being created again (ARFC 0017 clause 3.13)."
+            echo
+            echo "Linux and macOS: \`curl -fsSL $url/install.sh | sh\`"
+            echo
+            echo "Windows, from an elevated PowerShell: \`irm $url/install.ps1 | iex\`"
+            echo
+            echo "Every asset carries a build provenance attestation: \`gh attestation verify <asset> --repo $GITHUB_REPOSITORY\`"
+          } >notes.md
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag \
+            "$prerelease" --title "$TAG" --notes-file notes.md

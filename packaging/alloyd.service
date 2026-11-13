@@ -1,0 +1,16 @@
+[Unit]
+Description=Alloy node daemon
+Documentation=https://github.com/tundrasgg/alloy
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/usr/local/bin/alloyd
+Restart=on-failure
+RestartSec=5
+KillMode=process
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
