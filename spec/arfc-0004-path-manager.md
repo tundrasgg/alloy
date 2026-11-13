@@ -91,7 +91,7 @@ When node A first has traffic for node B:
    that peer's **advertised** candidates.
 3. Both sides send probes on every candidate pair whose far end is an advertised
    candidate of the peer, 5 rounds, 200 ms apart, on the same socket that carries
-   data. The 5 rounds that one trigger starts (first traffic, the signal of step
+   data, within the probe budget of section 3.4. The 5 rounds that one trigger starts (first traffic, the signal of step
    2, or a trigger under section 3.4) form a **probe set**. A node is **probing**
    a peer from the first round of a probe set toward it until 1 second after that
    set's fifth round.
@@ -115,18 +115,21 @@ When node A first has traffic for node B:
    from an endpoint that is not verified (step 6). A message without a challenge
    is never answered.
 6. An **echo** from an endpoint E of a peer is an accepted probe message from E
-   that echoes a challenge the node sent to E no more than 2 seconds earlier. A
-   challenge is used up by the first accepted message that echoes it, whatever
-   endpoint that message came from. A node holds each challenge it sent until it
-   is used up or 2 seconds old, and then discards it. E **becomes verified** at
-   an echo from E while E is not verified. The local candidate from which the
-   node sent the challenge that this echo answers is then E's **near endpoint**,
-   and stays so while E stays verified. The node sends every packet to E from
-   E's near endpoint, except the probes of its probe sets on other candidate
-   pairs (step 3) and its answers (step 5). E stays **verified** until the first
-   moment when either of these holds:
-   - E **fails**: three consecutive checks of the direct path to E are missed
-     (section 3.4);
+   that echoes a challenge the node sent to E no more than 2 seconds earlier and
+   still holds. A challenge is used up by the first accepted message that echoes
+   it, whatever endpoint that message came from. A node holds each challenge it
+   sent until it is used up or 2 seconds old, and then discards it, except that
+   it discards the challenges of a path's outstanding checks at once when the
+   path's far endpoint stops being verified (section 3.4), and that a table of
+   section 7 at its bound drops one. A message that echoes a challenge the node
+   has discarded or dropped is no echo: it verifies nothing and keeps nothing
+   verified. E **becomes verified** at an echo from E while E is not verified.
+   The local candidate from which the node sent the challenge that this echo
+   answers is then E's **near endpoint**, and stays so while E stays verified.
+   The node sends every packet to E from E's near endpoint, except the probes of
+   its probe sets on other candidate pairs (step 3) and its answers (step 5). E
+   stays **verified** until the first moment when either of these holds:
+   - E **fails**, as section 3.4 defines;
    - no `usable` path uses E, the node is not probing the peer, and the latest
      echo from E is 2 seconds old or older.
 
@@ -178,15 +181,17 @@ A node must be reachable through a relay within 2 seconds of joining, or within 
 seconds when no anchor answers it over UDP and it reaches them over the `stream`
 underlay (section 3.6). A direct path, where section 3.3 expects one, must become
 active within 5 seconds of first traffic. That bound assumes that the signal of
-step 2 reaches B within 750 ms of A's first traffic and that the one-way delay
-between A and B is at most 500 ms. Within these delays the two first probe sets
-suffice: in cases 2 and 3 of section 3.3 the last endpoint a side needs becomes
-usable at most five one-way delays and one probe round interval (200 ms) after
-B's first probe, and at most 3.25 seconds after first traffic, and the 2 second
-floor of step 6 keeps every verification it needs until then. A later signal can reach B after A's last probe round has
-passed, and the two probe sets then do not overlap enough to verify the
-endpoints that cases 2 and 3 need. Beyond these delays the bound does not apply,
-and the pair may stay on the relay.
+step 2 reaches B within 750 ms of A's first traffic, that the one-way delay
+between A and B is at most 500 ms, and that each probe set covers at most 18
+candidate pairs, so that the probe budget of section 3.4 withholds none of its
+probes. Within these delays the two first probe sets suffice: in cases 2 and 3
+of section 3.3 the last endpoint a side needs becomes usable at most five
+one-way delays and one probe round interval (200 ms) after B's first probe, and
+at most 3.25 seconds after first traffic, and the 2 second floor of step 6 keeps
+every verification it needs until then. A later signal can reach B after A's
+last probe round has passed, and the two probe sets then do not overlap enough
+to verify the endpoints that cases 2 and 3 need. Beyond these delays the bound
+does not apply, and the pair may stay on the relay.
 
 ### 3.3 NAT traversal
 
@@ -240,24 +245,36 @@ this section. The time bounds are those of section 3.2.
   3.5), and answers are not checks, and their loss changes nothing here. The
   node sends a check whenever it has sent none on the path for 25 seconds. In
   each round of each of its probe sets toward the peer it sends one check on
-  every usable direct path: the round's probe on the pair of E's near endpoint
-  and E when E is an advertised candidate, and otherwise one probe more on that
-  pair. The peer answers each check as section 3.2 step 5 says, and an echo
-  keeps E verified. These checks are the path's keepalive: a NAT that refreshes
-  its state on outbound packets, as RFC 4787 REQ-6 requires
-  (`research/R-0003.md`), and whose mapping timeout is 30 seconds or more
-  therefore never drops the state of an active direct path.
+  every usable direct path, within the probe budget below: the round's probe on
+  the pair of E's near endpoint and E when E is an advertised candidate, and
+  otherwise one probe more on that pair. The peer answers each check as section
+  3.2 step 5 says, and an echo keeps E verified. These checks are the path's
+  keepalive: a NAT that refreshes its state on outbound packets, as RFC 4787
+  REQ-6 requires (`research/R-0003.md`), and whose mapping timeout is 30 seconds
+  or more therefore never drops the state of an active direct path.
 - A check is **outstanding** from when it is sent until it is echoed from E or
   missed. It is **missed** when 2 seconds pass after it was sent without an echo
   from E of its challenge, including when a message from another endpoint used
   the challenge up first. E **fails** at the moment a check is missed when the
-  two checks the node sent on the path just before it were also missed and no
-  check it sent on the path after it has been echoed. When a check is missed and
-  E does not fail at that moment, the node sends another check at once if no
-  check of the path is outstanding and it is not probing the peer. Whether a
-  check is missed and whether E fails depend only on checks sent before that
-  moment, so they do not depend on the order in which a node applies these
-  rules at one instant.
+  two checks the node sent on the path just before it, since E last became
+  verified, were also missed and no check it sent on the path after it has been
+  echoed. When a check is missed and E does not fail at that moment, the node
+  sends another check at once if no check of the path is outstanding and it is
+  not probing the peer. Whether a check is missed and whether E fails depend
+  only on checks sent before that moment, so they do not depend on the order in
+  which a node applies these rules at one instant.
+- A node holds the challenges of a path's outstanding checks apart from the
+  challenges of its other probes (section 7), so no other probe it sends, in any
+  number, displaces one: a check stops being outstanding only when it is echoed
+  from E or missed. The rules above leave at most 11 checks of one path
+  outstanding: a check is outstanding for at most 2 seconds, in any 2 seconds
+  at most two probe sets send rounds (a set's rounds span 800 ms, and at most 2
+  sets start in any 5 seconds, as below), each at most 5 checks on the path,
+  and the 25 second check and the retry are each sent only when no check of the
+  path is outstanding. When E stops being verified, the node
+  forgets the path's checks, the outcomes of those already resolved and the
+  outstanding ones with their challenges. A path that becomes usable again
+  therefore fails only when three consecutive checks sent since then are missed.
 - A direct path whose far endpoint fails is no longer usable and is `failed`.
   Traffic moves at once to the path section 3.2 step 9 chooses, the relay when
   no direct path is usable. A far endpoint that stops echoing therefore fails at
@@ -265,9 +282,12 @@ this section. The time bounds are those of section 3.2.
   moment its path became usable (25 seconds to the next check, then three
   checks 2 seconds apart), and at most 2.4 seconds after the start of a probe
   set none of whose checks it echoes (three rounds 200 ms apart, the third
-  missed 2 seconds after it was sent). A working path's far endpoint fails only
+  missed 2 seconds after it was sent). The 2.4 seconds hold for the active
+  path, and for every usable direct path while the node has at most 6 besides
+  the active one: with more, the probe budget below can withhold round checks
+  of the paths that are not active. A working path's far endpoint fails only
   when three consecutive checks of that path, each sent from its near endpoint
-  without padding, go unechoed.
+  without padding since the far endpoint last became verified, go unechoed.
 - Version 1 does not adapt the keepalive interval to the NAT. Behind a NAT whose
   mapping timeout is under 25 seconds, packets sent on an idle direct path may be
   lost until the path carries packets again or its far endpoint fails. The lab
@@ -303,6 +323,58 @@ this section. The time bounds are those of section 3.2.
   verified. A trigger beyond the bound starts no probe set when it arrives. The
   node starts one probe set, signaled to the peer, at the earliest time the bound
   allows, and every trigger that arrives before then is served by that one.
+- A node keeps a **probe budget** for each peer. It sends a probe, padded or
+  not, only while the probes of the same kind that it sealed to that peer, over
+  all its sessions with the peer, in the 2 seconds before number fewer than the
+  kind's limit:
+
+  | Kind | Limit |
+  |---|---|
+  | Checks of the active direct path, and checks not sent in a round of a probe set | None |
+  | Other checks: those sent in a round on a path that is not the active one | 60 |
+  | Padded probes (section 3.5) | 20 |
+  | Every other probe: the probes of probe sets that are not checks, and reflection requests (section 3.1.2) | 180 |
+
+  A probe that its limit does not allow is not sent, and a check not sent is no
+  check: it is never outstanding and never missed. In each round a node sends
+  its checks first, the active path's first and then the others, most recently
+  echoed far endpoint first. It then probes the other candidate pairs in an order
+  it keeps for the peer, starting after the last of them it probed in the round
+  before, so that while the pairs do not change it probes none of them twice
+  before it has probed each once.
+
+  The kind without a limit stays at 74 in any 2 seconds. At most 10 rounds of
+  probe sets fall within 2 seconds (a set's rounds span 800 ms, and at most 2
+  sets start in any 5 seconds), each with one check on the active path. A path's
+  checks sent outside rounds are at least 2 seconds apart, on at most 64 usable
+  direct paths (section 7): a 25 second check follows 25 seconds without a
+  check, and a retry follows the miss of a check sent 2 seconds earlier, which
+  was outstanding throughout, when no check outside rounds could be sent on the
+  path. A node therefore seals at most 334 probes to a peer in any 2 seconds. It
+  withholds a round check of a path that is not active only when 60 such checks
+  went out in the 2 seconds before, which needs 7 or more usable direct paths
+  besides the active one, and no probe set or path MTU search makes it withhold
+  a check. A probe set over at most 18 candidate pairs loses no probe to the
+  budget; a larger one probes its pairs over several rounds.
+- A probe message that arrives 2 seconds or more after it was sealed is
+  **late**. Every probe message a node seals that is not a probe is an answer,
+  one per challenge-bearing message accepted from the peer (section 3.2 step 5),
+  and an answer carries a challenge only when it answers a probe. While no probe
+  message between two nodes is late, each seals at most 2,004 probe messages to
+  the other in any 2 seconds: 334 probes; at most 668 answers to the other's
+  probes, which the other sealed within a span of 4 seconds; and at most 1,002
+  answers to the other's answers that carry a challenge, which answer the
+  node's own probes sealed within a span of 6 seconds. The probe replay window
+  (ARFC 0003 section 3.6) rejects a message that is not a copy of one already
+  accepted only once it has accepted a message of the same session sealed
+  2,048 or more counters later. With at most 2,004 in any 2 seconds, that later
+  message was sealed 2 seconds or more after the first, which is then late. So
+  while no probe message between the two nodes is late, the window rejects no
+  check and no answer to a check, however many candidate pairs the probe sets
+  of either side cover, and no probe set makes a check missed. Late messages
+  can make a node seal more answers than these counts, and the window can then
+  reject a check or its answer that is neither lost nor overtaken. Late
+  messages are the only way a probe set can take part in that.
 
 ### 3.5 Path MTU
 
@@ -311,7 +383,9 @@ start at 1,280, search up to the interface MTU, re-probe every 10 minutes and on
 loss of large packets only. Padded probes go only to the verified far endpoint of
 a usable direct path (section 3.2 step 7), from its near endpoint. They are not
 checks: a padded probe that goes unechoed makes no far endpoint fail (section
-3.4). Relayed paths use 1,280 until probed.
+3.4). A node sends at most 20 padded probes to a peer in any 2 seconds, and a
+padded probe its probe budget withholds is not sent (section 3.4). Relayed
+paths use 1,280 until probed.
 The payload budget is the path MTU minus the overhead in ARFC 0003.
 
 ### 3.6 Underlays
@@ -363,9 +437,10 @@ Every table of this ARFC, its bound, and what happens at the bound:
 |---|---|---|
 | Candidates of a node, its own and those it holds for each peer, peer-reflexive included (section 3.2 step 6) | 64 | A new peer-reflexive candidate replaces the least recently verified peer-reflexive one of that peer, or is not recorded if there is none |
 | Verified endpoints of a peer, each with its near endpoint, the time it became verified, its latest echo, and whether a transport packet arrived since it became verified (section 3.2 steps 6 and 8) | The peer's candidates, 64 | As for candidates |
-| Outcomes of a usable direct path's checks that the fail rule reads (section 3.4): the send order of its outstanding checks, and whether each of its 3 latest checks in send order that are no longer outstanding was echoed or missed | Outstanding checks are held as probe challenges (row below); 3 resolved checks | The earliest resolved check is forgotten. A check whose challenge was dropped is missed 2 seconds after it was sent |
+| Checks of a usable direct path (section 3.4): each outstanding check's challenge, held until it is echoed or missed, in send order; and whether each of the path's 3 latest checks in send order that are no longer outstanding was echoed or missed. All of it is forgotten when the far endpoint stops being verified, and an echo of a forgotten challenge verifies nothing (section 3.2 step 6) | 11 outstanding checks per path, so at most 704 per peer (64 verified endpoints); 3 resolved checks | The rules of section 3.4 never send a 12th check while 11 are outstanding, so no check's challenge is dropped before the check is echoed or missed. The earliest resolved check is forgotten |
 | Challenges a node sent in answers to one peer (section 3.2 step 5), each held until used up or 2 seconds old | 64 | The oldest is dropped; an echo of a dropped challenge verifies nothing |
-| Challenges a node sent in probes to one peer, checks and padded probes included, each held until used up or 2 seconds old | 1,024 | As above |
+| Challenges a node sent in probes to one peer, padded probes included and checks excluded (row above), each held until used up or 2 seconds old | 1,024 | As above. No check is dropped here. The probe budget (section 3.4) sends at most 200 such probes to a peer in any 2 seconds, so the table never reaches its bound |
+| Probe budget of one peer (section 3.4): the kind and send time of each probe the node sealed to the peer in the last 2 seconds | 334: 60 other checks, 20 padded probes, 180 other probes, and the 74 checks without a limit that the rules of section 3.4 allow | A probe of a kind at its limit is not sent. The checks without a limit never pass 74 |
 | Probe set start times per peer within the last 5 minutes, and deferred probe sets (section 3.4) | 20, and 1 deferred set | Later triggers start no probe set and are served by the deferred one |
 | Current endpoint of a homed node at an anchor (section 3.1.2) | 1 | A new echo replaces it |
 | Challenges an anchor sent to one homed node, each held until used up or 2 seconds old (section 3.1.2) | 4 | The oldest is dropped, as above |
@@ -392,9 +467,9 @@ endpoint of a homed node (section 3.1.2), a node or an anchor sends only these
 packets, and no others:
 
 1. Probes without padding, only if the endpoint is an advertised candidate of the
-   peer: one per candidate pair per round, 5 rounds per probe set, and at most 2
-   probe sets toward that peer in any 5 seconds and 20 in any 5 minutes (section
-   3.4).
+   peer: at most one per candidate pair per round, 5 rounds per probe set, at
+   most 2 probe sets toward that peer in any 5 seconds and 20 in any 5 minutes,
+   and at most 180 such probes to that peer in any 2 seconds (section 3.4).
 2. Answers: at most one per accepted challenge-bearing message received from that
    endpoint, each no larger than that message, and, at a node, only while it is
    probing the sender (section 3.2 steps 5 and 7). An anchor sends at most one
@@ -432,9 +507,14 @@ minutes. Upholds I-06, I-08, I-21.
 
 ### Moves need a fresh echo
 
-A node or an anchor moves where it sends a peer's or a homed node's traffic only
-on an echo, from the new endpoint, of a challenge it sent there no more than 2
-seconds earlier. A node moves to a direct path whose far endpoint echoed and then
+A node or an anchor moves where it sends a peer's or a homed node's traffic to a
+new endpoint only on an echo, from that endpoint, of a challenge it sent there
+no more than 2 seconds earlier. The one send that needs no echo is an anchor's
+to a node homed over `stream`: from the moment the home session on the
+connection the node opened is open, the anchor sends to that node only on that
+connection (section 3.6). A connection the node opened is not an endpoint that a
+packet names, and no packet, over UDP or on that connection, moves the anchor's
+sends off it. A node moves to a direct path whose far endpoint echoed and then
 sent it a transport packet, and only from the relay or from a path whose far
 endpoint failed (section 3.2 step 9). An anchor moves to the endpoint that echoed
 most recently (section 3.1.2). No transport packet, relay envelope, or probe
@@ -465,14 +545,21 @@ Redirection by this attacker is therefore not nil. It is bounded as follows:
   packet of the peer accepted from V (section 3.2 step 8). A node whose active
   path is the relay, as on every pair section 3.3 classes `relayed`, moves to V
   at once. A node whose active direct path works moves only once that path's far
-  endpoint E fails, that is when three consecutive checks of the path are missed
-  (section 3.4). Probes on other candidate pairs and padded probes do not count,
+  endpoint E fails, that is when three consecutive checks of the path sent since
+  E last became verified are missed (section 3.4). Probes on other candidate
+  pairs and padded probes do not count. However many candidate pairs a probe
+  set covers, none of them displaces a check's challenge (section 7) or
+  withholds a check, and while no probe message between the two nodes is late
+  the probe replay window rejects no check and no answer to one (section 3.4),
   so starting a probe set or a path MTU search fails nothing by itself. The
   attacker must keep the echo of each of those three checks from being accepted
   from E. Dropping the check or the answer does that, and so does overtaking:
   a copy of the peer's answer accepted from any other source before the genuine
   one uses the challenge up, and the genuine answer is then a replay (section
-  3.2 steps 4 and 6). Overtaking drops no packet. Either way the third check is
+  3.2 steps 4 and 6). Overtaking drops no packet. Delay does it too: probe
+  messages of the session held until they are late can make the two nodes seal
+  enough answers to move the replay window past a check or its answer (section
+  3.4), and delay drops no packet either. Whichever the means, the third check is
   missed more than 2 seconds after the first was sent: 2.4 seconds within one
   probe set, whose rounds send a check every 200 ms, which the attacker can
   start with one transport packet of the peer accepted from a source that is
@@ -486,10 +573,11 @@ Redirection by this attacker is therefore not nil. It is bounded as follows:
   path, or the anchor to that homed node: session traffic, keepalives, checks,
   padded probes, relay envelopes, and signaling. The attacker cannot raise their
   rate.
-- End at a node: the node checks V at least every 25 seconds and in every round
-  of its probe sets toward the peer (section 3.4). Once the attacker stops
-  carrying exchanges through V, V fails and the node stops sending to it at most
-  31 seconds after the last echo of a check accepted from V.
+- End at a node: the node checks V at least every 25 seconds, and in every
+  round of its probe sets toward the peer while V's path is active (section
+  3.4). Once the attacker stops carrying exchanges through V, V fails and the
+  node stops sending to it at most 31 seconds after the last echo of a check
+  accepted from V.
 - End at an anchor: at the node's next reflection exchange that completes from
   its own endpoint, at most 25 seconds and two round trips after the last echo
   accepted from V, or, if the attacker also keeps the node's own exchanges from
