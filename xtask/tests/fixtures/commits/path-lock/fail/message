@@ -1,0 +1,6 @@
+feat(alloy-rt): implement the clock trait
+
+The build task also edits the conformance suite.
+
+Task: T-0101, T-0103
+Spec: arfc-0005#3.2

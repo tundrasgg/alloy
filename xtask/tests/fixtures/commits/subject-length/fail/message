@@ -1,0 +1,5 @@
+feat(xtask): check commit messages on main against all of the rules in git.md
+
+The subject is 77 characters long.
+
+Task: T-0101

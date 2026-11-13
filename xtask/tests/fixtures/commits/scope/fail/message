@@ -1,0 +1,4 @@
+feat(alloy-links): add handshake retry with bounded backoff
+
+Task: T-0101
+Spec: arfc-0003#4.2

@@ -1,0 +1,6 @@
+feat(xtask): check commit messages on main
+
+cargo xtask check-commits walks a revision range along the first
+parent and reports each commit whose message breaks a rule.
+
+Task: T-0101

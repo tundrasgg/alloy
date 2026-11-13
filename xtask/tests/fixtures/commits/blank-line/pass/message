@@ -1,0 +1,5 @@
+docs(agent): adopt Conventional Commits for commits on main
+
+agent/eng/git.md now specifies Conventional Commits 1.0.0.
+
+Task: T-0101

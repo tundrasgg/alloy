@@ -125,6 +125,17 @@ pub(crate) fn git(root: &Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// The text of `path` as it is on `rev`, or `None` when `rev` has no file there.
+///
+/// Fails when git fails, for example because `rev` does not exist.
+pub(crate) fn file_at(root: &Path, rev: &str, path: &str) -> Result<Option<String>, String> {
+    let listed = git(root, &["ls-tree", "--name-only", rev, "--", path])?;
+    if listed.trim().is_empty() {
+        return Ok(None);
+    }
+    git(root, &["show", &format!("{rev}:{path}")]).map(Some)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

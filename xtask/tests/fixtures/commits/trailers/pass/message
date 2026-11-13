@@ -1,0 +1,5 @@
+ci(ci): run cargo xtask ci in GitHub Actions
+
+One workflow runs cargo xtask ci for pushes to main and pull requests.
+
+Task: T-0101

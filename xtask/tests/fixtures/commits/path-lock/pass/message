@@ -1,0 +1,6 @@
+feat(alloy-rt): implement the clock trait
+
+The paired verify task adds its conformance suite.
+
+Task: T-0101, T-0102
+Spec: arfc-0005#3.2

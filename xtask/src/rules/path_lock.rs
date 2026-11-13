@@ -33,11 +33,7 @@ pub(super) fn check(diff: Option<&BranchDiff>) -> Vec<Violation> {
             ),
         )];
     };
-    let kind = front_matter(text)
-        .ok()
-        .and_then(|fields| fields.into_iter().find(|f| f.key == "type"))
-        .map(|f| f.value);
-    let Some(kind) = kind else {
+    let Some(kind) = task_type(text) else {
         return vec![violation(
             &task_path,
             "the task file on the base ref has no `type` in its front matter".to_owned(),
@@ -48,7 +44,7 @@ pub(super) fn check(diff: Option<&BranchDiff>) -> Vec<Violation> {
     }
     diff.changed
         .iter()
-        .filter(|path| LOCKED.iter().any(|prefix| path.starts_with(prefix)))
+        .filter(|path| is_locked(path))
         .map(|path| {
             violation(
                 path,
@@ -61,6 +57,26 @@ pub(super) fn check(diff: Option<&BranchDiff>) -> Vec<Violation> {
         .collect()
 }
 
+/// True when `path` is under one of the paths written only on verifier branches.
+pub(crate) fn is_locked(path: &str) -> bool {
+    LOCKED.iter().any(|prefix| path.starts_with(prefix))
+}
+
+/// The `type` field of a task file's front matter, or `None` when the file has
+/// no readable front matter or no `type`.
+pub(crate) fn task_type(text: &str) -> Option<String> {
+    front_matter(text)
+        .ok()
+        .and_then(|fields| fields.into_iter().find(|f| f.key == "type"))
+        .map(|f| f.value)
+}
+
+/// True for a task id: `T-` followed by at least four digits.
+pub(crate) fn is_task_id(id: &str) -> bool {
+    id.strip_prefix("T-")
+        .is_some_and(|digits| digits.len() >= 4 && digits.chars().all(|c| c.is_ascii_digit()))
+}
+
 /// The task file of a task branch: `plan/tasks/T-NNNN.md` for `task/T-NNNN`, and
 /// `None` for any other branch.
 pub(crate) fn task_file(branch: &str) -> Option<String> {
@@ -70,8 +86,7 @@ pub(crate) fn task_file(branch: &str) -> Option<String> {
 /// The task id in a task branch name, `task/T-NNNN`.
 fn task_id(branch: &str) -> Option<&str> {
     let id = branch.strip_prefix("task/")?;
-    let digits = id.strip_prefix("T-")?;
-    (digits.len() >= 4 && digits.chars().all(|c| c.is_ascii_digit())).then_some(id)
+    is_task_id(id).then_some(id)
 }
 
 #[cfg(test)]

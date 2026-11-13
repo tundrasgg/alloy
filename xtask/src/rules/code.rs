@@ -6,7 +6,7 @@
 //! raw string, and character literals, and nothing else of Rust's grammar.
 
 use super::{Rule, Violation};
-use crate::text::{find_token, is_ident};
+use crate::text::{find_token, is_ident, package_name};
 use crate::tree::Tree;
 
 /// Crates that may call the operating system directly (`agent/eng/rust.md`,
@@ -330,22 +330,7 @@ fn crate_name(tree: &Tree, path: &str) -> String {
     let manifest = tree
         .read(&format!("crates/{dir}/Cargo.toml"))
         .unwrap_or_default();
-    let mut in_package = false;
-    for line in manifest.lines().map(str::trim) {
-        if line.starts_with('[') {
-            in_package = line == "[package]";
-        } else if in_package {
-            let value = line
-                .strip_prefix("name")
-                .map(str::trim_start)
-                .and_then(|rest| rest.strip_prefix('='))
-                .map(|v| v.trim().trim_matches('"'));
-            if let Some(name) = value.filter(|v| !v.is_empty()) {
-                return name.to_owned();
-            }
-        }
-    }
-    dir.to_owned()
+    package_name(&manifest).unwrap_or(dir).to_owned()
 }
 
 fn with_sources<F>(tree: &Tree, rule: Rule, mut visit: F) -> Vec<Violation>

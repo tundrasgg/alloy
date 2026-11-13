@@ -1,0 +1,6 @@
+spec(spec): bound lineage state in ARFC 0007 section 3.9
+
+Derivation is carried in the signed token.
+
+Spec: arfc-0007#2.3, arfc-0007#3.9
+Task: T-0101, T-0102

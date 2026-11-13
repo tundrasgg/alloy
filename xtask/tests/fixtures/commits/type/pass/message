@@ -1,0 +1,3 @@
+refactor(xtask): share the task file reader between rules
+
+Task: T-0101

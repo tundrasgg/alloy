@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+mod commits;
 mod rules;
 mod text;
 mod tree;
@@ -25,6 +26,9 @@ usage: cargo xtask <task> [options]
 tasks:
   ci          run every check of the quality gate, stopping at the first failure
   check-repo  run the repository policy checks
+  check-commits <rev-range>
+              check the messages of the commits in <rev-range>, along the first
+              parent, against the format for commits on main
   help        print this message
 
 options for ci and check-repo:
@@ -42,6 +46,8 @@ const FIXTURES: &str = "xtask/tests/fixtures/";
 enum Task {
     Ci(Options),
     CheckRepo(Options),
+    /// Checks the commits in a git revision range.
+    CheckCommits(String),
     Help,
 }
 
@@ -69,6 +75,8 @@ enum UsageError {
     BadValue(&'static str, String),
     /// `--branch` was given without `--base`.
     BranchWithoutBase,
+    /// `check-commits` was given no revision range.
+    MissingRange,
 }
 
 impl fmt::Display for UsageError {
@@ -80,6 +88,7 @@ impl fmt::Display for UsageError {
             Self::MissingValue(flag) => write!(f, "`{flag}` needs a value"),
             Self::BadValue(flag, value) => write!(f, "`{flag}` cannot be `{value}`"),
             Self::BranchWithoutBase => write!(f, "`--branch` needs `--base`"),
+            Self::MissingRange => write!(f, "`check-commits` needs a revision range"),
         }
     }
 }
@@ -96,6 +105,7 @@ where
     match first.to_str() {
         Some("ci") => parse_options(args).map(Task::Ci),
         Some("check-repo") => parse_options(args).map(Task::CheckRepo),
+        Some("check-commits") => parse_range(args).map(Task::CheckCommits),
         Some("help" | "-h" | "--help") => match args.next() {
             Some(extra) => Err(UsageError::Extra(extra.to_string_lossy().into_owned())),
             None => Ok(Task::Help),
@@ -127,6 +137,22 @@ where
         return Err(UsageError::BranchWithoutBase);
     }
     Ok(options)
+}
+
+/// Parses the one revision range `check-commits` takes.
+fn parse_range<I>(mut args: I) -> Result<String, UsageError>
+where
+    I: Iterator<Item = OsString>,
+{
+    let range = args.next().ok_or(UsageError::MissingRange)?;
+    let range = range.to_string_lossy().into_owned();
+    if range.is_empty() || range.starts_with('-') {
+        return Err(UsageError::BadValue("check-commits", range));
+    }
+    match args.next() {
+        Some(extra) => Err(UsageError::Extra(extra.to_string_lossy().into_owned())),
+        None => Ok(range),
+    }
 }
 
 /// A cargo subcommand that is installed separately from cargo.
@@ -343,7 +369,7 @@ fn branch_diff(root: &Path, base: &str, branch: Option<&str>) -> Result<BranchDi
         .map(str::to_owned)
         .collect();
     let base_task = match rules::task_file(&branch) {
-        Some(path) => file_at(root, base, &path)?,
+        Some(path) => tree::file_at(root, base, &path)?,
         None => None,
     };
     Ok(BranchDiff {
@@ -353,15 +379,25 @@ fn branch_diff(root: &Path, base: &str, branch: Option<&str>) -> Result<BranchDi
     })
 }
 
-/// The text of `path` as it is on `rev`, or `None` when `rev` has no file there.
-///
-/// Fails when git fails, for example because `rev` does not exist.
-fn file_at(root: &Path, rev: &str, path: &str) -> Result<Option<String>, String> {
-    let listed = tree::git(root, &["ls-tree", "--name-only", rev, "--", path])?;
-    if listed.trim().is_empty() {
-        return Ok(None);
+/// Checks the commits in `range` and prints each breach with its commit id.
+fn check_commits(root: &Path, range: &str) -> Result<(), Failure> {
+    let failure = |detail| Failure {
+        step: "check-commits",
+        detail,
+    };
+    let verdicts = commits::check_range(root, range).map_err(failure)?;
+    let mut breaches = 0;
+    for verdict in &verdicts {
+        for breach in &verdict.breaches {
+            eprintln!("{}: {}: {}", verdict.id, breach.rule.name(), breach.message);
+            breaches += 1;
+        }
     }
-    tree::git(root, &["show", &format!("{rev}:{path}")]).map(Some)
+    eprintln!("xtask: checked {} commit(s) in `{range}`", verdicts.len());
+    match breaches {
+        0 => Ok(()),
+        n => Err(failure(format!("{n} commit rule violation(s)"))),
+    }
 }
 
 fn main() -> ExitCode {
@@ -382,6 +418,7 @@ fn main() -> ExitCode {
         Task::CheckRepo(options) => {
             run_steps(&[Step::CheckRepo], |step| exec_step(step, &root, &options))
         }
+        Task::CheckCommits(range) => check_commits(&root, &range),
     };
     match result {
         Ok(()) => {
@@ -420,6 +457,26 @@ mod tests {
         assert_eq!(parse(args(&["help"])), Ok(Task::Help));
         assert_eq!(parse(args(&["--help"])), Ok(Task::Help));
         assert_eq!(parse(args(&["-h"])), Ok(Task::Help));
+        assert_eq!(
+            parse(args(&["check-commits", "40c70e9..main"])),
+            Ok(Task::CheckCommits("40c70e9..main".to_owned()))
+        );
+    }
+
+    #[test]
+    fn check_commits_takes_exactly_one_range() {
+        assert_eq!(
+            parse(args(&["check-commits"])),
+            Err(UsageError::MissingRange)
+        );
+        assert_eq!(
+            parse(args(&["check-commits", "--all"])),
+            Err(UsageError::BadValue("check-commits", "--all".to_owned()))
+        );
+        assert_eq!(
+            parse(args(&["check-commits", "a..b", "c"])),
+            Err(UsageError::Extra("c".to_owned()))
+        );
     }
 
     #[test]

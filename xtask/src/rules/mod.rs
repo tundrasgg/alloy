@@ -9,7 +9,7 @@ mod front_matter;
 mod instruction;
 mod path_lock;
 
-pub(crate) use path_lock::task_file;
+pub(crate) use path_lock::{is_locked, is_task_id, task_file, task_type};
 
 use std::fmt;
 

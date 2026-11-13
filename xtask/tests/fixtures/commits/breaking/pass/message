@@ -1,0 +1,6 @@
+feat(alloy-wire)!: widen the frame length field
+
+Frames carry a 32-bit length instead of a 16-bit one.
+
+Task: T-0101
+BREAKING CHANGE: peers on the old frame format cannot connect; ADR 0101 records the upgrade path

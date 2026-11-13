@@ -165,6 +165,27 @@ fn is_key(key: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
 }
 
+/// The `name` in the `[package]` table of a Cargo manifest, or `None` when the
+/// manifest names none.
+pub(crate) fn package_name(manifest: &str) -> Option<&str> {
+    let mut in_package = false;
+    for line in manifest.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_package = line == "[package]";
+        } else if in_package {
+            let value = line
+                .strip_prefix("name")
+                .map(str::trim_start)
+                .and_then(|rest| rest.strip_prefix('='))
+                .map(|v| v.trim().trim_matches('"'));
+            if let Some(name) = value.filter(|v| !v.is_empty()) {
+                return Some(name);
+            }
+        }
+    }
+    None
+}
+
 /// Parses a front matter list, `[a, b]` or `[]`. Returns `None` when the value
 /// is not bracketed or holds an empty item.
 pub(crate) fn list_items(value: &str) -> Option<Vec<&str>> {
