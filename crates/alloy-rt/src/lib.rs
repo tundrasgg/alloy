@@ -1,0 +1,46 @@
+//! The runtime interface of Alloy (ARFC 0005 sections 2.1 to 2.5).
+//!
+//! All of Alloy reaches the world through five seams: [`Clock`], [`Net`],
+//! [`DiskIo`], [`Rng`], and [`Spawn`]. A [`Runtime`] bundles one instance of
+//! each, and every component takes a `Runtime` at construction and uses
+//! nothing else for time, network, storage, randomness, or concurrency. In
+//! production the `os` implementations serve the seams; under test the
+//! deterministic simulator's `mem` implementations do.
+//!
+//! Every asynchronous method returns [`BoxFuture`], which keeps the traits
+//! object safe. Network buffers are borrowed, so a receive writes into the
+//! caller's memory; disk buffers ([`IoBuf`]) are owned and moved through each
+//! call. Types that carry packet or disk bytes never print them in their
+//! `Debug` output (I-22).
+//!
+//! Methods of every seam take `&self`, may be called concurrently from any
+//! task, and never panic on any argument: invalid input returns an error.
+//! Dropping a future returned by a seam method cancels it with the guarantee
+//! stated for that method (ARFC 0005 clause 3.1.3).
+
+#![forbid(unsafe_code)]
+
+pub use alloy_seam::BoxFuture;
+
+mod disk;
+mod net;
+mod rng;
+mod runtime;
+mod task;
+mod time;
+
+pub use disk::{
+    Access, Create, DirEntry, DiskError, DiskFile, DiskIo, EntryKind, FileInfo, IoBuf,
+    MAX_DISK_BATCH, Metadata, OpenOptions, ReadDone, ReadOp, RtPath, SyncKind, WriteDone, WriteOp,
+};
+pub use net::{
+    Datagram, Interface, InterfaceAddr, InterfaceList, ListenOptions, Listener, MAX_NET_BATCH, Net,
+    NetError, RecvSlot, SendOutcome, Stream, StreamAddr, StreamOptions, UdpOptions, UdpSocket,
+    UnixPath,
+};
+pub use rng::{Rng, RngError};
+pub use runtime::{
+    ClockSeam, DiskIoSeam, Elapsed, JoinHandle, NetSeam, RngSeam, Runtime, RuntimeConfig, SpawnSeam,
+};
+pub use task::{JoinError, Spawn, SpawnError, TaskHandle, TaskId, TaskName};
+pub use time::{Clock, Instant, WallTime};

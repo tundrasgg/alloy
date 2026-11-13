@@ -1,0 +1,15 @@
+[package]
+name = "alloy-rt"
+version = "0.0.0"
+description = "The runtime seams: clock, network, disk, randomness, and tasks (ARFC 0005)."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+alloy-seam = { path = "../alloy-seam" }
+thiserror = "2.0.18"
+
+[lints]
+workspace = true

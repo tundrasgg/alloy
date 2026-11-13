@@ -34,6 +34,8 @@ allow-wildcard-paths = true
 # The allowlist. Every crate in the graph, workspace members included, must be
 # named here. Nothing else builds.
 allow = [
+    { crate = "alloy-rt", reason = "workspace member: runtime seams (ARFC 0005)" },
+    { crate = "alloy-seam", reason = "workspace member: seam registry (ARFC 0001)" },
     { crate = "alloy-wire", reason = "workspace member: AL message codec (ARFC 0003)" },
     { crate = "autocfg", reason = "build dependency of num-traits, in the proptest tree" },
     { crate = "bitflags", reason = "proptest dependency" },
