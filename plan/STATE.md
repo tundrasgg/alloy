@@ -108,8 +108,8 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0082 | build | developer | done | none | Make xtask output parsing independent of terminal color |
 | T-0083 | build | developer | active | none | Build the os implementations of the runtime seams |
 | T-0084 | verify | verifier | queued | T-0083 | Run the runtime conformance suites against os |
-| T-0085 | build | developer | review | none | Build the AL handshake and transport crypto in alloy-crypto |
-| T-0086 | verify | verifier | queued | T-0085 | Write fixed IKpsk2 handshake vectors for ARFC 0003 |
+| T-0085 | build | developer | done | none | Build the AL handshake and transport crypto in alloy-crypto |
+| T-0086 | verify | verifier | active | none | Write fixed IKpsk2 handshake vectors for ARFC 0003 |
 | T-0087 | product | product | done | none | Set the design standard for the CLI, console, and APIs |
 | T-0088 | spec | architect | active | none | Specify install, uninstall, and the Windows client node |
 | T-0089 | build | developer | queued | T-0079 | Let binary crates set their exit code |
@@ -168,7 +168,7 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 - From T-0066: decide whether consensus groups refuse binding writes from releases older than `R` during the finalization check (the one case that still stalls finalization until a resource is rebound); ARFC 0006 section 2.2 and ARFC 0002 section 2 cross-reference ARFC 0001 clause 3.13 and ARFC 0017 clause 3.11; the upgrade conformance item extends `tests/conformance/upgrade/` from ARFC 0017 clause 3.12. At merge, ARFC 0017's `Decisions` line combines T-0059's and T-0066's: `0029, 0056, 0057, 0059`.
 - Note (T-0059 re-review F1): after a failed handover, a peer whose only session was made by the successor gets no re-handshake and waits up to 120 s.
 - Notes from T-0066 re-review (fold into the next ARFC 0001 or 0017 task): ARFC 0017 clause 3.12 lacks scenarios for four rules added in T-0066 round 2 (F1); the clause 3.11 conclusion about written running releases (F2); a global-group recover from a node without the switch re-allows rollback (F3).
-- Note from T-0074 review: restore the space before `reason` in the `alloy-rt` entry of `deny.toml` (the `Hasher` doc note is folded into T-0085).
+- Notes from T-0085 review (fold into the next `alloy-crypto` task): HMAC and HKDF are composed in the crate rather than taken from the `hkdf` and `hmac` crates named in `agent/eng/crypto.md`, with no ADR (F1, fix); moved-from stack copies of a transport key and the ephemeral private key are not erased, against the report's claim (F2, note).
 - Notes from T-0063 review (fold into the next ARFC 0003 task): an unbound VNI idle across a rekey loses its first packets (F1); the 4-sessions-per-peer cap can discard the working session during handshake retries (F2); bind replies reveal which VNIs a node hosts to any session peer (F3); the 2^31 stop rule does not match session choice (F4).
 - Accepted residuals (D-0028, no further `check-repo` hardening): a direct OS call under `#[cfg(not(clippy))]`, and a build script that sets `CLIPPY_CONF_DIR` or `CLIPPY_ARGS` for its own crate, both bypass the Clippy ban; code review catches deliberate evasion (T-0068 review F1, F2).
 - From T-0008 (fold into the next ARFC 0005 task): cap the path MTU at 65,535 or `max_payload` at 65,507/65,527 (clause 3.1.8); the Unix socket permission bits in clause 3.1.9 are not observable through a seam; no deterministic trigger for `PermissionDenied` on a port. Next verify tasks: a `mem` harness for `tests/conformance/rt` after T-0078, and an `os` harness after the `os` implementations; `alloy-rt` exports `OsHost` and `register_os` (section 2.6) in the `os` build task.
