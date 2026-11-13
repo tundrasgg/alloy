@@ -11,13 +11,13 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0059 |
-| Decision `D-` | D-0023 |
-| ADR | 0057 |
+| Task `T-` | T-0060 |
+| Decision `D-` | D-0024 |
+| ADR | 0058 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0002 |
 
-ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0056, R-0001 to R-0008, and PB-0001 are allocated to the tasks below.
+ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0057, R-0001 to R-0008, and PB-0001 are allocated to the tasks below.
 
 ## Board
 
@@ -60,7 +60,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0056, R-0001 to R-0008
 | T-0035 | research | researcher | done | none | Research generating the console's TypeScript API client |
 | T-0036 | build | developer | done | none | Keep check-repo green on main with plan files in flight |
 | T-0037 | build | developer | done | none | Run the check-repo path lock in CI |
-| T-0038 | spec | architect | review | none | Specify probe bytes and probe replay protection in ARFC 0003 |
+| T-0038 | spec | architect | done | none | Specify probe bytes and probe replay protection in ARFC 0003 |
 | T-0039 | spec | architect | cancelled | none | Bound probe sets and return path moves in ARFC 0004 |
 | T-0040 | spec | architect | done | none | Bound lineage state and close gaps in ARFC 0007 section 3.9 |
 | T-0041 | spec | architect | done | none | Use a browser-compatible key type for the API CA |
@@ -81,6 +81,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0056, R-0001 to R-0008
 | T-0056 | process | architect | done | none | Let parallel tasks add crates to the shared workspace files |
 | T-0057 | spec | architect | active | none | Keep stored seam configuration readable across releases |
 | T-0058 | process | architect | active | none | Align core and lead rules with shared workspace files |
+| T-0059 | spec | architect | active | none | Discard sessions a failed handover's successor touched |
 
 ## First dispatch
 
