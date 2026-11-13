@@ -71,7 +71,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0055, R-0001 to R-0008
 | T-0046 | build | developer | active | none | Enforce direct-io with Clippy on resolved paths |
 | T-0047 | spec | architect | cancelled | none | Protect the last cloud-admin and mark ADR 0041 superseded |
 | T-0048 | research | researcher | done | none | Research the rustls provider and a P-256 signing source |
-| T-0049 | process | architect | active | none | Fix the P-256 rules in the crypto engineering file |
+| T-0049 | process | architect | done | none | Fix the P-256 rules in the crypto engineering file |
 | T-0050 | spec | architect | queued | T-0006 | Specify the alloy-sim world and scenario interface |
 | T-0051 | build | developer | active | none | Run the commit message check in CI |
 | T-0052 | spec | architect | active | none | Make the local admin a full break-glass administrator |
@@ -120,6 +120,8 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 - Build: `check-repo` rejects all of `std::process` outside `alloy-rt` and `alloy-sim`, which includes `ExitCode` and `exit`; the first binary crate needs a narrower pattern or an exit path through `alloy-rt`. `banned-patterns` scans only `crates/`, not `tests/` or `fuzz/` (T-0042).
 - From `plan/reports/T-0043.architect.1.md` (after T-0038 and T-0043 merge): ARFC 0003 section 3.6 lets an anchor's reflection answer carry the observed source endpoint and a challenge; ARFC 0004 states when an anchor considers a home session closed; consider a per-node cap on probes toward unverified advertised candidates; ARFC 0005 section 3.4 states matrix link delays inside ARFC 0004 section 3.2's bounds; T-0011, T-0012, and conformance suites take the new ARFC 0004 musts.
 - Spec (after T-0038 and T-0043 merge): ARFC 0004 section 8 and ADR 0039's consequence line restated against probe replay protection in ARFC 0003 section 3.6; the relay envelope in ARFC 0003 section 3.7 gains the `src` that section 3.1's cookie needs; ARFC 0004 section 3.5 says whether path MTU probes travel inside relay envelopes; ARFC 0003 section 7 throttles probe floods that name real node ids. Verify: ARFC 0003 section 3.6 conformance cases listed in `plan/reports/T-0038.architect.1.md`.
+- Ruling before the first task that builds TLS: `rustls` providers draw key shares and hello randoms from their own generator, which `agent/eng/crypto.md` rule 4 forbids and which breaks I-20 under the simulator; either an exception to rule 4 or a provider fed from `alloy-rt` (T-0049).
+- Spec: ARFC 0008 clause 3.8 names the ACME account key and its type, and ARFC 0002 section 2's RFC 6979 rule covers it, as ADR 0053 decides; ARFC 0002 and 0008 `Decisions` headers list 0053 (T-0049).
 - Process: a task that supersedes an ADR needs that ADR's status line and its index row in `touches`; the shared index rule has no append-only way to mark a superseded row (T-0044).
 - Spec: ARFC 0014 maps native errors, including `Unauthenticated`, to S3 errors; add `Unauthenticated` to `proto/alloy/common/errors.proto` when it is written (T-0044).
 - Process: a dependency policy for npm packages, since `deny.toml` covers Cargo only (T-0035).
