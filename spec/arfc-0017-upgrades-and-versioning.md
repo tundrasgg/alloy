@@ -3,7 +3,7 @@
 - Status: accepted
 - Depends on: 0000, 0003, 0006, 0008
 - Crates: alloyd, alloy-state
-- Decisions: 0029
+- Decisions: 0029, 0057
 
 ## 1. Purpose
 
@@ -67,7 +67,19 @@ minor release exists: half the nodes on N, half on N+1.
 
 A node that fails to start after upgrade falls back to the previous binary, which
 is kept until finalization, and reports the failure. A handover that fails before
-the old process exits leaves the old process serving.
+the old process exits leaves the old process serving, once the successor has
+ended. The old `alloy-net` does not resume an AL session from its own copy when
+the successor may have used it. Before it serves again, it discards every AL
+session its successor marked consumed, raises its handshake replay table to the
+initiation counters its successor recorded, and reserves a new handshake counter
+block, as ARFC 0003 section 3.9 requires, so no nonce is used twice (I-07) and no
+handshake message or session message is accepted twice (ARFC 0020 section 3.2).
+Within 1 second of serving again it starts a new session with every peer whose
+newest session it discarded. Traffic from such a peer is dropped until that
+session exists and the peer has seen it used, at most 1 second plus that
+handshake and one keepalive (ARFC 0003 section 3.9). A failed handover can
+therefore exceed, for those peers, the 100 ms gap that section 3.6 allows a
+handover that succeeds.
 
 ## 7. Limits
 

@@ -3,7 +3,7 @@
 - Status: accepted
 - Depends on: 0000
 - Crates: alloy-wire, alloy-link, alloy-crypto
-- Decisions: 0010, 0011, 0012, 0013, 0030, 0043, 0046
+- Decisions: 0010, 0011, 0012, 0013, 0030, 0043, 0046, 0057
 
 ## 1. Purpose
 
@@ -189,7 +189,9 @@ Each node keeps a persistent 64-bit handshake counter that only grows. It reserv
 blocks of 65,536 values with one synced write per block, so a crash skips values
 and never repeats one. A responder stores the highest counter seen per initiator
 static key and must drop an initiation whose counter is not higher. No wall clock
-is involved.
+is involved. Across a process handover that table travels with the sessions, and
+a process that resumes after a failed handover raises it to the counters its
+successor accepted (3.9).
 
 ### 3.3 Session keys
 
@@ -228,7 +230,9 @@ the chaining key, the handshake cipher key, `k1`, `k2`, the cipher states
 `Split()` returned, and `prk`. A handshake that fails or is abandoned must erase
 the same values when it ends. `send_key` and `recv_key` are erased when they are
 discarded (below), and `probe_send_key` and `probe_recv_key` with them: each
-probe key has the lifetime of the session key of the same direction. A Noise library that
+probe key has the lifetime of the session key of the same direction, except that
+after a rekey 3.6 keeps the previous session's probe keys longer, never past the
+180 seconds below. A Noise library that
 keeps a copy of any of these values that its caller cannot erase does not meet
 this section.
 
@@ -248,7 +252,7 @@ secrecy, section 8).
 A session is rekeyed by a new handshake after 120 seconds of use or 2^48 packets
 on any queue, whichever comes first. Keys must be discarded 180 seconds after the
 handshake that made them. The previous session's receive key stays valid for 10
-seconds after a rekey.
+seconds after a rekey. Its probe keys follow 3.6.
 
 ### 3.4 Transport (type 4)
 
@@ -262,10 +266,13 @@ seconds after a rekey.
 
 Nonce: `salt (14) || queue (2) || counter (8)`. Each queue has its own counter, so
 sending threads share nothing. Because counters are per queue and keys are per
-session, a nonce cannot repeat (I-07).
+session, a nonce cannot repeat (I-07). Across a process handover the counters
+travel with `send_key`, and a process that resumes after a failed handover seals
+nothing under a session its successor used (3.9).
 
 The receiver keeps a sliding replay window of 2,048 packets per session per queue
-and must drop anything older or already seen.
+and must drop anything older or already seen. The windows travel with `recv_key`
+across a process handover, under the same rules (3.9).
 
 Inner frame, after decryption:
 
@@ -289,13 +296,44 @@ don't-fragment bit on IPv4 (I-10).
 ### 3.6 Probe (type 5)
 
 Probe messages carry path discovery (ARFC 0004) on the same socket as data. They
-travel inside a session: a node sends a probe message to a peer only under the
-newest session it holds with that peer. A node that is to start probing a peer
-with which it holds no session first opens one (3.1) and sends its first probe
-message once the session exists, which for a responder is once it has sent the
-response. As ARFC 0004 section 3.2 step 4 defines, a **probe** carries a
-challenge and no echo, and an **answer** carries an echo and may also carry a
-challenge.
+travel inside a session. A node that is to start probing a peer with which it
+holds no session first opens one (3.1) and sends its first probe message once
+the session exists, which for a responder is once it has sent the response. As
+ARFC 0004 section 3.2 step 4 defines, a **probe** carries a challenge and no
+echo, and an **answer** carries an echo and may also carry a challenge.
+
+Session choice: a session is **confirmed** at a node once the node has seen that
+the peer holds it. At the initiator that is once it has processed the response.
+At the responder it is once it has accepted, under that session, a transport
+packet (one that authenticates and passes the replay check of 3.4) or a probe
+message. One session is **newer** than another with the same peer when the node
+made it later: an initiator makes a session when it processes the response, a
+responder when it sends the response. Each node orders its own sessions; two
+nodes that rekey at once may order the same two sessions differently, and every
+rule of this section uses the order of the node applying it. A node seals every
+probe message to a peer, answers included, under the
+newest confirmed session whose `probe_send_key` it holds with that peer. Only
+when it holds no confirmed session with the peer does it seal under the newest
+session it holds with that peer.
+
+At a rekey (3.3), the new session is therefore confirmed at the initiator when
+the response arrives, and the responder keeps sealing under the previous session
+until the initiator uses the new one. A lost or late response then leaves both
+nodes on the previous session, which both still hold. To keep that working:
+
+- A responder keeps the previous session's `probe_send_key` and probe send
+  counter until a newer session with the same peer is confirmed, and no longer
+  than the discard of the previous session's keys, 180 seconds after its
+  handshake (3.3).
+- A node keeps a session's `probe_recv_key` and probe window after a newer
+  session with the same peer exists, until 10 seconds after it first accepts a
+  probe message under a newer session from that peer, and no longer than that
+  same discard. The 10 seconds let a probe message sealed under the older
+  session that the underlay delivers late still be accepted. This overrides, for
+  the probe keys only, the 10 seconds that 3.3 gives the previous session's
+  receive key.
+- Once a newer session is confirmed at a node, the node seals no further probe
+  message under an older session with that peer.
 
 Probe message (type 5), 88 bytes unless padded:
 
@@ -363,15 +401,19 @@ passes the replay check, and it passes the fixed value checks below. Only an
 accepted message changes the window. A receiver may run the replay check before
 it opens the body. A node keeps a session's window exactly as long as it keeps
 that session's `probe_recv_key` and erases the two together. A process that
-hands a session over to its successor (ARFC 0017 section 3.5) hands over the
-window with the key.
+hands a session over to its successor hands over the window with the
+`probe_recv_key` and the probe send counter with the `probe_send_key`, and
+follows the rules of 3.9 for the session afterwards.
 
 Replay protection, as ARFC 0020 section 3.2 requires: no probe message is
 accepted twice. While the receiver holds the key that opens a message, the window
 rejects that message's `counter` once it has been accepted. Once the receiver
 discards the key (3.3), or loses it in a crash or restart, nothing sealed under
-it opens again, and every later session has new keys (3.3). There is no other
-state whose loss lets a message pass again. A message that was sent and never
+it opens again, and every later session has new keys (3.3). Across a process
+handover the window travels with the key, and a process that resumes after a
+failed handover accepts nothing under a session its successor used (3.9). There
+is no other state whose loss lets a message pass again. A message that was sent
+and never
 accepted, because the underlay dropped or delayed it, can still be accepted once,
 while its key is held and its `counter` is within the window: that is a dropped
 or reordered message, which ARFC 0020 section 2.1 allows the underlay attacker,
@@ -402,8 +444,9 @@ AEAD open, the probe row of the table in section 6. Neither side does a
 Diffie-Hellman operation or a synced write for it. The state is per session: two
 32-byte probe keys, an 8-byte send counter, and a window of 8 bytes plus 2,048
 bits, 336 bytes in all. A node holds it only for sessions it holds, so at most one
-per session within the limit of ARFC 0004 section 7 (default 4,096), plus a
-previous session for the 10 seconds after each rekey (3.3).
+per session within the limit of ARFC 0004 section 7 (default 4,096), plus the
+probe state of a previous session after each rekey, kept as the session choice
+rules above say and never past 180 seconds after that session's handshake (3.3).
 
 ### 3.7 Relay envelope (type 6)
 
@@ -417,6 +460,86 @@ assigned by the anchor.
 
 Over a stream underlay every AL message is prefixed with a 2-byte length. Nothing
 else changes.
+
+### 3.9 Process handover
+
+A process that holds sessions may hand them over to a successor process on the
+same node (ARFC 0017 section 3.5). This section keeps I-07 and the replay
+protection of ARFC 0020 section 3.2, for handshake messages and for messages
+sealed under session keys alike, across that handover, whether it succeeds or
+fails.
+
+State that travels: for every session handed over, the old process passes each
+key with the state that keeps its nonces and its acceptances unique. With
+`send_key` go the send counters of every queue (3.4). With `recv_key` go the
+replay windows of every queue (3.4). With `probe_send_key` goes the probe send
+counter (3.6). With `probe_recv_key` goes the probe window (3.6). Every other
+counter or replay state kept for messages sealed or authenticated under a key of
+the session, the relay envelope `counter` (3.7) and any replay state kept for
+relay envelopes included, goes with the key it is used with. A key is never
+passed without that state. With each session goes whether it is confirmed
+(3.6), so the successor seals probe messages under the same session the old
+process would have. With its sessions the old process passes its table of the
+highest initiation counter seen per initiator static key (3.2).
+
+Exclusive use: from the moment the old process passes its sessions, it seals no
+message under any key of a session it passed and accepts none, and it processes
+no handshake message (3.1), except as the failed handover rule below allows.
+
+Consumed sessions: the successor must record a handed-over session as
+**consumed** before it first does any of these:
+
+- seals a message under a key of that session: a transport packet (3.4), a
+  probe message (3.6) or a relay envelope (3.7);
+- accepts a message under a key of that session;
+- sends a handshake message (3.1) to the peer of that session.
+
+Accepted initiations: before the successor stores an initiation's counter as the
+highest it has seen from that initiator (3.2), it must record that initiator's
+static key with that counter.
+
+The record of consumed sessions and accepted initiations must be readable by the
+old process after the successor has ended, whether it exited or crashed.
+Recording a session consumed that the successor then does not use is allowed: it
+only costs a new handshake. Recording an initiation counter that the successor
+then does not store is allowed: it only makes the old process drop that
+initiation as it drops a replay.
+
+Failed handover: when a handover fails before the old process exits, the old
+process serves on (ARFC 0017 section 6). It resumes only after the successor has
+ended, by exiting, crashing or being stopped, so no session is ever used by two
+processes at once. Before it seals or accepts any message after resuming, it
+must:
+
+1. Discard every consumed session: erase its keys, counters and windows as 3.3
+   erases discarded keys, and never seal or accept under it again.
+2. For every initiator in the record, raise the highest counter it holds for that
+   initiator (3.2) to the highest counter recorded for it, when that is higher.
+3. Reserve a new block of handshake counter values (3.2) and not use what was
+   left of the block it held before the handover.
+
+It resumes every session that is not consumed with its own state. Within 1
+second of resuming, it sends an initiation (3.1) to every peer whose newest
+session it discarded, whether or not it has a message for that peer, and retries
+that handshake as it retries any other (3.1, section 9). Once the new session
+exists, it seals a keepalive (3.4, kind 0) to the peer under it at once, so that
+the peer sees the session used and confirms it (3.6). Messages the peer sends
+under the discarded session are dropped as naming no session (section 6). After
+a failed handover the drop therefore lasts at most 1 second plus the time that
+handshake, its retries included, and that keepalive take, and it does not depend
+on this node having a message for the peer.
+
+Why this holds: the successor sealed and accepted only under consumed sessions,
+so the counters and windows the old process keeps for every other session are
+still current. A consumed session is never used by the old process again, so it
+neither repeats a nonce the successor used with that session's keys (I-07) nor
+accepts again a message the successor accepted (ARFC 0020 section 3.2). Step 2
+puts the old process's table at or above every initiation counter the successor
+stored, so it drops every initiation the successor accepted. The successor
+reserves handshake counter values from the same persistent counter (3.2), so the
+new block is above every value either process used. A successor that rekeyed or
+replaced a session marked it consumed first, so the old process does not keep a
+session the peer has moved off.
 
 ## 6. Failure behavior
 
@@ -462,3 +585,5 @@ Upholds I-06, I-07, I-10.
 
 - Hybrid post-quantum key exchange for the reserved flag. Research task to be cut
   in M10.
+- When an initiator retries a handshake that got no response (3.1), and how many
+  times. 3.9 bounds the drop after a failed handover by the time this takes.
