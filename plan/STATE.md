@@ -12,7 +12,7 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 | Series | Next |
 |---|---|
 | Task `T-` | T-0042 |
-| Decision `D-` | D-0014 |
+| Decision `D-` | D-0015 |
 | ADR | 0049 |
 | Research `R-` | R-0008 |
 | Brief `PB-` | PB-0002 |
@@ -62,7 +62,7 @@ ADR 0036, ADR 0040, ADR 0042, ADR 0045 to ADR 0048, R-0001 to R-0007, and PB-000
 | T-0037 | build | developer | queued | T-0036 | Run the check-repo path lock in CI |
 | T-0038 | spec | architect | queued | T-0031 | Specify probe bytes and probe replay protection in ARFC 0003 |
 | T-0039 | spec | architect | queued | T-0031 | Bound probe sets and return path moves in ARFC 0004 |
-| T-0040 | spec | architect | active | none | Bound lineage state and close gaps in ARFC 0007 section 3.9 |
+| T-0040 | spec | architect | review | none | Bound lineage state and close gaps in ARFC 0007 section 3.9 |
 | T-0041 | spec | architect | queued | T-0022 | Use a browser-compatible key type for the API CA |
 
 ## First dispatch
@@ -91,6 +91,7 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 ## Still to cut for M1 and M2
 
 - From `plan/reports/T-0022.architect.1.md` (cut after T-0022 and T-0023 merge): ARFC 0007 accepts client-generated access key secrets from `ExchangeLoginCode`; T-0024 adds the API CA chain for clients that connect by address; ARFC 0006 heartbeat interval under the 30 s `unreachable` rule; ARFC 0017 next minor release across 0.x to 1.0; PB-0001 wording for unreachable and revoked; a command that removes a one-node cluster; proto definitions for the new calls in the first `alloy-proto` task.
+- From `plan/reports/T-0040.architect.1.md` (cut after T-0022 merges): ARFC 0019 revokes a context's stored key when a login stores another user's key (F6); ARFC 0002 bounds the login code table and keeps each unspent code's issuer, including the access key behind an issuing session token; state the meaning of `key_id` in the token payload; `tests/conformance/authn` cases listed in that report.
 - From `plan/reports/T-0023.architect.1.md` (cut after T-0022 merges and T-0023 review): the issues on ARFC 0008, 0002, 0019, 0006, and 0020, the last `cloud-admin` binding, PB-0001 local admin errors, the `SO_PEERCRED` research question, glossary terms, and `tests/conformance/authn` cases.
 
 - Verify: a fixed `IKpsk2` handshake vector for ARFC 0003 sections 3.1 and 3.3 (keys, psk, message bytes, `i2r`, `r2i`, `salt`) in the ARFC 0003 conformance suite (T-0026 follow-up).
