@@ -38,6 +38,7 @@ or supersede it.
 | [0036](0036-alloy-sim-is-written-in-house-on-the-alloy-rt-seams.md) | alloy-sim is written in-house on the alloy-rt seams |
 | [0035](0035-dependencies-must-be-permissively-licensed.md) | Dependencies must be permissively licensed |
 | [0054](0054-simulated-worlds-are-network-trees-driven-by-a-control-task.md) | Simulated worlds are network trees driven by a control task |
+| [0060](0060-libfuzzer-sys-alone-may-use-ncsa-in-fuzz-targets-only.md) | libfuzzer-sys alone may use NCSA, in fuzz targets only |
 
 ## Architecture
 

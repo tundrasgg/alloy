@@ -16,6 +16,8 @@ A crate qualifies when all hold:
 - **License** is compatible with MIT OR Apache-2.0: MIT, Apache-2.0, BSD-2-Clause,
   BSD-3-Clause, ISC, Zlib, Unicode-3.0, or the same dual license. No copyleft of
   any strength: no GPL, AGPL, LGPL, MPL, or SSPL code is linked or vendored.
+  One exception: `libfuzzer-sys` may carry NCSA, in fuzz targets under `fuzz/`
+  only, and no other crate may use NCSA (ADR 0060).
 - **Maintained**: a release or meaningful commit in the last twelve months, or the
   crate is small and finished.
 - **Necessary**: writing it ourselves would take more than a task or would be
