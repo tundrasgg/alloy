@@ -77,7 +77,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0052 | spec | architect | done | none | Make the local admin a full break-glass administrator |
 | T-0053 | build | developer | done | none | Parse commit trailers only from the last paragraph |
 | T-0054 | build | developer | done | none | Build alloy-wire for AL handshake and transport messages |
-| T-0055 | verify | verifier | queued | T-0064 | Write conformance vectors for AL handshake and transport bytes |
+| T-0055 | verify | verifier | active | none | Write conformance vectors for AL handshake and transport bytes |
 | T-0056 | process | architect | done | none | Let parallel tasks add crates to the shared workspace files |
 | T-0057 | spec | architect | done | none | Keep stored seam configuration readable across releases |
 | T-0058 | process | architect | done | none | Align core and lead rules with shared workspace files |
@@ -86,7 +86,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0061 | build | developer | done | none | Add fuzz targets for every alloy-wire decoder |
 | T-0062 | build | developer | done | none | Allow thiserror and proptest in the dependency allowlist |
 | T-0063 | spec | architect | done | none | Shrink the AL transport header to 25 bytes of overhead |
-| T-0064 | build | developer | review | none | Rework alloy-wire for the compact transport header |
+| T-0064 | build | developer | done | none | Rework alloy-wire for the compact transport header |
 | T-0065 | spec | architect | done | none | State break-glass reach into tenant data accurately |
 | T-0066 | spec | architect | done | none | Close the open stored-binding and interface gaps in ARFC 0001 |
 | T-0067 | spec | architect | done | none | Settle timeout start and path joining in ARFC 0005 |
@@ -103,7 +103,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0078 | build | developer | queued | T-0077 | Build alloy-sim mem streams |
 | T-0079 | build | developer | queued | T-0068 | Run the commit check inside cargo xtask ci |
 | T-0080 | spec | architect | active | none | Replace path-move heuristics with verify-before-move |
-| T-0081 | build | developer | queued | T-0064 | Update the alloy-wire fuzz targets to the compact layout |
+| T-0081 | build | developer | active | none | Update the alloy-wire fuzz targets to the compact layout |
 
 ## First dispatch
 
