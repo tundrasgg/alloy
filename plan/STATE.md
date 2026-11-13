@@ -129,7 +129,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0103 | spec | architect | done | none | Specify the rung 2 control plane, heartbeats, and node list |
 | T-0104 | build | developer | review | none | Build alloy-link handshake and session state machines |
 | T-0105 | spec | architect | done | none | Close the rung 2 node channel and heartbeat findings |
-| T-0106 | build | developer | active | none | Build alloy-id keys, records, tokens, and stored data |
+| T-0106 | build | developer | review | none | Build alloy-id keys, records, tokens, and stored data |
 | T-0107 | build | developer | review | none | Build alloy-state stores on openraft and redb |
 | T-0108 | verify | verifier | queued | T-0107 | Write the log-store and state-store conformance suites |
 | T-0109 | build | developer | active | none | Build alloy-proto and the alloy-api server for nodes |
