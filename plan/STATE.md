@@ -21,7 +21,12 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 
 ## Paused
 
-The pilot paused dispatch. T-0075 round 2 finished after the pause and needs its re-review. T-0008 finished and merged after the pause. T-0079 reported `blocked` after the pause; its question is in `plan/reports/T-0079.developer.1.md`. Still in flight when paused: T-0055, and the T-0080 review. The next lead session processes their reports first (merge, or dispatch the review each needs), then continues with T-0076 to T-0078 and the board below.
+The pilot paused dispatch. Every agent has finished. The next lead session starts here:
+
+- T-0075 (simulator slice 1): round 2 fixed the review's block; it needs its re-review, then merge, then T-0076 to T-0078.
+- T-0080 (verify-before-move): its review (`plan/reports/T-0080.reviewer.1.md`) has one block (F1) and three fixes; it needs its fix round.
+- T-0079 (commit check in `cargo xtask ci`): reported `blocked` because `fuzz/` did not compile, but T-0081 has since fixed `fuzz/` on main; merge main into `task/T-0079` and finish the fuzz step there, then review.
+- T-0008, T-0055, T-0061, T-0081 merged after the pause.
 
 Pilot-supplied note for the next session, not yet investigated: a Clippy run printed the `xtask/tests/fixtures/clippy` banned-call list for `crates/demo/src/lib.rs` (38 lines from `std::process::Command` at 8:19 through `tokio::runtime::Builder` at 140:5, including the `unix`-tagged `std::os::unix::fs` and `tokio::net::unix::pipe` items). T-0046 noted the `unix`-tagged fixture lines were only ever run on Windows and that the first Linux CI run is their check. Start by checking the latest GitHub Actions run on main and comparing this output with the fixture's `expected` file.
 
@@ -83,7 +88,7 @@ Pilot-supplied note for the next session, not yet investigated: a Clippy run pri
 | T-0052 | spec | architect | done | none | Make the local admin a full break-glass administrator |
 | T-0053 | build | developer | done | none | Parse commit trailers only from the last paragraph |
 | T-0054 | build | developer | done | none | Build alloy-wire for AL handshake and transport messages |
-| T-0055 | verify | verifier | active | none | Write conformance vectors for AL handshake and transport bytes |
+| T-0055 | verify | verifier | done | none | Write conformance vectors for AL handshake and transport bytes |
 | T-0056 | process | architect | done | none | Let parallel tasks add crates to the shared workspace files |
 | T-0057 | spec | architect | done | none | Keep stored seam configuration readable across releases |
 | T-0058 | process | architect | done | none | Align core and lead rules with shared workspace files |
@@ -108,7 +113,7 @@ Pilot-supplied note for the next session, not yet investigated: a Clippy run pri
 | T-0077 | build | developer | queued | T-0076 | Build alloy-sim networks, UDP, and the echo scenario |
 | T-0078 | build | developer | queued | T-0077 | Build alloy-sim mem streams |
 | T-0079 | build | developer | blocked | none | Run the commit check inside cargo xtask ci |
-| T-0080 | spec | architect | review | none | Replace path-move heuristics with verify-before-move |
+| T-0080 | spec | architect | blocked | none | Replace path-move heuristics with verify-before-move |
 | T-0081 | build | developer | done | none | Update the alloy-wire fuzz targets to the compact layout |
 
 ## First dispatch
