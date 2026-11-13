@@ -55,7 +55,9 @@ or supersede it.
 | [0015](0015-a-cluster-needs-only-one-address-that-all-nodes-can-reach.md) | A cluster needs only one address that all nodes can reach |
 | [0016](0016-relay-only-nodes-may-run-workloads-with-a-warning-and-a-cap.md) | Relay-only nodes may run workloads, with a warning and a cap |
 | [0030](0030-the-handshake-reserves-room-for-a-post-quantum-key-exchange.md) | The handshake reserves room for a post-quantum key exchange |
+| [0039](0039-an-authenticated-probe-is-answered-at-the-source-it-arrived.md) | An authenticated probe is answered at the source it arrived from |
 | [0043](0043-the-al-handshake-is-fixed-byte-for-byte-on-noise-ikpsk2.md) | The AL handshake is fixed byte for byte on Noise IKpsk2 |
+| [0045](0045-home-sessions-get-a-keepalive-every-5-seconds-of-idleness.md) | Home sessions get a keepalive every 5 seconds of idleness |
 
 ## Control plane
 

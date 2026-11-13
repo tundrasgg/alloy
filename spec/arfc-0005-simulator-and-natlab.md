@@ -3,7 +3,7 @@
 - Status: accepted
 - Depends on: 0001
 - Crates: alloy-rt, alloy-sim, alloy-natlab
-- Decisions: 0008
+- Decisions: 0008, 0039, 0045
 
 ## 1. Purpose
 
@@ -74,14 +74,59 @@ read errors, corrupt reads, and full disks. Clock skew and steps. CPU stalls.
 | Filtering | endpoint-independent, address-dependent, address-and-port-dependent |
 | Port assignment | preserving, sequential, random |
 | Hairpinning | yes, no |
-| Mapping timeout | 30 s to 300 s |
+| Mapping timeout | 10 s to 600 s, whole seconds |
 | Layers | single, double (carrier grade in front of a home router) |
 | Family | IPv4 only, dual stack, IPv6 only with a stateful firewall |
 | UDP | allowed, blocked |
 
+The mapping timeout range covers every published value in `research/R-0003.md`,
+from 10 s (the shortest measured) to 350 s (a cloud NAT gateway). A device
+configured with a value outside the range is rejected with an error when the world
+is built; values are never clamped.
+
+The lab models these rules for every device:
+
+- A device has one external address per IP family (RFC 6888 REQ-2, paired
+  pooling, as `research/R-0003.md` reports it).
+- Filtering applies per mapping. Under endpoint-independent filtering a mapping
+  admits every inbound packet. Under address-dependent filtering it admits a
+  packet only from an address that mapping has sent to, and under
+  address-and-port-dependent filtering only from an address and port it has sent
+  to. A packet that no mapping admits is dropped.
+- A new mapping never takes an external port that another mapping of the device
+  holds.
+- The mapping timeout applies to each mapping and, under address-dependent or
+  address-and-port-dependent filtering, separately to each filter entry (the
+  permission for one remote address, or one remote address and port). A mapping
+  or entry is removed when no outbound packet has used it for the timeout.
+  Inbound packets do not refresh it.
+
 Named presets cover common devices. The **matrix** is every ordered pair of
-presets with the expected path class (`direct` or `relayed`) and a time bound. It
-lives in `tests/natlab/matrix.toml` and is normative for ARFC 0004.
+presets, plus pairs on one local network and pairs behind one device, with the
+expected path class (`direct` or `relayed`) and a time bound. The class follows
+ARFC 0004 section 3.3 and the bound follows ARFC 0004 section 3.2. It lives in
+`tests/natlab/matrix.toml` and is normative for ARFC 0004.
+
+The presets must include `short-timeout`: endpoint-independent mapping,
+address-and-port-dependent filtering, preserving port assignment, no hairpinning,
+a mapping timeout of 20 s, single layer, IPv4 only, UDP allowed. Its timeout is
+below the 25 s keepalive of ARFC 0004 section 3.4, so an idle direct path through
+it loses its filter entry between keepalives. The relay route to a node behind it
+stays open: the node sends on its home session at least once every 5 s (ARFC 0004
+section 3.4), which refreshes its mapping and its filter entry for the anchor
+within the 20 s timeout. Expected, for a node behind
+`short-timeout` paired with a node behind any preset whose matrix class with it is
+`direct`:
+
+- The direct path becomes active within the bound of ARFC 0004 section 3.2, as
+  for any other `direct` pair.
+- While the path is idle, each node either receives an authenticated packet on
+  the path at least once every 75 s (3 keepalive periods) or marks the path
+  `failed` no later than 75 s after the last one it received.
+- Every packet a node sends after marking the path `failed` is delivered, through
+  the relay until a direct path is active again.
+- Packets sent on the idle direct path before either of those may be lost, and
+  the lab does not count that loss as a failure.
 
 ### 3.5 Real mode
 
