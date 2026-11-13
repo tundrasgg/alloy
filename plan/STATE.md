@@ -11,13 +11,13 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0038 |
-| Decision `D-` | D-0013 |
-| ADR | 0046 |
+| Task `T-` | T-0041 |
+| Decision `D-` | D-0014 |
+| ADR | 0048 |
 | Research `R-` | R-0008 |
 | Brief `PB-` | PB-0002 |
 
-ADR 0036, ADR 0040 to ADR 0043, ADR 0045, R-0001 to R-0007, and PB-0001 are allocated to the tasks below.
+ADR 0036, ADR 0040, ADR 0042, ADR 0045 to ADR 0047, R-0001 to R-0007, and PB-0001 are allocated to the tasks below.
 
 ## Board
 
@@ -44,22 +44,25 @@ ADR 0036, ADR 0040 to ADR 0043, ADR 0045, R-0001 to R-0007, and PB-0001 are allo
 | T-0019 | research | researcher | done | none | Research licenses inside the Cloud Hypervisor UEFI images |
 | T-0020 | spec | architect | done | none | Resolve the per-guest seccomp clause in ARFC 0011 |
 | T-0021 | spec | architect | blocked | T-0031 | Resolve NAT spec issues found by R-0003 |
-| T-0022 | spec | architect | queued | T-0023 | Apply PB-0001 to ARFC 0002 and ARFC 0019 |
-| T-0023 | spec | architect | review | none | Specify user access keys and the local admin path |
+| T-0022 | spec | architect | active | none | Apply PB-0001 to ARFC 0002 and ARFC 0019 |
+| T-0023 | spec | architect | done | none | Specify user access keys and the local admin path |
 | T-0024 | spec | architect | queued | T-0021 | Fix the default mesh port and TCP 443 sharing |
 | T-0025 | process | architect | done | none | Let parallel tasks share append-only index files |
 | T-0026 | spec | architect | done | none | Make the ARFC 0003 handshake implementable on Noise libraries |
 | T-0027 | process | architect | done | none | Align core delegation and the lead role with shared index files |
 | T-0028 | spec | architect | done | none | Fix the Landlock clauses in ARFC 0011 section 2 |
 | T-0029 | spec | architect | done | none | Record the install script location in ADR 0044 |
-| T-0030 | spec | architect | active | none | Fix the DH rate limit and cookie lifetime in ARFC 0003 |
-| T-0031 | spec | architect | active | none | Fix the review findings on the T-0021 NAT spec changes |
+| T-0030 | spec | architect | done | none | Fix the DH rate limit and cookie lifetime in ARFC 0003 |
+| T-0031 | spec | architect | review | none | Fix the review findings on the T-0021 NAT spec changes |
 | T-0032 | process | architect | done | none | Define the inputs of a second round for every role |
 | T-0033 | build | developer | done | none | Never cancel CI runs on main |
 | T-0034 | research | researcher | active | none | Research browser support for Ed25519 TLS certificates |
-| T-0035 | research | researcher | active | none | Research generating the console's TypeScript API client |
+| T-0035 | research | researcher | done | none | Research generating the console's TypeScript API client |
 | T-0036 | build | developer | review | none | Keep check-repo green on main with plan files in flight |
 | T-0037 | build | developer | queued | T-0036 | Run the check-repo path lock in CI |
+| T-0038 | spec | architect | queued | T-0031 | Specify probe bytes and probe replay protection in ARFC 0003 |
+| T-0039 | spec | architect | queued | T-0031 | Bound probe sets and return path moves in ARFC 0004 |
+| T-0040 | spec | architect | active | none | Bound lineage state and close gaps in ARFC 0007 section 3.9 |
 
 ## First dispatch
 
@@ -91,6 +94,10 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 
 - Verify: a fixed `IKpsk2` handshake vector for ARFC 0003 sections 3.1 and 3.3 (keys, psk, message bytes, `i2r`, `r2i`, `salt`) in the ARFC 0003 conformance suite (T-0026 follow-up).
 - Spec (with the hybrid handshake ARFC, M10): how a node learns a peer supports a later `version` or the hybrid flag before sending it, since version 1 drops both silently (T-0026 re-review note F2).
+- Verify: ARFC 0003 section 6 operation counts per packet through `alloy-crypto` on the simulator, and the 3.1 cookie validity across a secret rotation (T-0030).
+- Verify and recut: T-0011, T-0012, and conformance suites for the new ARFC 0004 musts after T-0031 merges (answer count and size, probing window, challenge placement and lifetime, 64 outstanding challenges, 5 s home keepalive).
+- Spec: ARFC 0008 defines the browser-callable protocol so section 3.10 holds for the console; resolve `prost` in `agent/eng/deps.md` against connect-rust's `buffa` (R-0007).
+- Process: a dependency policy for npm packages, since `deny.toml` covers Cargo only (T-0035).
 - Research then ADR: the `rustls` crypto provider (`aws-lc-rs` needs a C build and license review; `ring` release cadence). From R-0004.
 - The task that wires openraft into `alloy-rt` includes a seed replay test. From R-0004.
 - If LMDB or `blake3` are adopted, an ADR adds OpenLDAP and CC0 to the license allowlist. From R-0004.
