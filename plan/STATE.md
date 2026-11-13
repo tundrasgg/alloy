@@ -102,7 +102,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0076 | build | developer | active | none | Build alloy-sim hosts, mem runtime, and faults |
 | T-0077 | build | developer | queued | T-0076 | Build alloy-sim networks, UDP, and the echo scenario |
 | T-0078 | build | developer | queued | T-0077 | Build alloy-sim mem streams |
-| T-0079 | build | developer | active | none | Run the commit check inside cargo xtask ci |
+| T-0079 | build | developer | review | none | Run the commit check inside cargo xtask ci |
 | T-0080 | spec | architect | done | none | Replace path-move heuristics with verify-before-move |
 | T-0081 | build | developer | done | none | Update the alloy-wire fuzz targets to the compact layout |
 | T-0082 | build | developer | done | none | Make xtask output parsing independent of terminal color |
