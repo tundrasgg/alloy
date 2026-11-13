@@ -101,7 +101,7 @@ else the commands of the clause print is compared.
 | `net.netfilter.nf_conntrack_count` | `sysctl -a` | A counter |
 | Units in the state `transient` or `generated` | `systemctl list-unit-files` | No install places them. systemd makes transient units at run time, such as the `session-<n>.scope` of each login, this check's SSH logins included. Generators make generated units from other configuration, such as `.mount` units |
 | The status dot files at the top of `/etc/pve` (`.version`, `.members`, `.vmlist`, `.clusterlog`, `.rrd`, `.debug`) and `*.tmp.<pid>` names | `/etc/pve` digests | Status written by the cluster file system; temporary names before a rename |
-| The `"timestamp":<n>` field | HA status files under `/etc/pve` | A timestamp |
+| Every `timestamp` field, and the order of keys | The HA status files under `/etc/pve` (below) | A timestamp; Proxmox VE writes the keys in a different order each time |
 | Every property not named in `host-snapshot.ps1`, among them adapter link speeds and address and route lifetimes | Every Windows section | Measured rates and countdowns. The named properties are the ones an install or a configuration change sets |
 | Service `Status` (the start type is kept) | `Get-Service` | Windows starts and stops demand-start and trigger-start services on its own |
 
@@ -115,6 +115,27 @@ an IPv6 temporary address that rotates, a DHCP lease that moves to another
 address, a Proxmox VE key rotation, or a Windows firewall rule that another
 program adds while the check runs. Rerun the check when one of those shows in
 the differences.
+
+### The HA status files under /etc/pve
+
+Proxmox VE's HA resource managers rewrite their status files on their own,
+with no action by Alloy: `/etc/pve/nodes/<node>/lrm_status` (the local resource
+manager) and `/etc/pve/ha/manager_status` (the cluster resource manager, when
+present; any `manager_status` under `/etc/pve` is treated the same). Each is JSON
+with a `timestamp` that advances and with its keys in a different order on each
+write, such as
+`{"mode":"active","state":"wait_for_agent_lock","results":{},"timestamp":1794559030}`.
+A raw digest of these files differs between any two snapshots.
+
+So `host-snapshot.sh` hashes these files after normalizing them: it parses the
+JSON, removes every `timestamp` key at any depth, and prints it again with the
+keys sorted and no whitespace. It uses `perl` with JSON::PP, else `python3`.
+Proxmox VE is written in Perl and JSON::PP is a Perl core module, so a stock
+node has the first. The section's first line names the tool used. When
+neither is present, or a file is not valid JSON, the file is hashed raw and
+`(raw: ...)` says so, and its digest is then expected to differ between
+snapshots. Every other file under `/etc/pve` is hashed raw, so any change to
+its bytes shows.
 
 ## Checking the scripts
 

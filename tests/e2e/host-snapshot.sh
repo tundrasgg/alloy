@@ -172,22 +172,111 @@ pve_guests() {
     fi
 }
 
+# Proxmox VE: whether a file under /etc/pve is one of the HA status files that
+# Proxmox VE rewrites on its own. The local resource manager rewrites
+# `nodes/<node>/lrm_status` and the cluster resource manager rewrites
+# `ha/manager_status`, each as JSON with a `timestamp` field that advances and
+# with its keys in no fixed order.
+pve_status_file() {
+    case "$1" in
+        /etc/pve/nodes/*/lrm_status | */manager_status) return 0 ;;
+    esac
+    return 1
+}
+
+# Proxmox VE: the tool that normalizes the HA status files, the first present
+# of `perl` with JSON::PP and `python3`, or `none`.
+pve_json_tool() {
+    if has perl && perl -MJSON::PP -e 1 >/dev/null 2>&1; then
+        printf 'perl\n'
+    elif has python3 && python3 -c 'import json' >/dev/null 2>&1; then
+        printf 'python3\n'
+    else
+        printf 'none\n'
+    fi
+}
+
+# Proxmox VE: prints the JSON on standard input with every `timestamp` key
+# removed, at any depth, and the keys sorted, with no whitespace, using the
+# tool named by $1. Exits nonzero when the input is not JSON or the tool is
+# `none`.
+pve_normalize_json() {
+    case "$1" in
+        perl)
+            perl -MJSON::PP -e '
+                sub strip {
+                    my ($v) = @_;
+                    if (ref $v eq "HASH") {
+                        delete $v->{timestamp};
+                        strip($_) for values %$v;
+                    } elsif (ref $v eq "ARRAY") {
+                        strip($_) for @$v;
+                    }
+                }
+                local $/;
+                my $text = <STDIN>;
+                my $json = JSON::PP->new->utf8->allow_nonref;
+                my $data = $json->decode(defined $text ? $text : "");
+                strip($data);
+                print $json->canonical->encode($data);
+            '
+            ;;
+        python3)
+            python3 -c '
+import json, sys
+def strip(v):
+    if isinstance(v, dict):
+        v.pop("timestamp", None)
+        for x in v.values():
+            strip(x)
+    elif isinstance(v, list):
+        for x in v:
+            strip(x)
+data = json.load(sys.stdin)
+strip(data)
+sys.stdout.write(json.dumps(data, sort_keys=True, separators=(",", ":")))
+'
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 # Proxmox VE: the SHA-256 of every file under /etc/pve. The dot files at its
 # top (`.version`, `.members`, `.vmlist`, `.clusterlog`, `.rrd`, `.debug`) are
 # the cluster file system's status files, made of counters, statistics, and
-# timestamps, so they are left out. The HA status files carry a `timestamp`
-# field that is removed before hashing, and the temporary names that Proxmox
-# VE writes before renaming (`*.tmp.<pid>`) are left out.
+# timestamps, so they are left out, as are the temporary names that Proxmox VE
+# writes before renaming (`*.tmp.<pid>`). The HA status files (see
+# pve_status_file) are hashed after normalizing: parsed as JSON, every
+# `timestamp` removed, and the keys sorted. A status file that cannot be
+# normalized is hashed raw and its line says so. Every other file is hashed
+# raw.
 pve_digests() {
     if [ ! -d /etc/pve ]; then
         printf '(absent: /etc/pve)\n'
         return 0
     fi
+    tool=$(pve_json_tool)
+    if [ "$tool" = none ]; then
+        printf '(HA status files hashed raw: neither perl with JSON::PP nor python3 is present)\n'
+    else
+        printf '(HA status files normalized with %s)\n' "$tool"
+    fi
     find /etc/pve -type f ! -path '/etc/pve/.*' ! -name '*.tmp.[0-9]*' 2>/dev/null |
         sort |
         while IFS= read -r file; do
-            digest=$(sed -e 's/"timestamp":[0-9]*//g' "$file" 2>/dev/null | sha256sum | cut -d ' ' -f 1)
-            printf '%s  %s\n' "$digest" "$file"
+            note=
+            if pve_status_file "$file"; then
+                if json=$(pve_normalize_json "$tool" 2>/dev/null <"$file"); then
+                    digest=$(printf '%s' "$json" | sha256sum | cut -d ' ' -f 1)
+                    printf '%s  %s\n' "$digest" "$file"
+                    continue
+                fi
+                note=' (raw: not normalized)'
+            fi
+            digest=$(sha256sum 2>/dev/null <"$file" | cut -d ' ' -f 1)
+            printf '%s  %s%s\n' "$digest" "$file" "$note"
         done
 }
 
