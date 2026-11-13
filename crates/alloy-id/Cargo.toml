@@ -1,0 +1,30 @@
+[package]
+name = "alloy-id"
+version = "0.0.0"
+description = "A node's identity in a cluster: keys, node records, join tokens, the API CA, and the data directory (ARFC 0002)."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+alloy-crypto = { path = "../alloy-crypto" }
+alloy-rt = { path = "../alloy-rt" }
+# The standing choice for Protocol Buffers (agent/eng/deps.md), for the node
+# record and the stored data of ARFC 0002 sections 3.13 and 3.14. Messages are
+# declared with the derive macro, so no build script or `protoc` runs. Its
+# version is stated here rather than in the root manifest, as for the
+# cryptographic crates of alloy-crypto.
+prost = { version = "=0.14.6", default-features = false, features = ["derive", "std"] }
+thiserror.workspace = true
+# Calendar arithmetic for the 10-year validity of the API CA certificate,
+# already in the tree through `rcgen`.
+time = { version = "=0.3.55", default-features = false }
+
+[dev-dependencies]
+alloy-seam = { path = "../alloy-seam" }
+alloy-sim = { path = "../alloy-sim" }
+proptest.workspace = true
+
+[lints]
+workspace = true

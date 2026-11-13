@@ -5,6 +5,15 @@
 //! Every function writes its secret outputs into buffers its caller owns, so
 //! that the caller decides how they are erased. Every secret this module holds
 //! itself, in locals or in [`SymmetricState`], is erased before it is released.
+//!
+//! HMAC and HKDF are composed here from BLAKE2s rather than taken from the
+//! `hmac` and `hkdf` crates that `agent/eng/crypto.md` names, because those
+//! crates do not erase what they hold, which ARFC 0003 section 3.3 requires:
+//! `hmac` 0.13.0 `SimpleHmac` keeps the key XOR `opad` in a plain field with
+//! no `Drop` (`src/simple.rs`, field `opad_key`), and `hkdf` 0.13.0 keeps the
+//! pseudorandom key `prk` inside such an HMAC state (`src/lib.rs`, struct
+//! `GenericHkdf`). Both crates remain dev-dependencies, and the tests check
+//! this composition against them byte for byte.
 
 use std::marker::PhantomData;
 

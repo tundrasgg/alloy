@@ -4,6 +4,7 @@ members = [
     "crates/alloy",
     "crates/alloy-api",
     "crates/alloy-crypto",
+    "crates/alloy-id",
     "crates/alloy-link",
     "crates/alloy-proto",
     "crates/alloy-rt",
