@@ -12,8 +12,8 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0090 |
-| Decision `D-` | D-0037 |
+| Task `T-` | T-0091 |
+| Decision `D-` | D-0039 |
 | ADR | 0063 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0002 |
@@ -47,7 +47,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0021 | spec | architect | done | none | Resolve NAT spec issues found by R-0003 |
 | T-0022 | spec | architect | done | none | Apply PB-0001 to ARFC 0002 and ARFC 0019 |
 | T-0023 | spec | architect | done | none | Specify user access keys and the local admin path |
-| T-0024 | spec | architect | queued | T-0080 | Fix the default mesh port and TCP 443 sharing |
+| T-0024 | spec | architect | queued | T-0090 | Fix the default mesh port and TCP 443 sharing |
 | T-0025 | process | architect | done | none | Let parallel tasks share append-only index files |
 | T-0026 | spec | architect | done | none | Make the ARFC 0003 handshake implementable on Noise libraries |
 | T-0027 | process | architect | done | none | Align core delegation and the lead role with shared index files |
@@ -103,16 +103,17 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0077 | build | developer | queued | T-0076 | Build alloy-sim networks, UDP, and the echo scenario |
 | T-0078 | build | developer | queued | T-0077 | Build alloy-sim mem streams |
 | T-0079 | build | developer | active | none | Run the commit check inside cargo xtask ci |
-| T-0080 | spec | architect | review | none | Replace path-move heuristics with verify-before-move |
+| T-0080 | spec | architect | done | none | Replace path-move heuristics with verify-before-move |
 | T-0081 | build | developer | done | none | Update the alloy-wire fuzz targets to the compact layout |
 | T-0082 | build | developer | done | none | Make xtask output parsing independent of terminal color |
 | T-0083 | build | developer | active | none | Build the os implementations of the runtime seams |
 | T-0084 | verify | verifier | queued | T-0083 | Run the runtime conformance suites against os |
-| T-0085 | build | developer | active | none | Build the AL handshake and transport crypto in alloy-crypto |
+| T-0085 | build | developer | review | none | Build the AL handshake and transport crypto in alloy-crypto |
 | T-0086 | verify | verifier | queued | T-0085 | Write fixed IKpsk2 handshake vectors for ARFC 0003 |
 | T-0087 | product | product | done | none | Set the design standard for the CLI, console, and APIs |
 | T-0088 | spec | architect | active | none | Specify install, uninstall, and the Windows client node |
 | T-0089 | build | developer | queued | T-0079 | Let binary crates set their exit code |
+| T-0090 | spec | architect | active | none | Keep path checks apart from probe-set challenges |
 
 ## First dispatch
 
