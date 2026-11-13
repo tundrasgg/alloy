@@ -35,6 +35,7 @@ or supersede it.
 |---|---|
 | [0008](0008-deterministic-simulation-comes-first-and-all-i-o-goes-throug.md) | Deterministic simulation comes first and all I/O goes through alloy-rt |
 | [0009](0009-every-subsystem-boundary-is-a-runtime-swappable-seam-from-da.md) | Every subsystem boundary is a runtime-swappable seam from day zero |
+| [0036](0036-alloy-sim-is-written-in-house-on-the-alloy-rt-seams.md) | alloy-sim is written in-house on the alloy-rt seams |
 | [0035](0035-dependencies-must-be-permissively-licensed.md) | Dependencies must be permissively licensed |
 
 ## Architecture
