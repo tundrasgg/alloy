@@ -60,7 +60,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0054, R-0001 to R-0008, and PB-0001 are allo
 | T-0035 | research | researcher | done | none | Research generating the console's TypeScript API client |
 | T-0036 | build | developer | done | none | Keep check-repo green on main with plan files in flight |
 | T-0037 | build | developer | done | none | Run the check-repo path lock in CI |
-| T-0038 | spec | architect | review | none | Specify probe bytes and probe replay protection in ARFC 0003 |
+| T-0038 | spec | architect | active | none | Specify probe bytes and probe replay protection in ARFC 0003 |
 | T-0039 | spec | architect | cancelled | none | Bound probe sets and return path moves in ARFC 0004 |
 | T-0040 | spec | architect | done | none | Bound lineage state and close gaps in ARFC 0007 section 3.9 |
 | T-0041 | spec | architect | done | none | Use a browser-compatible key type for the API CA |
