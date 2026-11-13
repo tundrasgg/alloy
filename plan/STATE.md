@@ -11,13 +11,13 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0041 |
+| Task `T-` | T-0042 |
 | Decision `D-` | D-0014 |
-| ADR | 0048 |
+| ADR | 0049 |
 | Research `R-` | R-0008 |
 | Brief `PB-` | PB-0002 |
 
-ADR 0036, ADR 0040, ADR 0042, ADR 0045 to ADR 0047, R-0001 to R-0007, and PB-0001 are allocated to the tasks below.
+ADR 0036, ADR 0040, ADR 0042, ADR 0045 to ADR 0048, R-0001 to R-0007, and PB-0001 are allocated to the tasks below.
 
 ## Board
 
@@ -56,13 +56,14 @@ ADR 0036, ADR 0040, ADR 0042, ADR 0045 to ADR 0047, R-0001 to R-0007, and PB-000
 | T-0031 | spec | architect | review | none | Fix the review findings on the T-0021 NAT spec changes |
 | T-0032 | process | architect | done | none | Define the inputs of a second round for every role |
 | T-0033 | build | developer | done | none | Never cancel CI runs on main |
-| T-0034 | research | researcher | active | none | Research browser support for Ed25519 TLS certificates |
+| T-0034 | research | researcher | done | none | Research browser support for Ed25519 TLS certificates |
 | T-0035 | research | researcher | done | none | Research generating the console's TypeScript API client |
 | T-0036 | build | developer | review | none | Keep check-repo green on main with plan files in flight |
 | T-0037 | build | developer | queued | T-0036 | Run the check-repo path lock in CI |
 | T-0038 | spec | architect | queued | T-0031 | Specify probe bytes and probe replay protection in ARFC 0003 |
 | T-0039 | spec | architect | queued | T-0031 | Bound probe sets and return path moves in ARFC 0004 |
 | T-0040 | spec | architect | active | none | Bound lineage state and close gaps in ARFC 0007 section 3.9 |
+| T-0041 | spec | architect | queued | T-0022 | Use a browser-compatible key type for the API CA |
 
 ## First dispatch
 
@@ -97,6 +98,7 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 - Verify: ARFC 0003 section 6 operation counts per packet through `alloy-crypto` on the simulator, and the 3.1 cookie validity across a secret rotation (T-0030).
 - Verify and recut: T-0011, T-0012, and conformance suites for the new ARFC 0004 musts after T-0031 merges (answer count and size, probing window, challenge placement and lifetime, 64 outstanding challenges, 5 s home keepalive).
 - Spec: ARFC 0008 defines the browser-callable protocol so section 3.10 holds for the console; resolve `prost` in `agent/eng/deps.md` against connect-rust's `buffa` (R-0007).
+- Research: observe a Safari TLS handshake with an Ed25519 chain on Apple hardware, and check previous-major Chromium and Firefox in real browsers (R-0006 follow-up).
 - Process: a dependency policy for npm packages, since `deny.toml` covers Cargo only (T-0035).
 - Research then ADR: the `rustls` crypto provider (`aws-lc-rs` needs a C build and license review; `ring` release cadence). From R-0004.
 - The task that wires openraft into `alloy-rt` includes a seed replay test. From R-0004.
