@@ -34,6 +34,7 @@ allow-wildcard-paths = true
 # The allowlist. Every crate in the graph, workspace members included, must be
 # named here. Nothing else builds.
 allow = [
+    { crate = "alloy-wire", reason = "workspace member: AL message codec (ARFC 0003)" },
     { crate = "xtask", reason = "workspace member: repository automation" },
 ]
 
