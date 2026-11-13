@@ -44,7 +44,7 @@ ADR 0036, ADR 0040, ADR 0042, ADR 0045 to ADR 0048, R-0001 to R-0007, and PB-000
 | T-0019 | research | researcher | done | none | Research licenses inside the Cloud Hypervisor UEFI images |
 | T-0020 | spec | architect | done | none | Resolve the per-guest seccomp clause in ARFC 0011 |
 | T-0021 | spec | architect | blocked | T-0031 | Resolve NAT spec issues found by R-0003 |
-| T-0022 | spec | architect | active | none | Apply PB-0001 to ARFC 0002 and ARFC 0019 |
+| T-0022 | spec | architect | review | none | Apply PB-0001 to ARFC 0002 and ARFC 0019 |
 | T-0023 | spec | architect | done | none | Specify user access keys and the local admin path |
 | T-0024 | spec | architect | queued | T-0021 | Fix the default mesh port and TCP 443 sharing |
 | T-0025 | process | architect | done | none | Let parallel tasks share append-only index files |
@@ -92,6 +92,7 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 ## Still to cut for M1 and M2
 
 - From `plan/reports/T-0022.architect.1.md` (cut after T-0022 and T-0023 merge): ARFC 0007 accepts client-generated access key secrets from `ExchangeLoginCode`; T-0024 adds the API CA chain for clients that connect by address; ARFC 0006 heartbeat interval under the 30 s `unreachable` rule; ARFC 0017 next minor release across 0.x to 1.0; PB-0001 wording for unreachable and revoked; a command that removes a one-node cluster; proto definitions for the new calls in the first `alloy-proto` task.
+- From `plan/reports/T-0022.architect.2.md` (cut after T-0022 merges): I-22 versus the access key secret returned by ARFC 0007 clause 3.9.4, change one; ARFC 0008 clause 3.7 names `ExchangeLoginCode` and the local admin socket; glossary entries for advertise address and context; PB-0001 wording for `key_in_use`, `login_code_voided`, and non-local advertise addresses; a pool brief and a command to take a disk out of a pool so `node leave` works on storage nodes; `--api-port` on `join` goes to T-0024.
 - From `plan/reports/T-0040.architect.1.md` (cut after T-0022 merges): ARFC 0019 revokes a context's stored key when a login stores another user's key (F6); ARFC 0002 bounds the login code table and keeps each unspent code's issuer, including the access key behind an issuing session token; state the meaning of `key_id` in the token payload; `tests/conformance/authn` cases listed in that report.
 - From `plan/reports/T-0023.architect.1.md` (cut after T-0022 merges and T-0023 review): the issues on ARFC 0008, 0002, 0019, 0006, and 0020, the last `cloud-admin` binding, PB-0001 local admin errors, the `SO_PEERCRED` research question, glossary terms, and `tests/conformance/authn` cases.
 
