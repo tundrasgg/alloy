@@ -3,7 +3,7 @@
 - Status: accepted
 - Depends on: 0006
 - Crates: alloy-iam
-- Decisions: 0017, 0018
+- Decisions: 0017, 0018, 0041
 
 ## 1. Purpose
 
@@ -22,11 +22,15 @@ unique within their parent.
 
 | Principal | Lives in | Authenticates with |
 |---|---|---|
-| user | org | Password and second factor, or an external identity provider |
+| user | org | Password and second factor, or an external identity provider, or an access key issued for a login code (3.9) |
 | service account | project | Access keys |
 | instance role | project | Credentials from the metadata service (ARFC 0011) |
 | node | cluster | Node identity key |
 | cloud admin | cluster | A user with a cluster role |
+| local admin | control node | Being user id 0 on that control node, through its local admin socket (3.10) |
+
+A user is enabled or disabled. Every authentication as a disabled user must fail,
+with any credential.
 
 ### 2.3 Credentials
 
@@ -39,6 +43,19 @@ unique within their parent.
 Access keys sign requests with AWS Signature Version 4, on every API surface. A
 token is `base64url(payload) "." base64url(signature)` where the payload is a
 Protocol Buffers message `{principal, org, issued, expires, key_id, scope}`.
+
+An access key belongs to exactly one principal, a service account or a user, and
+grants that principal's policies, no more and no less. It has a `name`, unique
+among the unrevoked keys of its principal, and an `issued_by` field naming what
+created it. An access key that belongs to a user is a **user access key**. A user
+access key authenticates without a password and without a second factor.
+
+A session token or a temporary key **derives from** an access key when the
+request that obtained it was authenticated by that access key, or by a session
+token or temporary key that derives from that access key. A refreshed session
+token derives from whatever the token it replaces derives from. The control plane
+records what each session token and temporary key derives from. A caller cannot
+set or change it.
 
 ### 2.4 Policies
 
@@ -91,6 +108,150 @@ it is disabled and restorable.
 3.8 Credentials at rest: passwords under Argon2id, access key secrets encrypted
 under a key from the `key-provider` seam, since SigV4 needs the secret to verify.
 
+### 3.9 User access keys
+
+3.9.1 A user access key must be created only by exchanging a login code (ARFC
+0002) that was issued for that user. Every other request to create an access key
+for a user must fail with `PermissionDenied`, whatever the caller's policies.
+
+3.9.2 A login code for a user is issued only by: `alloy init`, for the user it
+creates (ARFC 0002 section 3.1); the user itself, in a request authenticated by
+one of its access keys or by a session token; or a local admin (3.10). A request
+authenticated by a temporary key must not issue a login code. A user must not be
+able to issue a login code for any other principal. Issuing is authorized as
+action `iam:IssueLoginCode` with the user the code is for as the resource. Every
+built-in org role and the cluster role `cloud-admin` allow it on the holder's own
+user. A user with no role cannot issue one. A matching deny in a policy attached
+to that user, to a group it belongs to, or to its org refuses the call whoever
+the caller is, a local admin included (3.1). Issuing must also be refused if,
+when the call commits, the user is disabled or its org is disabled (3.7). Every
+refusal in this clause fails with `PermissionDenied` and creates no login code.
+
+3.9.3 The exchange request carries the login code, a `name` for the key, and
+optionally `replaces` (3.9.10). The CLI sends as `name` the computer's hostname,
+lower case, cut at the first dot, with characters outside `[a-z0-9-]` replaced by
+`-`, prefixed `key-` if it does not start with a letter, and then cut to 63
+characters. An exchange whose `name` does not meet section 7 must fail with
+`InvalidArgument`, must create no key, and must not spend the login code. If the
+user already has an unrevoked key with that name, the control plane must not
+revoke or change the existing key. It must name the new key `<name>-<n>`, with
+the lowest `n` from 2 upward that is free, and return the name it used.
+
+3.9.4 One exchange creates exactly one access key and spends the login code in
+the same control plane transaction. Of any number of concurrent exchanges of one
+login code, at most one must succeed. The response carries the access key id, the
+name, and the secret. The secret must not be returned by any later call (I-22).
+The exchange is authenticated by the login code and by nothing else. It is
+authorized, when it commits, as the user the code was issued for: it must fail
+with `PermissionDenied` and create no key if that user is disabled or deleted, or
+its org is disabled (3.7).
+
+3.9.5 `issued_by` of a user access key is one of: the id of the access key that
+authenticated the request that issued the login code; the id of the access key
+that the session token which authenticated that request derives from (2.3);
+`session` when that session token derives from no access key; `root@<node name>`
+when a local admin issued the code; or `init`. It is set by the control plane,
+never by the caller, and is returned whenever the key is listed or read.
+
+3.9.6 A user access key is listed and revoked through the same methods as a
+service account's access key, and revocation must take effect within 5 seconds
+across the cluster (ARFC 0020 section 3.4). Every built-in org role allows a user
+to list and revoke its own keys. A key may revoke itself.
+
+3.9.7 Revoking an access key must, in the same transaction, void every unspent
+login code that was issued by that key or by a session token that derives from
+it. Within 5 seconds of the revocation, across the cluster, every session token
+and temporary key that derives from the revoked key must be refused, and such a
+session token must not be refreshable. A user access key **descends** from
+another access key when its `issued_by` is that key, or a key that descends from
+that key. Revoking a key in the middle of such a chain does not cut the chain:
+the keys that descended through it still descend from the keys above it. The
+revocation response must state how many unrevoked user access keys descend from
+the revoked key. A revocation with `descendants: true` must revoke all of them in
+the same transaction, each with the effects of this clause.
+
+3.9.8 Disabling or deleting a user must revoke every access key of that user and
+void every unspent login code issued for it, in the same transaction.
+
+3.9.9 Audit (ARFC 0018 section 3.3). A record is written in the user's org chain
+for: each login code issued for the user, with the issuer as principal; each
+exchange attempt, successful or not, as an authentication attempt with the source
+address and the login code id; each user access key created, naming the key id,
+the key name, and `issued_by`; and each revocation, naming every key it revoked,
+a key revoked through `replaces` included. No record holds a login code secret or
+an access key secret.
+
+3.9.10 One key per computer. `replaces` in an exchange request is an access key
+id. If it names an unrevoked access key of the user the login code was issued
+for, the control plane must revoke that key in the transaction of the exchange,
+with the effects of 3.9.7 and without `descendants`, before it counts the user's
+keys (section 7) and before it chooses the name (3.9.3). The login code being
+exchanged is spent by the exchange and is not voided by that revocation. A new
+key that asks for the name of the key it replaces therefore gets that name with
+no number. A `replaces` that names anything else must be ignored: the exchange
+proceeds as if it were absent. If the exchange fails, the named key must not be
+revoked. The CLI must send `replaces`, with the id of the access key stored in
+the context it is logging in to, whenever that context holds one. A computer
+therefore holds at most one unrevoked user access key per context for as long as
+it keeps its key store. A computer that lost its key store cannot name its old
+key: that key stays until it is revoked (3.9.6).
+
+### 3.10 Local admin
+
+3.10.1 Each node that holds the `control` role has one built-in principal, its
+local admin, named `root@<node name>`. It is not a user, belongs to no org, holds
+no credential, and cannot be given policies, roles, or group membership. Its
+policy is fixed and allows exactly these actions:
+
+| Action | Limited to |
+|---|---|
+| `iam:IssueLoginCode` | A named user that holds the cluster role `cloud-admin` when the call commits. Default: user `admin` in org `default` |
+| `cluster:CreateJoinToken` | No further limit (ARFC 0002 section 3.2) |
+| `cluster:UpdateNode` | The roles and advertise addresses in the node record of the node it runs on |
+
+Every other call by a local admin must fail with `PermissionDenied` and must be
+audited as an authorization denial. The fixed policy supplies allows only. Denies
+and the user state checks of 3.9.2 bind a local admin as they bind any caller: a
+login code for a `cloud-admin` user must be refused when a deny on
+`iam:IssueLoginCode` is attached to that user, to a group it belongs to, or to
+its org, and when that user or its org is disabled.
+
+3.10.2 A local admin authenticates only through the local admin socket: a Unix
+domain stream socket at the path `/run/alloy/admin.sock`, owned by user id 0, with
+mode `0600`, in a directory owned by user id 0 with mode `0700`. `alloyd` must
+serve a connection on it only if the kernel reports the peer's user id as 0, and
+must otherwise close the connection without reading a request and write an audit
+record of a failed authentication. The socket serves the native API methods
+behind the three actions above and nothing else. No TCP, UDP, mesh, or abstract
+socket listener may accept a local admin.
+
+3.10.3 `alloyd` must create the local admin socket only while its node's current
+node record holds the `control` role, and must remove it within 5 seconds of
+learning that the role or the record is gone.
+
+3.10.4 The control plane must not rely on 3.10.3. It must take the node in
+`root@<node name>` from where the call entered the control plane: the control
+node whose own socket accepted it, or, for a write forwarded to the leader (ARFC
+0006 section 3.4), the node record bound to the AL session that carried it. It
+must never take it from the content of a request. A local admin call that arrives
+over a session whose node record lacks the `control` role, or over any API
+endpoint other than the local admin socket, must fail with `PermissionDenied`,
+must change nothing, and must be audited as an authorization denial.
+
+3.10.5 A local admin call passes authorization (3.4) and is committed through the
+control plane like any other write. Without quorum it fails with `Unavailable`.
+There is no path around consensus.
+
+3.10.6 Audit. Every local admin call, allowed or denied, writes a record in the
+cluster chain with principal `root@<node name>`, no org, and the node's
+infrastructure address (ARFC 0002 section 3.4) as source address, in the same
+transaction as the change (I-15). A login code issued by a local admin is also
+recorded in the org chain of the user it was issued for (3.9.9).
+
+3.10.7 A login code issued by a local admin is exchanged like any other (3.9.3
+to 3.9.5). Everything done with the resulting access key is done, and audited, as
+that user.
+
 ## 5. Seams
 
 | Kind | Trait | Implementations | Suite |
@@ -104,12 +265,65 @@ If policies cannot be loaded, the answer is deny. If the identity provider is
 unreachable, existing sessions continue until they expire and new logins through
 that provider fail.
 
+An exchange of a login code that fails at any step must create no access key and
+must revoke no access key. Whether a failed exchange spends the login code is
+defined with the login code, in ARFC 0002, except where this ARFC says it must
+not (3.9.3 and section 7). If the audit record of a local admin call or of an
+exchange cannot be committed, the call must fail and change nothing. If the
+control plane cannot determine what a session token or temporary key derives
+from, it must refuse that credential.
+
 ## 7. Limits
 
-64 KiB per policy. 20 policies per principal. 1,000 projects per org. 100 access
-keys per principal. Names: 1 to 63 characters, `[a-z0-9-]`, starting with a
-letter.
+64 KiB per policy. 20 policies per principal. 1,000 projects per org. 100
+unrevoked access keys per principal, counting user access keys. An exchange for a
+user that already has 100, after any revocation through `replaces` (3.9.10), must
+fail, must not spend the login code, and its error must name the limit. Names,
+including access key names: 1 to 63 characters, `[a-z0-9-]`, starting with a
+letter. A key name is cut to 59 characters before a number is appended (3.9.3).
+One local admin per control node.
 
 ## 8. Security
+
+User access keys. A user access key is a long-lived credential that needs no
+second factor. Stolen, it grants exactly its user's policies until revoked (ARFC
+0020 sections 2.1 and 3.4). Those policies include issuing login codes for the
+same user, so a thief can create further keys, with the stolen key or with a
+session token obtained with it. Every such key descends from the stolen key
+(2.3, 3.9.5, 3.9.7), a temporary key cannot issue a login code (3.9.2), and
+revoking the stolen key ends the session tokens and temporary keys that derive
+from it (3.9.7). So one revocation with `descendants: true` removes every
+credential of that user that exists because of the stolen key. It has two
+limits. It does not undo anything else done with the user's policies, such as a
+service account's access key or an attached policy: the audit log lists those.
+And a user access key whose `issued_by` is `session` descends from no key: if a
+session token that derives from no access key is stolen, the keys made with it
+are found through `issued_by` and the audit log and are revoked one by one.
+
+A deny on `iam:IssueLoginCode` attached to a user, a group, or an org stops login
+codes being issued for the users it covers, by any caller, a local admin included
+(3.9.2, 3.10.1). It does not void a login code issued before it was attached:
+that code can be exchanged until it expires (ARFC 0002). A disabled user gains no
+key by any path (3.9.2, 3.9.4, 3.9.8).
+
+Local admin. User id 0 on a running control node is not a new trusted party. ARFC
+0020 section 2.2 trusts the hardware and kernel of each node, section 2.1 names a
+compromised compute node as an adversary and no compromised control node, and
+section 2.3 has no boundary between user id 0 and `alloyd` on one node. Accepted
+ARFCs already give a single control node the power of every principal that holds
+an access key: every control node serves the API (ARFC 0006 section 3.4) and
+authenticates each call it serves (ARFC 0008 section 3.7), verifying SigV4 needs
+the access key secret (3.8), and at rest those secrets sit under a node key file
+of mode `0600` (ARFC 0020 section 3.7), the same gate as the socket. The control
+plane promises to survive the loss of a minority of control nodes (I-11). No ARFC
+promises anything when a control node is hostile. The ruling does not rest on
+where the cluster key is kept, which no ARFC states. The path gives that party
+no power it lacks and makes its use evident in the audit log as
+`root@<node name>`. It gives nothing to any adversary in ARFC 0020 section 2.1:
+it has no network listener, it does not exist on a machine that is not running
+as a control node, a guest reaches it only by breaking the guest to host
+boundary, and a compromised compute node is refused by the control plane under
+3.10.4, not by its own `alloyd`, so ARFC 0020 section 3.3 holds. It cannot be
+revoked short of removing the node's `control` role or its record.
 
 Upholds I-02, I-05, I-15, I-22.
