@@ -11,13 +11,13 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0052 |
-| Decision `D-` | D-0020 |
-| ADR | 0055 |
+| Task `T-` | T-0053 |
+| Decision `D-` | D-0021 |
+| ADR | 0056 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0002 |
 
-ADR 0036, ADR 0042, ADR 0046 to ADR 0054, R-0001 to R-0008, and PB-0001 are allocated to the tasks below.
+ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0055, R-0001 to R-0008, and PB-0001 are allocated to the tasks below.
 
 ## Board
 
@@ -66,14 +66,15 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0054, R-0001 to R-0008, and PB-0001 are allo
 | T-0041 | spec | architect | done | none | Use a browser-compatible key type for the API CA |
 | T-0042 | build | developer | done | none | Close the check-repo gaps found in review |
 | T-0043 | spec | architect | review | none | Settle the path class rule and bound return path moves |
-| T-0044 | spec | architect | review | none | Make access key recovery and deleted-key requests well defined |
-| T-0045 | spec | architect | queued | T-0044 | Close join, local admin, and API CA gaps in ARFC 0002 and 0019 |
+| T-0044 | spec | architect | done | none | Make access key recovery and deleted-key requests well defined |
+| T-0045 | spec | architect | queued | T-0052 | Close join, local admin, and API CA gaps in ARFC 0002 and 0019 |
 | T-0046 | build | developer | active | none | Enforce direct-io with Clippy on resolved paths |
-| T-0047 | spec | architect | queued | T-0044 | Protect the last cloud-admin and mark ADR 0041 superseded |
+| T-0047 | spec | architect | cancelled | none | Protect the last cloud-admin and mark ADR 0041 superseded |
 | T-0048 | research | researcher | done | none | Research the rustls provider and a P-256 signing source |
 | T-0049 | process | architect | active | none | Fix the P-256 rules in the crypto engineering file |
 | T-0050 | spec | architect | queued | T-0006 | Specify the alloy-sim world and scenario interface |
 | T-0051 | build | developer | active | none | Run the commit message check in CI |
+| T-0052 | spec | architect | active | none | Make the local admin a full break-glass administrator |
 
 ## First dispatch
 
