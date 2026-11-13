@@ -18,3 +18,4 @@ supersedes the old one and says so in its first line.
 | R-0005 | Licenses inside the Cloud Hypervisor UEFI images | T-0019 |
 | R-0006 | Browser support for Ed25519 TLS certificates | T-0034 |
 | R-0007 | Generating the console's TypeScript API client from the Protocol Buffers definitions | T-0035 |
+| R-0008 | The `rustls` crypto provider and an ECDSA P-256 source with RFC 6979 nonces | T-0048 |
