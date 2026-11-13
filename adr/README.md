@@ -73,6 +73,7 @@ or supersede it.
 | [0017](0017-alloy-is-multi-tenant-throughout.md) | Alloy is multi-tenant throughout |
 | [0018](0018-nodes-belong-to-the-cluster-tenants-never-add-nodes.md) | Nodes belong to the cluster, tenants never add nodes |
 | [0041](0041-users-hold-access-keys-from-login-codes-root-on-a-control-nod.md) | Users hold access keys from login codes, root on a control node is a local admin |
+| [0050](0050-users-hold-access-keys-from-login-codes-a-local-admin-can-iss.md) | Users hold access keys from login codes, a local admin can issue and revoke them |
 
 ## Api
 
