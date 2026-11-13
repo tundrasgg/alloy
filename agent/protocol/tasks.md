@@ -68,7 +68,7 @@ A task is ready to dispatch only when:
 - every path in `reads` exists on main,
 - the acceptance section contains runnable commands,
 - its `touches` set is disjoint from every `active` task, leaving out the shared
-  index files below.
+  index files and the shared workspace files below.
 
 ## Shared index files
 
@@ -95,6 +95,46 @@ brings main into the task branch (`agent/eng/git.md`). The lead keeps both sides
 new rows, in ascending id order, and changes nothing else. A conflict that is not
 two sets of added rows means a task broke the append-only rule: the lead does not
 resolve it and dispatches that task's role again with the next round.
+
+## Shared workspace files
+
+A task that adds a crate or a dependency lists these paths in `touches` (D-0006).
+They are shared, and only these parts of them:
+
+- the `members` list of `[workspace]` in the root `Cargo.toml`,
+- the `allow` list of `[bans]` in the root `deny.toml`,
+- `Cargo.lock`.
+
+In the two lists, a task may add entries. It may not edit, delete, or reorder an
+existing entry. Each list keeps one entry per line in ascending byte order, by
+path in `members` and by `crate` in `allow`, and a new entry goes at its sorted
+place. A task that finds a list on one line may break it into one entry per
+line. A task changes `Cargo.lock` only by running cargo after its own manifest
+changes. It never edits the file by hand and never runs `cargo update` or
+`cargo generate-lockfile`, which move existing versions.
+
+The disjointness check in the readiness rules leaves these paths out, so any
+number of tasks that each add crates or dependencies can be `active` at once. A
+task whose scope removes a member, removes an `allow` entry, changes anything
+else in `Cargo.toml` or `deny.toml` (a workspace lint, a license), or moves a
+version already in `Cargo.lock` holds that file exclusively: for that task the
+path counts in the disjointness check like any other.
+
+A merge conflict in a shared workspace file is resolved by the lead, at merge,
+while it brings main into the task branch (`agent/eng/git.md`):
+
+1. `Cargo.toml` and `deny.toml`: keep both sides' added entries, in ascending
+   byte order, and change nothing else.
+2. `Cargo.lock`: never merge it by hand. Take main's version
+   (`git checkout main -- Cargo.lock`), then run `cargo update --workspace`,
+   which updates only workspace packages and packages not yet in the lockfile
+   (`cargo help update`, option `--workspace`).
+3. Run `cargo xtask ci` on the result.
+
+A conflict that is not two sets of added entries means a task broke the rules
+above, and a `cargo xtask ci` failure after step 2 means the task's work does not
+build against main's locked versions. In either case the lead does not resolve
+it and dispatches that task's role again with the next round.
 
 ## Sizing
 
