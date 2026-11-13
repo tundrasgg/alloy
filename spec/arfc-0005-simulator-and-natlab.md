@@ -55,6 +55,11 @@ section 2.1) and on no other Alloy crate. Every error type derives `Debug`,
 `Clone`, `PartialEq`, and `Eq`, and implements `std::error::Error` and `Display`
 through `thiserror`. Types that carry packet or disk bytes (`Datagram`, `RecvSlot`,
 `IoBuf`) implement `Debug` by hand and print lengths only, never contents (I-22).
+Their `Debug` output with `{:?}` is exactly the text the doc comment on each impl
+below gives, with every number in decimal: for example `Datagram { len: 64 }`.
+With `{:#?}` it holds the same fields, in the same order, in Rust's standard
+multi-line layout for a struct. Types that contain them, such as `ReadOp` and
+`ReadDone`, inherit this.
 
 All asynchronous methods return `BoxFuture`, which is object safe and `Send`.
 Network buffers are borrowed, so a receive writes into the caller's memory. Disk
@@ -244,6 +249,10 @@ pub struct Datagram<'a> {
     pub payload: &'a [u8],
 }
 
+/// Writes `Datagram { len: <payload.len()> }`, never the payload, `dst`,
+/// or `src_ip` (section 2.1).
+impl fmt::Debug for Datagram<'_> { /* ... */ }
+
 /// Datagrams `0..sent` were sent. When `sent` is less than the batch
 /// length, `error` is the failure of datagram `sent`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -262,6 +271,10 @@ pub struct RecvSlot {
     /// The local address the datagram was sent to.
     pub dst_ip: IpAddr,
 }
+
+/// Writes `RecvSlot { capacity: <buf.len()>, len: <len> }`, never the
+/// bytes, `truncated`, `src`, or `dst_ip` (section 2.1).
+impl fmt::Debug for RecvSlot { /* ... */ }
 
 impl RecvSlot {
     /// The largest slot buffer, in bytes: the largest value of the UDP
@@ -378,6 +391,7 @@ impl RtPath {
     /// The path `/`.
     pub fn root() -> RtPath;
     pub fn new(path: &str) -> Result<RtPath, DiskError>;
+    /// Adds exactly one component, which holds no `/` (clause 3.1.10).
     pub fn join(&self, component: &str) -> Result<RtPath, DiskError>;
     /// `None` for the root.
     pub fn parent(&self) -> Option<RtPath>;
@@ -518,6 +532,9 @@ impl IoBuf {
     pub fn is_empty(&self) -> bool;
 }
 
+/// Writes `IoBuf { len: <len()> }`, never the bytes (section 2.1).
+impl fmt::Debug for IoBuf { /* ... */ }
+
 impl std::ops::Deref for IoBuf { type Target = [u8]; /* ... */ }
 impl std::ops::DerefMut for IoBuf { /* ... */ }
 
@@ -617,7 +634,10 @@ impl Runtime {
     where
         F: Future + Send + 'static,
         F::Output: Send + 'static;
+    /// The deadline is fixed at the call (clause 3.1.14).
     pub fn sleep(&self, duration: Duration) -> BoxFuture<'static, ()>;
+    /// The deadline is fixed at the call, not at the first poll
+    /// (clause 3.1.14).
     pub fn timeout<'a, F>(&self, duration: Duration, future: F)
         -> BoxFuture<'a, Result<F::Output, Elapsed>>
     where
@@ -1309,9 +1329,25 @@ read.
   queued, and `connect` fails with `TimedOut` 30 s after `t`. Until its answer
   arrives or 30 s pass, a request counts as an open stream of the requesting
   instance (clause 3.1.9), also after its `connect` future is dropped.
+- Pending ends. A request that is queued at a listener has a **pending end** on
+  the requesting host from `t + d` until `t + 2d`, also after its `connect`
+  future is dropped. A crash of the requesting host ends it and discards the
+  segments it holds, which frees their space. A segment that arrives at a pending end is **held**: kept, in order,
+  and still counted against the buffer of its direction. When `connect`
+  completes at `t + 2d`, the pending end becomes the live end of the returned
+  `Stream`, and every held segment arrives at it at that instant, in order,
+  under the rules below. A segment that arrives at `t + 2d` has the same outcome
+  whether the scheduler processes its arrival before or after the completion
+  (clause 3.2.2). The accepting end exists only from `t + d`, so each byte it
+  sends is due at `t + d` or later, and a held byte is delivered less than 15 s
+  after it was due.
 - Abandoned setup. When a request was queued but its `connect` future has been
   dropped by `t + 2d`, by the caller or by a crash, the requesting host, if it is
-  running at `t + 2d`, sends a reset then, as the only segment of its direction.
+  running at `t + 2d`, sends a reset then, as the only segment of its direction,
+  and discards every segment its pending end holds, which frees their space. This
+  reset is the one reset of that direction: a segment that arrives at `t + 2d` is
+  held and discarded with the others, or arrives after the pending end has ended
+  and draws no second reset (Arrival), whichever the scheduler processes first.
   A crashed host sends nothing.
 - Segments. Each direction carries, in order, **segments**: the bytes of each
   `write`, then at most one end of stream, then at most one reset. Nothing
@@ -1327,10 +1363,11 @@ read.
   its `connect` completes, until it becomes reset, its host drops its `Stream`,
   the listener holding it in a backlog is dropped, or its host crashes.
 - Arrival. Bytes or an end of stream that arrive at a live end are
-  **delivered**: queued for `read` in order. A segment that arrives at an end
-  that is not live, or at a host that holds no end for the connection (because
-  the host has restarted since the connection was set up, or its `connect`
-  future was dropped), is discarded, and its bytes free their space at once. For
+  **delivered**: queued for `read` in order. A segment that arrives at a pending
+  end is held (Pending ends). A segment that arrives at an end that is neither
+  live nor pending, or at a host that holds no end for the connection (because
+  the host has restarted since the connection was set up, or the setup was
+  abandoned), is discarded, and its bytes free their space at once. For
   a discarded byte or end of stream, the receiving host sends a reset back,
   unless a reset was already sent in the direction back. A reset that arrives
   where no live end is has no effect.
@@ -1344,8 +1381,13 @@ read.
   delivered by then. A reset end discards its unread bytes and every segment it
   sent that has not arrived, and its pending and later `read` and `write` fail
   with `ConnectionReset`. A reset end in a backlog is removed from the backlog.
-  Since a byte is due only after the route's delay, latency alone never fires
-  this rule: blocking and arrival at an end that is not live can.
+  A held reset makes the new live end reset at the instant `connect` completes:
+  `connect` still returns the `Stream`, and its `read` and `write` fail with
+  `ConnectionReset`. A byte is due only after the route's delay, a held byte is
+  delivered less than 15 s after it was due, and the accepting end's segments
+  cannot arrive before its peer's pending end exists. So latency alone never
+  fires this rule and never makes a segment arrive where no live or pending end
+  is: blocking, crashes, and dropped, reset, or abandoned ends can.
 - Crash. The ends of a crashed host vanish without sending anything. Segments
   they sent before the crash still arrive.
 - After the peer's end of stream arrives, `read` returns every byte before it and
@@ -1356,7 +1398,15 @@ read.
 - `RtPath::new` accepts exactly the strings that start with `/`, are `/` alone or
   have components of 1 to 255 bytes separated by single `/` with no trailing `/`,
   have no component `.` or `..`, contain no NUL and no `\`, and are at most 4,096
-  bytes. Anything else returns `InvalidPath`. `join` applies the same rules.
+  bytes. Anything else returns `InvalidPath`.
+- `join(c)` adds exactly one component. It accepts `c` when `c` is 1 to 255 bytes,
+  is not `.` or `..`, and contains no `/`, no NUL, and no `\`, and returns the
+  path followed by `/` and `c`, or `/` and `c` for the root. It returns
+  `InvalidPath` when `c` breaks one of these rules, `/` included, and when the
+  result would be longer than 4,096 bytes. So for every path `p` and every `c`
+  it accepts, `p.join(c)` has `parent()` equal to `Some(p)` and `file_name()`
+  equal to `Some(c)`. A path of several components is built with `new` or with
+  one `join` per component.
 - Every instance has a root, and `RtPath` `/` names it. `os` maps paths below the
   root directory of its configuration (section 4.2) and follows symbolic links, so
   the root is not a security boundary. In `mem` each host has its own namespace,
@@ -1420,7 +1470,8 @@ on the platform for it.
 
 3.1.13 `IoBuf`. The first byte of every `IoBuf` is at an address that is a
 multiple of 4,096. `zeroed` and `from_slice` return `InvalidInput` above
-67,108,864 bytes. Its `Debug` output holds its length only.
+67,108,864 bytes. Its `Debug` output is exactly `IoBuf { len: <len()> }`
+(section 2.1).
 
 3.1.14 Runtime.
 
@@ -1429,9 +1480,21 @@ multiple of 4,096. `zeroed` and `from_slice` return `InvalidInput` above
   returns that error.
 - `Runtime::spawn` spawns through the `spawn` instance, and `JoinHandle::join`
   returns the task's output or the `JoinError` of clause 3.1.6.
-- `sleep(d)` is `clock.sleep_until(clock.now().saturating_add(d))`.
-- `timeout(d, f)` polls `f` before the timer on every poll. It returns `f`'s output
-  if `f` completes first, and otherwise `Elapsed`, dropping `f`.
+- `sleep(d)` reads `clock.now()` once, when it is called, and is
+  `clock.sleep_until(now.saturating_add(d))` with that `now`. Its deadline is fixed
+  at the call.
+- `timeout(d, f)` starts its timer at the call, not at its first poll: it reads
+  `clock.now()` once, when it is called, and its deadline is
+  `now.saturating_add(d)`. On every poll it polls `f` first and returns `Ok` with
+  `f`'s output when `f` is ready. Only otherwise does it poll the timer, and when
+  the timer has completed it drops `f` and returns `Err(Elapsed)`. So a `timeout`
+  first polled at or after its deadline returns `Ok` when `f` is ready on that
+  poll and `Elapsed` otherwise, and `timeout(Duration::ZERO, f)` returns `Elapsed`
+  on its first poll unless `f` is ready then. The timer starts at the call
+  because the caller measures the limit from the moment it asks: a future
+  that is stored before it is awaited, or polled late by a busy scheduler, must
+  not gain time, and `sleep`, whose deadline is fixed at the call, behaves the
+  same way.
 - `register_os` registers `os` under the five kinds and fails as
   `RegistryBuilder::register` does. Each `os` factory accepts the configuration of
   section 4.2.
@@ -1498,7 +1561,9 @@ lines. CI runs each scenario twice per seed and compares them.
    none is. An observer that panics in `record` is removed and receives nothing
    more; the record still goes to every other observer. A middlebox that panics
    in `process` leaves its packet undelivered and unrecorded. After either panic
-   the next record is `run-end`. A trace file that cannot be written does not
+   the next record is `run-end`. An observer that panics in `record` of the
+   `run-end` record itself is removed like any other, and no record follows: the
+   run has already ended, and step 5 writes no second `run-end`. A trace file that cannot be written does not
    end the run: the simulator writes nothing more to the file and the run goes
    on.
 5. At the end it writes the `run-end` record at the current world time, then
@@ -1517,7 +1582,11 @@ host task panicked (section 6), an observer or a middlebox panicked, or the trac
 file could not be written. Otherwise it is `liveness` when the run ended by step
 4's budget case or poll case. Otherwise it is `pass`. `failure` holds the cause
 seen first: the `Failure` detail, or a text naming the panic, the budget, the
-poll bound, or the file error.
+poll bound, or the file error. The result is fixed when the `run-end` record is
+written, and `RunSummary::result` and the summary line always give the result
+that record carries: an observer that panics in `record` of the `run-end` record
+does not change the result or `failure`. Checkers report through the control
+task (clause 3.6.3), so no verdict depends on an observer's panic.
 
 3.2.9 A world call made from inside `Observer::record` or `Middlebox::process`
 changes nothing. Every `World` method that returns a `Result` returns `Busy`.
@@ -2056,7 +2125,9 @@ those prefixes on a line is not specified. The summary line is always the last
 line `run` writes.
 
 A middlebox or observer that panics, and a control task that panics, end the run
-with `fail` (clauses 3.2.7 and 3.2.8). A host task's panic does not end the run.
+with `fail` (clauses 3.2.7 and 3.2.8), except an observer that panics on the
+`run-end` record, which comes after the result is fixed. A host task's panic
+does not end the run.
 
 A task that panics in `mem` fails the scenario, after the run ends, with result
 `fail`. A trace file that cannot be written fails the scenario with result `fail`
