@@ -203,8 +203,9 @@ static key and must drop an initiation whose counter is not higher. No wall cloc
 is involved. Across a process handover that table travels with the sessions, and
 a process that resumes after a failed handover raises it to the counters its
 successor accepted (3.9). The node channel takes its request ids from the same
-counter (ARFC 0002 section 3.13), so each value is used once, by one initiation
-or by one request, and initiation counters still only grow.
+counter (ARFC 0002 section 3.13): each value is used once, by one initiation as
+its counter or by one request, whose `request_id` is that value plus 1, and
+initiation counters still only grow.
 
 ### 3.3 Session keys
 

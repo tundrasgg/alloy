@@ -3,7 +3,7 @@
 - Status: accepted
 - Depends on: 0001, 0002, 0004, 0005, 0007, 0008, 0017, 0018
 - Crates: alloy-state, alloy-ctl
-- Decisions: 0019, 0031, 0064
+- Decisions: 0019, 0031, 0064, 0065
 
 ## 1. Purpose
 
@@ -200,7 +200,13 @@ not expired by its own clock:
   started. After any other result, or no reply, the next starts 1 second after
   the failed one ended, the delay doubling with each further failure in a row
   up to 4 seconds. After `REFUSED` or `RELEASE_REFUSED` the next starts 60
-  seconds after the failed one ended.
+  seconds after the failed one ended. A node has one request outstanding at a
+  time and none ends another (ARFC 0002 section 3.13), so a heartbeat that
+  falls due while a `renew` or `leave` of the node is outstanding starts when
+  that request ends, before any other request. A `renew` or `leave` that falls
+  due while a heartbeat is outstanding waits for it, at most 4 seconds. The
+  outcome of a `renew` or `leave` is neither a success nor a failure of a
+  heartbeat.
 - Running release. While the node has to write its running release, every
   heartbeat carries `release`. A reply `OK` tells the node the write is applied,
   and `RELEASE_REFUSED` that it is refused, with the finalized release that ARFC
@@ -224,10 +230,13 @@ not expired by its own clock:
 With 4 control nodes or fewer, a node has a heartbeat accepted less than 30
 seconds after the one before, and so shows `active` (3.15), while some control
 node that it can reach answers within these limits and either is the leader or
-reaches it. After an accepted heartbeat, the next starts 5 seconds after it,
+reaches it, and no `renew` or `leave` of the node runs in between. After an
+accepted heartbeat, the next starts 5 seconds after it,
 and three that then fail in a row, each on another control node, put the start
 of the fourth 24 seconds after the accepted one's start and its acceptance
-within 28.
+within 28. A `renew` in between, at most one in any 60 seconds (ARFC 0002
+section 3.5), delays every later start by at most its time limit of 10
+seconds, so the acceptance then comes within 38 seconds.
 
 3.14 Accepting a heartbeat. A control node that is not the leader of the global
 group passes a heartbeat to the leader, as 3.4 passes writes, and replies with

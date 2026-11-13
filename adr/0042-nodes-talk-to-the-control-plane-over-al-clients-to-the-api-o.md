@@ -1,6 +1,6 @@
 # ADR 0042: Nodes talk to the control plane over AL, clients to the API over gRPC
 
-- Status: accepted
+- Status: superseded by 0065
 - Subject: api
 - Specs: arfc-0002, arfc-0004, arfc-0008
 

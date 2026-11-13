@@ -3,7 +3,7 @@
 - Status: accepted
 - Depends on: 0002, 0006, 0007, 0017
 - Crates: alloy-obs, alloy-audit
-- Decisions: 0028, 0064
+- Decisions: 0028, 0064, 0065
 
 ## 1. Purpose
 
@@ -103,12 +103,22 @@ or the error code or refusal the caller got.
 | `cluster:ExpireNode` | The deletion of a `joining` node or a `pending` request by the node lifecycle controller (ARFC 0006 clause 3.16) | `system:node-lifecycle` |
 
 The resource is the node's name. The source address is the address the call
-came from, as the control plane saw it. For a node message it is the underlay
-source address of its packet as the anchor saw it, which `forwarded` carries
-(ARFC 0002 section 3.13), and for a control node's own heartbeat that node's
-infrastructure address. The request digest is BLAKE3 over the request's Protocol
-Buffers encoding, the `NodeStatus` for a heartbeat, with every secret field,
-such as a join token's `secret`, emptied first, and 32 zero bytes for
+came from, as the control plane saw it, never an address that another node
+states. For a node message (ARFC 0002 section 3.13) it is:
+
+- for one that an anchor holding `control` takes on a session from an
+  unregistered initiator, the underlay source address of the packet that
+  carried it to that anchor;
+- for one that arrives in a `forwarded`, the infrastructure address of the
+  anchor that forwarded it, and never the address the `forwarded` names;
+- for every other node message, which arrives on an AL session with its sender
+  over a direct or a relayed path, the sender's infrastructure address, which
+  is the source address of the IPv6 packet that carries it;
+- for a control node's own requests and heartbeats, which make no node message,
+  that node's infrastructure address.
+
+The request digest is BLAKE3 over the request's Protocol Buffers encoding, the `NodeStatus` for a heartbeat, with every secret field,
+such as the login code's `secret` in `ExchangeLoginCode`, emptied first, and 32 zero bytes for
 `cluster:Init` and `cluster:ExpireNode`.
 
 ### 3.4 Health
