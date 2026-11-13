@@ -10,8 +10,8 @@
 //! (ARFC 0017 clause 3.16 step 5).
 //!
 //! [`run`] is the run loop. The binary calls it with the stop signals of its
-//! process ([`os_signals`]) or of the service control manager
-//! ([`service`]); tests call it with a [`Stop`] of their own.
+//! process ([`os_signals`]) or, on Windows, of the service control manager
+//! (the `service` module); tests call it with a [`Stop`] of their own.
 
 #![forbid(unsafe_code)]
 
