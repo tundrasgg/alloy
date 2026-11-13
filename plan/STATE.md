@@ -31,8 +31,8 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0060, R-0001 to R-0008
 | T-0006 | spec | architect | done | none | Specify the alloy-rt and alloy-seam interfaces |
 | T-0007 | interface | developer | done | none | Define the alloy-rt and alloy-seam interface crates |
 | T-0008 | verify | verifier | queued | T-0007, T-0066, T-0067 | Write conformance suites for the runtime seams |
-| T-0009 | build | developer | queued | T-0007, T-0050 | Build the alloy-sim deterministic simulator |
-| T-0010 | verify | verifier | queued | T-0007, T-0050 | Write determinism and fault tests for the simulator |
+| T-0009 | build | developer | active | none | Build the alloy-sim deterministic simulator |
+| T-0010 | verify | verifier | active | none | Write determinism and fault tests for the simulator |
 | T-0011 | build | developer | queued | T-0009, T-0021 | Build the NAT models in alloy-natlab |
 | T-0012 | verify | verifier | queued | T-0007, T-0021 | Write NAT model tests and the matrix file |
 | T-0013 | product | product | done | none | Write the brief for init, join, and first login |
@@ -72,10 +72,10 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0060, R-0001 to R-0008
 | T-0047 | spec | architect | cancelled | none | Protect the last cloud-admin and mark ADR 0041 superseded |
 | T-0048 | research | researcher | done | none | Research the rustls provider and a P-256 signing source |
 | T-0049 | process | architect | done | none | Fix the P-256 rules in the crypto engineering file |
-| T-0050 | spec | architect | review | none | Specify the alloy-sim world and scenario interface |
+| T-0050 | spec | architect | done | none | Specify the alloy-sim world and scenario interface |
 | T-0051 | build | developer | blocked | T-0053 | Run the commit message check in CI |
 | T-0052 | spec | architect | done | none | Make the local admin a full break-glass administrator |
-| T-0053 | build | developer | review | none | Parse commit trailers only from the last paragraph |
+| T-0053 | build | developer | done | none | Parse commit trailers only from the last paragraph |
 | T-0054 | build | developer | done | none | Build alloy-wire for AL handshake and transport messages |
 | T-0055 | verify | verifier | queued | T-0064 | Write conformance vectors for AL handshake and transport bytes |
 | T-0056 | process | architect | done | none | Let parallel tasks add crates to the shared workspace files |
@@ -83,17 +83,17 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0060, R-0001 to R-0008
 | T-0058 | process | architect | done | none | Align core and lead rules with shared workspace files |
 | T-0059 | spec | architect | review | none | Discard sessions a failed handover's successor touched |
 | T-0060 | spec | architect | cancelled | none | Settle the open fragment and queue details in ARFC 0003 |
-| T-0061 | build | developer | blocked | T-0071 | Add fuzz targets for every alloy-wire decoder |
+| T-0061 | build | developer | active | none | Add fuzz targets for every alloy-wire decoder |
 | T-0062 | build | developer | done | none | Allow thiserror and proptest in the dependency allowlist |
 | T-0063 | spec | architect | queued | T-0059 | Shrink the AL transport header to 25 bytes of overhead |
 | T-0064 | build | developer | queued | T-0063 | Rework alloy-wire for the compact transport header |
 | T-0065 | spec | architect | done | none | State break-glass reach into tenant data accurately |
-| T-0066 | spec | architect | review | none | Close the open stored-binding and interface gaps in ARFC 0001 |
-| T-0067 | spec | architect | queued | T-0050 | Settle timeout start and path joining in ARFC 0005 |
-| T-0068 | build | developer | queued | T-0053 | Close the direct-io gaps and vet the Clippy fixture's crates |
+| T-0066 | spec | architect | active | none | Close the open stored-binding and interface gaps in ARFC 0001 |
+| T-0067 | spec | architect | active | none | Settle timeout start and path joining in ARFC 0005 |
+| T-0068 | build | developer | active | none | Close the direct-io gaps and vet the Clippy fixture's crates |
 | T-0069 | build | developer | review | none | Property-test the seam config codec and tidy the crates |
-| T-0070 | spec | architect | active | none | State plainly that root on a control node reads all tenant data |
-| T-0071 | process | architect | active | none | Record the NCSA exception for libfuzzer-sys in ADR 0060 |
+| T-0070 | spec | architect | done | none | State plainly that root on a control node reads all tenant data |
+| T-0071 | process | architect | done | none | Record the NCSA exception for libfuzzer-sys in ADR 0060 |
 
 ## First dispatch
 
