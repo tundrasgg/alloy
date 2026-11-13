@@ -41,8 +41,8 @@ wrong: split them, or get research done first.
 
 - Dispatch every task that is ready and whose `touches` set is disjoint from every
   running task, both as defined by the readiness rules in
-  `agent/protocol/tasks.md`, which leave the shared index files out of the
-  disjointness check. Do it in one turn.
+  `agent/protocol/tasks.md`, which leave the shared index files and the shared
+  workspace files out of the disjointness check. Do it in one turn.
 - Never wait for one subagent while another task could start.
 - Freeze interfaces first (`interface` tasks), then build and verify in parallel
   against the frozen interface.

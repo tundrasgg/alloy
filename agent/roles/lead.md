@@ -36,10 +36,22 @@ the reviewer. Do not check the code yourself.
 merges. Nothing else. Work that is too delicate for the build tier is dispatched
 at the deep tier (`agent/core/5-delegation.md`), not done by you.
 
-A git merge includes resolving an add-versus-add conflict in a shared index file
-at merge, as `agent/protocol/tasks.md` prescribes: keep both sides' new rows in
-ascending id order and change nothing else. Any other conflict in a shared index
-is not yours to resolve: dispatch that task's role again with the next round.
+A git merge includes resolving these conflicts in shared files at merge, as
+`agent/protocol/tasks.md` prescribes:
+
+- A shared index file with two sets of added rows: keep both sides' new rows in
+  ascending id order and change nothing else.
+- The shared workspace files `Cargo.toml` and `deny.toml` with two sets of added
+  entries: keep both sides' added entries in ascending byte order and change
+  nothing else.
+- The shared workspace file `Cargo.lock`: never merge it by hand. Take main's
+  version, then regenerate it with `cargo update --workspace`.
+
+After resolving any shared workspace file, run `cargo xtask ci` on the result.
+
+Any other conflict in a shared index or workspace file, and a `cargo xtask ci`
+failure after `Cargo.lock` is regenerated, is not yours to resolve: dispatch that
+task's role again with the next round.
 
 ## Talking to the pilot
 
