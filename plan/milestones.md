@@ -141,3 +141,39 @@ Exit: a mixed-version rolling upgrade passes every scenario, a 10,000 node
 simulated region meets the latency bounds in ARFCs 0006 and 0011, every boundary
 in ARFC 0020 has a passing hostile scenario, and every limit in every ARFC has a
 test at the limit.
+
+## M11: First deployment
+
+Pilot direction (D-0034). A vertical slice through M1, M2, and M3 on real
+hardware: two Linux compute nodes, one of them a Proxmox VE host, and one Windows
+client that is a node with no roles. It takes priority over every other
+milestone. Work proceeds in rungs, in order; a rung is done when its check passes
+on the real machines and the report quotes the commands and their output, and the
+next rung's check is not run before that. Every rung leaves a script under
+`tests/e2e/` that reruns its check from scratch, with the machines named only by
+parameters.
+
+Rules:
+- Alloy coexists with what a host already runs. On a Proxmox VE host it never
+  changes the host's bridges, firewall, storage, or existing guests. On any host it
+  uses only interfaces, routes, firewall tables, and address ranges it created,
+  and none that overlap ones already in use.
+- Every client operating system gets the `alloy` CLI and a mesh client that
+  reaches VPC addresses. Windows hosts no compute.
+
+Rungs:
+1. Install: one command installs `alloyd` on each Linux node and the CLI and mesh
+   client on Windows. Uninstall removes all of it.
+2. Join: `alloy init` on one Linux node, `alloy join` on the other and on Windows.
+   The node list shows all three, healthy.
+3. Mesh: all three reach each other over the overlay, and the check shows each
+   path as direct or relayed.
+4. Compute: creating a VM boots a Linux guest on each Linux node in turn. Both get
+   an address by DHCP and reach the internet.
+5. VPC: one VM per Linux node on the same VPC ping each other across hosts on
+   private addresses.
+6. Client: Windows reaches both VMs' private addresses and opens SSH to each.
+7. Survival: a rebooted Linux node rejoins, and its VM comes back with no manual
+   step.
+
+Exit: all seven checks rerun green, back to back, from a clean state.

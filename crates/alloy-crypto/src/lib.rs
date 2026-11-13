@@ -5,8 +5,10 @@
 //! primitive through the interface here, so the choice of implementation, its
 //! version and its features are made in one place.
 //!
-//! It currently offers BLAKE3 content hashing, which `alloy-sim` uses for the
-//! trace hash and record digests of ARFC 0005 clause 3.2.5:
+//! It offers two things.
+//!
+//! BLAKE3 content hashing, which `alloy-sim` uses for the trace hash and
+//! record digests of ARFC 0005 clause 3.2.5:
 //!
 //! - [`hash`] hashes one byte slice in a single call.
 //! - [`Hasher`] hashes input that arrives in pieces.
@@ -15,10 +17,16 @@
 //! both give the same result for the same bytes however those bytes are split.
 //! The output depends only on the input: it is the same on every platform and
 //! whichever SIMD path the CPU selects at run time.
+//!
+//! The cryptography of the AL mesh protocol, in [`al`]: the Noise `IKpsk2`
+//! handshake, the session keys, `mac1`, `mac2` and cookies, and transport
+//! sealing and opening (ARFC 0003 sections 3.1 to 3.4).
 
 #![forbid(unsafe_code)]
 
 use std::fmt;
+
+pub mod al;
 
 /// Returns the 32-byte BLAKE3 hash of `input`.
 ///
@@ -42,10 +50,11 @@ pub fn hash(input: &[u8]) -> [u8; 32] {
 /// concatenation of all updated bytes, not on how they were split, so it
 /// equals [`hash`] of the concatenation.
 ///
-/// Memory use is fixed and independent of the input length: the hasher holds
-/// one partial 1 KiB chunk and a stack of at most 55 chaining values of 32
-/// bytes, enough for the 2^64 byte input limit of BLAKE3. Input beyond that
-/// limit is outside the BLAKE3 specification.
+/// Memory use is fixed and independent of the input length: the hasher
+/// buffers at most one 64-byte block of the current 1 KiB chunk, with that
+/// chunk's 32-byte chaining value, and keeps a stack of at most 55 chaining
+/// values of 32 bytes, enough for the 2^64 byte input limit of BLAKE3. Input
+/// beyond that limit is outside the BLAKE3 specification.
 ///
 /// ```
 /// let mut hasher = alloy_crypto::Hasher::new();

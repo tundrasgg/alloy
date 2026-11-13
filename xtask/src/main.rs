@@ -1,8 +1,10 @@
 //! Repository automation for Alloy, run as `cargo xtask <task>`.
 //!
 //! `cargo xtask ci` is the single quality gate: nothing merges unless it exits 0.
-//! It runs formatting, lints, tests, the dependency allowlist, and the repository
-//! policy checks, in that order, and stops at the first step that fails.
+//! It runs formatting, lints, tests, a build of the fuzz targets, the
+//! dependency allowlist, the repository policy checks, and, when given a range,
+//! the commit message checks, in that order, and stops at the first step that
+//! fails.
 
 #![forbid(unsafe_code)]
 // xtask is the repository's build tool, not part of Alloy: it runs cargo and
@@ -43,7 +45,18 @@ tasks:
 
 options for ci and check-repo:
   --base <ref>     also run the path lock on the changes since <ref>
-  --branch <name>  the branch the path lock judges, when HEAD is detached (needs --base)";
+  --branch <name>  the branch the path lock judges, when HEAD is detached (needs --base)
+
+options for ci:
+  --commits <from>..<to>
+                   last, run check-commits over the range; when <from> is empty,
+                   all zeros, unknown, or not an ancestor of <to>, the range
+                   starts at 5429bb9 instead, the last commit left unchecked
+                   (D-0037)";
+
+/// The last commit on main that `check-commits` leaves unchecked (D-0037).
+/// `ci --commits` starts here when the range it is given has no usable start.
+const UNCHECKED_THROUGH: &str = "5429bb90c8a4519a29f619bef4be6a0e76fbcef4";
 
 /// Exit code for a command line that names no task or an unknown task.
 const EXIT_USAGE: u8 = 2;
@@ -61,13 +74,16 @@ enum Task {
     Help,
 }
 
-/// Options shared by `ci` and `check-repo`.
+/// Options of `ci` and `check-repo`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Options {
     /// The ref the path lock compares against. Without it the path lock is skipped.
     base: Option<String>,
     /// The branch the path lock judges. Defaults to the branch HEAD is on.
     branch: Option<String>,
+    /// `ci` only: the revision range whose commits the last step checks.
+    /// Without it that step is not run.
+    commits: Option<String>,
 }
 
 /// Why a command line could not be parsed into a [`Task`].
@@ -113,8 +129,8 @@ where
     let mut args = args.into_iter();
     let first = args.next().ok_or(UsageError::Missing)?;
     match first.to_str() {
-        Some("ci") => parse_options(args).map(Task::Ci),
-        Some("check-repo") => parse_options(args).map(Task::CheckRepo),
+        Some("ci") => parse_options(args, true).map(Task::Ci),
+        Some("check-repo") => parse_options(args, false).map(Task::CheckRepo),
         Some("check-commits") => parse_range(args).map(Task::CheckCommits),
         Some("help" | "-h" | "--help") => match args.next() {
             Some(extra) => Err(UsageError::Extra(extra.to_string_lossy().into_owned())),
@@ -124,8 +140,9 @@ where
     }
 }
 
-/// Parses `--base <ref>` and `--branch <name>`, each at most once.
-fn parse_options<I>(mut args: I) -> Result<Options, UsageError>
+/// Parses `--base <ref>` and `--branch <name>`, and `--commits <range>` when
+/// `commits` is true, each at most once.
+fn parse_options<I>(mut args: I, commits: bool) -> Result<Options, UsageError>
 where
     I: Iterator<Item = OsString>,
 {
@@ -134,6 +151,9 @@ where
         let (flag, slot) = match arg.to_str() {
             Some("--base") if options.base.is_none() => ("--base", &mut options.base),
             Some("--branch") if options.branch.is_none() => ("--branch", &mut options.branch),
+            Some("--commits") if commits && options.commits.is_none() => {
+                ("--commits", &mut options.commits)
+            }
             _ => return Err(UsageError::Extra(arg.to_string_lossy().into_owned())),
         };
         let value = args.next().ok_or(UsageError::MissingValue(flag))?;
@@ -189,6 +209,9 @@ enum Step {
     },
     /// Runs the repository policy checks in this process.
     CheckRepo,
+    /// Checks the messages of the commits in the `--commits` range, in this
+    /// process.
+    CheckCommits,
 }
 
 impl Step {
@@ -196,12 +219,23 @@ impl Step {
         match self {
             Self::Cargo { name, .. } => name,
             Self::CheckRepo => "check-repo",
+            Self::CheckCommits => "check-commits",
         }
     }
 }
 
+/// The steps `cargo xtask ci` runs with `options`: the gate, then the commit
+/// checks when a range is given.
+fn ci_steps(options: &Options) -> Vec<Step> {
+    let mut steps = CI_STEPS.to_vec();
+    if options.commits.is_some() {
+        steps.push(Step::CheckCommits);
+    }
+    steps
+}
+
 /// The quality gate, in the order the steps run.
-const CI_STEPS: [Step; 6] = [
+const CI_STEPS: [Step; 7] = [
     Step::Cargo {
         name: "fmt",
         args: &["fmt", "--all", "--", "--check"],
@@ -261,6 +295,24 @@ const CI_STEPS: [Step; 6] = [
     Step::Cargo {
         name: "test",
         args: &["test", "--workspace", "--all-features", "--locked"],
+        hint: None,
+        tool: None,
+    },
+    // `fuzz/` is a workspace of its own, so the steps above do not build it.
+    // This one does, so that an API change cannot break the fuzz targets
+    // unseen. Its output goes under `target/`, which git ignores and the CI
+    // cache keeps.
+    Step::Cargo {
+        name: "fuzz",
+        args: &[
+            "check",
+            "--manifest-path",
+            "fuzz/Cargo.toml",
+            "--all-targets",
+            "--locked",
+            "--target-dir",
+            "target/fuzz",
+        ],
         hint: None,
         tool: None,
     },
@@ -324,14 +376,55 @@ fn repo_root() -> PathBuf {
         .map_or_else(|| manifest.to_path_buf(), Path::to_path_buf)
 }
 
-/// Runs one step for real: cargo steps as child processes, check-repo in process.
+/// Runs one step for real: cargo steps as child processes, the others in
+/// process.
 fn exec_step(step: &Step, root: &Path, options: &Options) -> Outcome {
     match step {
         Step::Cargo {
             args, hint, tool, ..
         } => run_cargo(root, args, *hint, *tool),
         Step::CheckRepo => check_repo(root, options),
+        Step::CheckCommits => match &options.commits {
+            Some(range) => {
+                let range = commit_range(range, |from, to| {
+                    tree::git(root, &["merge-base", "--is-ancestor", from, to]).is_ok()
+                });
+                match check_commits(root, &range) {
+                    Ok(()) => Outcome::Passed,
+                    Err(failure) => Outcome::Failed(failure.detail),
+                }
+            }
+            None => Outcome::Failed("no `--commits` range given".to_owned()),
+        },
     }
+}
+
+/// The range `ci --commits` checks for `range`.
+///
+/// A range `<from>..<to>` whose `<from>` is empty or all zeros (a push that
+/// creates the branch), or for which `is_ancestor(from, to)` is false (a
+/// forced update, or a commit git does not have), starts at
+/// [`UNCHECKED_THROUGH`] instead (D-0037). Any other range is returned
+/// unchanged.
+fn commit_range<F>(range: &str, is_ancestor: F) -> String
+where
+    F: FnOnce(&str, &str) -> bool,
+{
+    let Some((from, to)) = range.split_once("..") else {
+        return range.to_owned();
+    };
+    if to.is_empty() || to.starts_with('.') {
+        return range.to_owned();
+    }
+    // An empty `from` is all zeros too.
+    let zeros = from.chars().all(|c| c == '0');
+    if !zeros && is_ancestor(from, to) {
+        return range.to_owned();
+    }
+    eprintln!(
+        "xtask: `{from}` is not an ancestor of `{to}`; checking from {UNCHECKED_THROUGH} (D-0037)"
+    );
+    format!("{UNCHECKED_THROUGH}..{to}")
 }
 
 /// The cargo that invoked this program, so that every step uses the toolchain
@@ -459,7 +552,9 @@ fn main() -> ExitCode {
             println!("{USAGE}");
             return ExitCode::SUCCESS;
         }
-        Task::Ci(options) => run_steps(&CI_STEPS, |step| exec_step(step, &root, &options)),
+        Task::Ci(options) => {
+            run_steps(&ci_steps(&options), |step| exec_step(step, &root, &options))
+        }
         Task::CheckRepo(options) => {
             run_steps(&[Step::CheckRepo], |step| exec_step(step, &root, &options))
         }
@@ -489,6 +584,108 @@ mod tests {
         Options {
             base: base.map(str::to_owned),
             branch: branch.map(str::to_owned),
+            commits: None,
+        }
+    }
+
+    fn with_commits(range: &str) -> Options {
+        Options {
+            commits: Some(range.to_owned()),
+            ..Options::default()
+        }
+    }
+
+    #[test]
+    fn ci_takes_a_commit_range_and_check_repo_does_not() {
+        assert_eq!(
+            parse(args(&["ci", "--commits", "5429bb9..main"])),
+            Ok(Task::Ci(with_commits("5429bb9..main")))
+        );
+        assert_eq!(
+            parse(args(&[
+                "ci",
+                "--base",
+                "abc",
+                "--commits",
+                "abc..def",
+                "--branch",
+                "main"
+            ])),
+            Ok(Task::Ci(Options {
+                commits: Some("abc..def".to_owned()),
+                ..opts(Some("abc"), Some("main"))
+            }))
+        );
+        assert_eq!(
+            parse(args(&["check-repo", "--commits", "a..b"])),
+            Err(UsageError::Extra("--commits".to_owned()))
+        );
+        assert_eq!(
+            parse(args(&["ci", "--commits"])),
+            Err(UsageError::MissingValue("--commits"))
+        );
+        assert_eq!(
+            parse(args(&["ci", "--commits", "--all"])),
+            Err(UsageError::BadValue("--commits", "--all".to_owned()))
+        );
+        assert_eq!(
+            parse(args(&["ci", "--commits", "a..b", "--commits", "c..d"])),
+            Err(UsageError::Extra("--commits".to_owned()))
+        );
+    }
+
+    #[test]
+    fn the_commit_check_runs_last_and_only_with_a_range() {
+        let names =
+            |options: &Options| -> Vec<&str> { ci_steps(options).iter().map(Step::name).collect() };
+        assert_eq!(
+            names(&Options::default()),
+            CI_STEPS.iter().map(Step::name).collect::<Vec<_>>()
+        );
+        let with = names(&with_commits("a..b"));
+        assert_eq!(with.len(), CI_STEPS.len() + 1);
+        assert_eq!(with.last(), Some(&"check-commits"));
+        assert_eq!(with[..CI_STEPS.len()], names(&Options::default())[..]);
+    }
+
+    #[test]
+    fn a_range_with_a_usable_start_is_kept() {
+        let mut asked = None;
+        let range = commit_range("61c0107..49b6904", |from, to| {
+            asked = Some((from.to_owned(), to.to_owned()));
+            true
+        });
+        assert_eq!(range, "61c0107..49b6904");
+        assert_eq!(asked, Some(("61c0107".to_owned(), "49b6904".to_owned())));
+    }
+
+    /// A push that creates the branch, a forced update, and a start git does
+    /// not have all check from the D-0037 cut.
+    #[test]
+    fn a_range_without_a_usable_start_begins_at_the_cut() {
+        let cut = format!("{UNCHECKED_THROUGH}..49b6904");
+        let zeros = format!("{}..49b6904", "0".repeat(40));
+        assert_eq!(
+            commit_range(&zeros, |_, _| panic!("zeros are never looked up")),
+            cut
+        );
+        assert_eq!(
+            commit_range("..49b6904", |_, _| panic!(
+                "an empty start is never looked up"
+            )),
+            cut
+        );
+        assert_eq!(commit_range("63b1180..49b6904", |_, _| false), cut);
+        assert_eq!(commit_range("deadbeef..49b6904", |_, _| false), cut);
+    }
+
+    #[test]
+    fn other_range_forms_are_kept() {
+        for range in ["main", "a...b", "a..", "a"] {
+            assert_eq!(
+                commit_range(range, |_, _| panic!("{range} is not looked up")),
+                range
+            );
         }
     }
 
@@ -615,6 +812,7 @@ mod tests {
                 "clippy",
                 "clippy-forbid",
                 "test",
+                "fuzz",
                 "deny",
                 "check-repo"
             ]
@@ -627,7 +825,7 @@ mod tests {
             .iter()
             .filter_map(|step| match step {
                 Step::Cargo { args, .. } => Some(*args),
-                Step::CheckRepo => None,
+                Step::CheckRepo | Step::CheckCommits => None,
             })
             .collect();
         assert_eq!(cargo_args[0], ["fmt", "--all", "--", "--check"]);
@@ -652,7 +850,19 @@ mod tests {
             "clippy::disallowed_types"
         ]));
         assert_eq!(cargo_args[3][..2], ["test", "--workspace"]);
-        assert_eq!(cargo_args[4], ["deny", "--locked", "--workspace", "check"]);
+        assert_eq!(
+            cargo_args[4],
+            [
+                "check",
+                "--manifest-path",
+                "fuzz/Cargo.toml",
+                "--all-targets",
+                "--locked",
+                "--target-dir",
+                "target/fuzz"
+            ]
+        );
+        assert_eq!(cargo_args[5], ["deny", "--locked", "--workspace", "check"]);
     }
 
     /// The forbid step leaves out exactly the crates that opt out of the
@@ -720,6 +930,7 @@ mod tests {
                 "clippy",
                 "clippy-forbid",
                 "test",
+                "fuzz",
                 "deny",
                 "check-repo"
             ]

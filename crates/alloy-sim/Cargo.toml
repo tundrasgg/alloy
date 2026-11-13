@@ -1,0 +1,17 @@
+[package]
+name = "alloy-sim"
+version = "0.0.0"
+description = "The deterministic simulator: worlds, scenario runs, and the event trace (ARFC 0005)."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+alloy-crypto = { path = "../alloy-crypto" }
+alloy-rt = { path = "../alloy-rt" }
+alloy-seam = { path = "../alloy-seam" }
+thiserror.workspace = true
+
+[lints]
+workspace = true

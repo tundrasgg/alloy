@@ -62,9 +62,10 @@ or supersede it.
 | [0043](0043-the-al-handshake-is-fixed-byte-for-byte-on-noise-ikpsk2.md) | The AL handshake is fixed byte for byte on Noise IKpsk2 |
 | [0045](0045-home-sessions-get-a-keepalive-every-5-seconds-of-idleness.md) | Home sessions get a keepalive every 5 seconds of idleness |
 | [0046](0046-probes-are-sealed-under-session-keys-with-a-replay-window.md) | Probes are sealed under session keys with a replay window |
-| [0049](0049-only-answers-and-bounded-probes-reach-an-unverified-endpoint.md) | Only answers and bounded probes reach an unverified endpoint |
+| [0049](0049-only-answers-and-bounded-probes-reach-an-unverified-endpoint.md) | Only answers and bounded probes reach an unverified endpoint (superseded by 0061) |
 | [0057](0057-sessions-are-used-only-with-current-state-the-peer-holds.md) | Sessions are used only with current state the peer holds |
 | [0058](0058-al-transport-packets-carry-25-bytes-of-overhead.md) | AL transport packets carry 25 bytes of overhead |
+| [0061](0061-traffic-moves-only-to-an-endpoint-that-echoed-a-challenge.md) | Traffic moves only to an endpoint that echoed a challenge |
 
 ## Control plane
 

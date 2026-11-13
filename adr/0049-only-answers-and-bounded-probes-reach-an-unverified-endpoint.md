@@ -1,6 +1,6 @@
 # ADR 0049: Only answers and bounded probes reach an unverified endpoint
 
-- Status: accepted
+- Status: superseded by 0061
 - Subject: mesh
 - Specs: arfc-0004
 

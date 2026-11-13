@@ -1,0 +1,6 @@
+feat(crates): add handshake retry with bounded backoff
+
+The initiator retries a lost handshake message up to the limit in the
+ARFC, then reports the peer unreachable.
+
+Task: T-0101

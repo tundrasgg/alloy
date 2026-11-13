@@ -4,24 +4,21 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 ## Now
 
-- Milestone: M0, Foundation (`plan/milestones.md`)
+- Milestone: M11, First deployment (`plan/milestones.md`, D-0034), above M0 and M1, which continue in parallel
+- M11 rung: 1, install. Waiting on: pilot to give the Ubuntu node passwordless sudo and to add an SSH alias for the Proxmox VE node
 - Milestones exited: none
 
 ## Next free ids
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0088 |
-| Decision `D-` | D-0034 |
-| ADR | 0062 |
+| Task `T-` | T-0094 |
+| Decision `D-` | D-0040 |
+| ADR | 0063 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0002 |
 
 ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008, and PB-0001 are allocated to the tasks below.
-
-## Red main
-
-CI on main fails on Linux since the T-0068 merge: `clippy_fixture_other_crates_fail` misses the forbid step's lines when `CARGO_TERM_COLOR=always`, which the workflow sets. Reproduced on Linux; the test passes without the variable. T-0082 fixes it. T-0079 waits on T-0082 because both touch `xtask/`.
 
 ## Board
 
@@ -50,7 +47,7 @@ CI on main fails on Linux since the T-0068 merge: `clippy_fixture_other_crates_f
 | T-0021 | spec | architect | done | none | Resolve NAT spec issues found by R-0003 |
 | T-0022 | spec | architect | done | none | Apply PB-0001 to ARFC 0002 and ARFC 0019 |
 | T-0023 | spec | architect | done | none | Specify user access keys and the local admin path |
-| T-0024 | spec | architect | queued | T-0080 | Fix the default mesh port and TCP 443 sharing |
+| T-0024 | spec | architect | queued | T-0090 | Fix the default mesh port and TCP 443 sharing |
 | T-0025 | process | architect | done | none | Let parallel tasks share append-only index files |
 | T-0026 | spec | architect | done | none | Make the ARFC 0003 handshake implementable on Noise libraries |
 | T-0027 | process | architect | done | none | Align core delegation and the lead role with shared index files |
@@ -101,19 +98,25 @@ CI on main fails on Linux since the T-0068 merge: `clippy_fixture_other_crates_f
 | T-0072 | build | developer | cancelled | none | Run the commit message check in CI from the current cut |
 | T-0073 | process | architect | done | none | Adopt lean task sizing and review rules |
 | T-0074 | build | developer | done | none | Create alloy-crypto with BLAKE3 content hashing |
-| T-0075 | build | developer | review | none | Build the alloy-sim executor, runs, and trace |
-| T-0076 | build | developer | queued | T-0075 | Build alloy-sim hosts, mem runtime, and faults |
+| T-0075 | build | developer | done | none | Build the alloy-sim executor, runs, and trace |
+| T-0076 | build | developer | active | none | Build alloy-sim hosts, mem runtime, and faults |
 | T-0077 | build | developer | queued | T-0076 | Build alloy-sim networks, UDP, and the echo scenario |
 | T-0078 | build | developer | queued | T-0077 | Build alloy-sim mem streams |
-| T-0079 | build | developer | queued | T-0082 | Run the commit check inside cargo xtask ci |
-| T-0080 | spec | architect | active | none | Replace path-move heuristics with verify-before-move |
+| T-0079 | build | developer | done | none | Run the commit check inside cargo xtask ci |
+| T-0080 | spec | architect | done | none | Replace path-move heuristics with verify-before-move |
 | T-0081 | build | developer | done | none | Update the alloy-wire fuzz targets to the compact layout |
-| T-0082 | build | developer | active | none | Make xtask output parsing independent of terminal color |
+| T-0082 | build | developer | done | none | Make xtask output parsing independent of terminal color |
 | T-0083 | build | developer | active | none | Build the os implementations of the runtime seams |
 | T-0084 | verify | verifier | queued | T-0083 | Run the runtime conformance suites against os |
-| T-0085 | build | developer | active | none | Build the AL handshake and transport crypto in alloy-crypto |
-| T-0086 | verify | verifier | queued | T-0085 | Write fixed IKpsk2 handshake vectors for ARFC 0003 |
-| T-0087 | product | product | active | none | Set the design standard for the CLI, console, and APIs |
+| T-0085 | build | developer | done | none | Build the AL handshake and transport crypto in alloy-crypto |
+| T-0086 | verify | verifier | done | none | Write fixed IKpsk2 handshake vectors for ARFC 0003 |
+| T-0087 | product | product | done | none | Set the design standard for the CLI, console, and APIs |
+| T-0088 | spec | architect | active | none | Specify install, uninstall, and the Windows client node |
+| T-0089 | build | developer | done | none | Let binary crates set their exit code |
+| T-0090 | spec | architect | review | none | Keep path checks apart from probe-set challenges |
+| T-0091 | build | developer | queued | T-0088 | Create the alloy and alloyd binaries |
+| T-0092 | build | developer | queued | T-0088 | Build the release workflow and the install scripts |
+| T-0093 | verify | verifier | queued | T-0088 | Write the M11 rung 1 install and uninstall check |
 
 ## First dispatch
 
@@ -155,7 +158,7 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 - Verify and recut: T-0011, T-0012, and conformance suites for the new ARFC 0004 musts after T-0031 merges (answer count and size, probing window, challenge placement and lifetime, 64 outstanding challenges, 5 s home keepalive).
 - Spec: ARFC 0008 defines the browser-callable protocol so section 3.10 holds for the console; resolve `prost` in `agent/eng/deps.md` against connect-rust's `buffa` (R-0007).
 - Research: observe a Safari TLS handshake with an Ed25519 chain on Apple hardware, and check previous-major Chromium and Firefox in real browsers (R-0006 follow-up).
-- Build: `check-repo` rejects all of `std::process` outside `alloy-rt` and `alloy-sim`, which includes `ExitCode` and `exit`; the first binary crate needs a narrower pattern or an exit path through `alloy-rt`. `banned-patterns` scans only `crates/`, not `tests/` or `fuzz/` (T-0042).
+- Build: `banned-patterns` scans only `crates/`, not `tests/` or `fuzz/` (T-0042; the `ExitCode` part is T-0089).
 - From `plan/reports/T-0043.architect.1.md` (after T-0038 and T-0043 merge): ARFC 0003 section 3.6 lets an anchor's reflection answer carry the observed source endpoint and a challenge; ARFC 0004 states when an anchor considers a home session closed; consider a per-node cap on probes toward unverified advertised candidates; ARFC 0005 section 3.4 states matrix link delays inside ARFC 0004 section 3.2's bounds; T-0011, T-0012, and conformance suites take the new ARFC 0004 musts.
 - Spec (after T-0038 and T-0043 merge): ARFC 0004 section 8 and ADR 0039's consequence line restated against probe replay protection in ARFC 0003 section 3.6; the relay envelope in ARFC 0003 section 3.7 gains the `src` that section 3.1's cookie needs; ARFC 0004 section 3.5 says whether path MTU probes travel inside relay envelopes; ARFC 0003 section 7 throttles probe floods that name real node ids. Verify: ARFC 0003 section 3.6 conformance cases listed in `plan/reports/T-0038.architect.1.md`.
 - Ruling before the first task that builds TLS: `rustls` providers draw key shares and hello randoms from their own generator, which `agent/eng/crypto.md` rule 4 forbids and which breaks I-20 under the simulator; either an exception to rule 4 or a provider fed from `alloy-rt` (T-0049).
@@ -168,7 +171,7 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 - From T-0066: decide whether consensus groups refuse binding writes from releases older than `R` during the finalization check (the one case that still stalls finalization until a resource is rebound); ARFC 0006 section 2.2 and ARFC 0002 section 2 cross-reference ARFC 0001 clause 3.13 and ARFC 0017 clause 3.11; the upgrade conformance item extends `tests/conformance/upgrade/` from ARFC 0017 clause 3.12. At merge, ARFC 0017's `Decisions` line combines T-0059's and T-0066's: `0029, 0056, 0057, 0059`.
 - Note (T-0059 re-review F1): after a failed handover, a peer whose only session was made by the successor gets no re-handshake and waits up to 120 s.
 - Notes from T-0066 re-review (fold into the next ARFC 0001 or 0017 task): ARFC 0017 clause 3.12 lacks scenarios for four rules added in T-0066 round 2 (F1); the clause 3.11 conclusion about written running releases (F2); a global-group recover from a node without the switch re-allows rollback (F3).
-- Note from T-0074 review: restore the space before `reason` in the `alloy-rt` entry of `deny.toml` (the `Hasher` doc note is folded into T-0085).
+- Notes from T-0085 review (fold into the next `alloy-crypto` task): HMAC and HKDF are composed in the crate rather than taken from the `hkdf` and `hmac` crates named in `agent/eng/crypto.md`, with no ADR (F1, fix); moved-from stack copies of a transport key and the ephemeral private key are not erased, against the report's claim (F2, note).
 - Notes from T-0063 review (fold into the next ARFC 0003 task): an unbound VNI idle across a rekey loses its first packets (F1); the 4-sessions-per-peer cap can discard the working session during handshake retries (F2); bind replies reveal which VNIs a node hosts to any session peer (F3); the 2^31 stop rule does not match session choice (F4).
 - Accepted residuals (D-0028, no further `check-repo` hardening): a direct OS call under `#[cfg(not(clippy))]`, and a build script that sets `CLIPPY_CONF_DIR` or `CLIPPY_ARGS` for its own crate, both bypass the Clippy ban; code review catches deliberate evasion (T-0068 review F1, F2).
 - From T-0008 (fold into the next ARFC 0005 task): cap the path MTU at 65,535 or `max_payload` at 65,507/65,527 (clause 3.1.8); the Unix socket permission bits in clause 3.1.9 are not observable through a seam; no deterministic trigger for `PermissionDenied` on a port. Next verify tasks: a `mem` harness for `tests/conformance/rt` after T-0078, and an `os` harness after the `os` implementations; `alloy-rt` exports `OsHost` and `register_os` (section 2.6) in the `os` build task.
@@ -183,6 +186,15 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 - Build: release automation attaches `install.sh` and `install.ps1` to every release (ADR 0044).
 - Research: should the 25 s keepalive drop or adapt for NATs with UDP timeouts under 25 s (T-0021 follow-up).
 - Spec: ARFC 0004 section 8 states the probe reflection bound from section 3.2 (T-0021 follow-up).
+
+## M11 notes
+
+- From T-0086 (fold into the next ARFC 0003 task): the handshake nonce is always 24 zero bytes in `IKpsk2`, so its byte order is unobservable; section 3.3 erasure can only be checked by proxies; add probe key vectors once section 3.6 sealing exists.
+- From T-0079 review (note): a dependency added to `alloy-wire` must also update `fuzz/Cargo.lock`, which the `fuzz` gate step does not name when it fails; fold into the next `xtask` task.
+- From T-0088 report: no default mesh port is fixed (ARFC 0004 section 3.6); ARFC 0004 does not exclude Alloy's own `al*` addresses from candidates; ARFC 0020 section 2.2 omits release publishers as trusted; PB-0001 must match ARFC 0017 clauses 3.14 to 3.16; `agent/eng/deps.md` should name the ADR 0062 exception; no ARFC defines how `alloy-net` opens its host virtual interface (needed before rungs 2 and 3); compute capacity on a Proxmox VE host must not count memory its guests use (before rung 4).
+
+- The Ubuntu node already runs Docker, a game panel's bridge, and Tailscale (100.64.0.0/10). The Proxmox VE node runs production guests. T-0088 states the coexistence rules.
+- From T-0087 (fold into the M11 tasks on ARFC 0008 and 0019): the spec issues listed in `plan/reports/T-0087.product.1.md`, glossary entries for "operation" and "command palette", and a PB-0001 check against rules T1 to T30.
 
 ## Pending pivotal questions
 
