@@ -22,3 +22,9 @@ pub fn os_value() -> u64 {
 pub fn sys_value() -> u64 {
     getrandom::SysRng.try_next_u64().unwrap_or(0)
 }
+
+#[warn(clippy::disallowed_methods)]
+pub fn warned() {}
+
+#[allow(clippy::r#disallowed_types)]
+pub fn raw() {}

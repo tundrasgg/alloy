@@ -1,0 +1,7 @@
+chore(plan): probe a trailer above a conflicts block
+
+Co-Authored-By: Someone <someone@example.invalid>
+
+Conflicts:
+
+	plan/STATE.md

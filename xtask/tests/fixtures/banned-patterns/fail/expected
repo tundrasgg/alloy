@@ -8,3 +8,4 @@ crates/demo/src/lib.rs:34: banned-patterns
 crates/demo/src/lib.rs:40: banned-patterns
 crates/demo/src/lib.rs:51: banned-patterns
 crates/demo/src/lib.rs:59: banned-patterns
+crates/demo/src/lib.rs:65: banned-patterns

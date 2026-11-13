@@ -60,3 +60,6 @@ pub fn in_match(v: u8, x: Option<u8>) -> u8 {
         }
     }
 }
+
+#[rustfmt::skip]
+pub fn one_line(x: Option<u8>) -> u8 { #[cfg(test)] let _a = 0; x.unwrap() }

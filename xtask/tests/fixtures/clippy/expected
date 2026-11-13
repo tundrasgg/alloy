@@ -13,5 +13,38 @@ crates/demo/src/lib.rs:66: tokio::fs::read
 crates/demo/src/lib.rs:67: std::fs::File
 crates/demo/src/lib.rs:68: tokio::net::TcpStream
 crates/demo/src/lib.rs:69: std::path::Path::exists
-crates/demo/src/lib.rs:80: tokio::runtime::Builder
-crates/demo/src/lib.rs:83: tokio::runtime::Builder
+crates/demo/src/lib.rs:80: std::time::SystemTime::elapsed
+crates/demo/src/lib.rs:81: std::time::SystemTime::elapsed
+crates/demo/src/lib.rs:82: std::time::Instant::elapsed
+crates/demo/src/lib.rs:88: std::thread::sleep_ms
+crates/demo/src/lib.rs:89: std::thread::park_timeout_ms
+crates/demo/src/lib.rs:90: std::thread::current
+crates/demo/src/lib.rs:95: tokio::time::pause
+crates/demo/src/lib.rs:96: tokio::time::advance
+crates/demo/src/lib.rs:97: tokio::time::resume
+crates/demo/src/lib.rs:98: tokio::time::Instant::elapsed
+crates/demo/src/lib.rs:102: tokio::runtime::LocalRuntime
+crates/demo/src/lib.rs:110: std::os::windows::fs::symlink_file windows
+crates/demo/src/lib.rs:111: std::os::windows::fs::symlink_dir windows
+crates/demo/src/lib.rs:112: tokio::net::windows::named_pipe::NamedPipeClient windows
+crates/demo/src/lib.rs:113: tokio::net::windows::named_pipe::ClientOptions windows
+crates/demo/src/lib.rs:114: tokio::net::windows::named_pipe::NamedPipeServer windows
+crates/demo/src/lib.rs:115: tokio::net::windows::named_pipe::ServerOptions windows
+crates/demo/src/lib.rs:124: std::os::unix::fs::symlink unix
+crates/demo/src/lib.rs:125: std::os::unix::fs::chown unix
+crates/demo/src/lib.rs:126: std::os::unix::fs::lchown unix
+crates/demo/src/lib.rs:127: std::os::unix::fs::fchown unix
+crates/demo/src/lib.rs:128: std::os::unix::fs::chroot unix
+crates/demo/src/lib.rs:129: tokio::net::unix::pipe::pipe unix
+crates/demo/src/lib.rs:130: tokio::net::unix::pipe::OpenOptions unix
+crates/demo/src/lib.rs:130: tokio::net::unix::pipe::Receiver unix
+crates/demo/src/lib.rs:131: tokio::net::unix::pipe::Sender unix
+crates/demo/src/lib.rs:137: tokio::runtime::Builder
+crates/demo/src/lib.rs:140: tokio::runtime::Builder
+crates/switches/src/lib.rs:9: warn(clippy::disallowed_methods)
+crates/switches/src/lib.rs:12: allow(clippy::disallowed_methods)
+crates/switches/src/lib.rs:26: allow(clippy::disallowed_methods)
+crates/switches/src/lib.rs:34: expect(clippy::disallowed_types)
+crates/switches/src/lib.rs:54: allow(clippy::style)
+crates/switches/src/lib.rs:60: allow(clippy::all)
+crates/switches/src/included.txt:2: allow(clippy::disallowed_methods)

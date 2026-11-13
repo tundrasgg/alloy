@@ -16,7 +16,7 @@ use crate::tree::Tree;
 
 /// Crates that may call the operating system directly (`agent/eng/rust.md`,
 /// ARFC 0005 clause 3.1.1).
-const IO_CRATES: [&str; 2] = ["alloy-rt", "alloy-sim"];
+pub(crate) const IO_CRATES: [&str; 2] = ["alloy-rt", "alloy-sim"];
 
 /// Crates that may contain `unsafe` (`agent/eng/rust.md`, section Unsafe).
 const UNSAFE_CRATES: [&str; 3] = ["alloy-rt", "alloy-net", "alloy-store"];
@@ -27,9 +27,10 @@ const UNSAFE_CRATES: [&str; 3] = ["alloy-rt", "alloy-net", "alloy-store"];
 const IO_VALUES: [&str; 2] = ["OsRng", "SysRng"];
 
 /// The lints that carry the `direct-io` ban and the lint groups that hold
-/// them, as an `allow` or `expect` names them. A source attribute overrides the
-/// `-D` that `cargo xtask ci` passes on the command line. The singular names
-/// are the lints' former names, which rustc still applies to them.
+/// them, as an `allow`, `expect`, or `warn` names them. A source attribute
+/// overrides the `-D` of the gate's `clippy` step; the `clippy-forbid` step
+/// rejects it outright. The singular names are the lints' former names, which
+/// rustc still applies to them.
 const BAN_LINTS: [&str; 6] = [
     "clippy::disallowed_methods",
     "clippy::disallowed_types",
@@ -293,13 +294,15 @@ struct Pending {
     target: Target,
 }
 
-/// For each line, whether it is inside test code: the target of a `#[test]` or
-/// `#[cfg(test)]` attribute and that target's body, found by bracket matching.
+/// For each line, for each byte of its code, whether that byte is test code:
+/// a `#[test]` or `#[cfg(test)]` attribute, its target, and that target's
+/// body, found by bracket matching.
 ///
-/// A target with no body of its own, such as a struct field, a match arm, or
-/// `mod tests;`, ends at the `,` or `;` after it, or at the bracket that closes
-/// around it, so its attribute never reaches the next unrelated body.
-fn test_lines(lines: &[Line]) -> Vec<bool> {
+/// A target with no body of its own, such as a struct field, a match arm, a
+/// statement, or `mod tests;`, ends at the `,` or `;` after it, or at the
+/// bracket that closes around it, so its attribute never reaches the next
+/// unrelated body, nor the code after it on the same line.
+fn test_code(lines: &[Line]) -> Vec<Vec<bool>> {
     let mut depth = 0usize;
     let mut regions: Vec<usize> = Vec::new();
     let mut pending: Option<Pending> = None;
@@ -307,20 +310,19 @@ fn test_lines(lines: &[Line]) -> Vec<bool> {
         .iter()
         .map(|line| {
             let code = line.code.as_str();
-            let mut in_test = !regions.is_empty() || pending.is_some();
+            let mut mask = vec![false; code.len()];
             let mut chars = code.char_indices().peekable();
             while let Some((at, c)) = chars.next() {
+                let before = !regions.is_empty() || pending.is_some();
                 let rest = &code[at + c.len_utf8()..];
+                let mut end = at + c.len_utf8();
                 if c == '#' && rest.strip_prefix('[').is_some_and(is_test_attribute) {
                     pending = Some(Pending {
                         depth,
                         target: Target::Unknown,
                     });
-                    in_test = true;
-                    continue;
-                }
-                if is_ident(c) {
-                    let end = rest
+                } else if is_ident(c) {
+                    end = rest
                         .find(|w: char| !is_ident(w))
                         .map_or(code.len(), |n| at + c.len_utf8() + n);
                     while chars.next_if(|&(next, _)| next < end).is_some() {}
@@ -336,36 +338,48 @@ fn test_lines(lines: &[Line]) -> Vec<bool> {
                             Target::Other
                         };
                     }
-                    continue;
+                } else {
+                    let at_target = pending.is_some_and(|p| p.depth == depth);
+                    match c {
+                        '{' | '(' | '[' => {
+                            if c == '{' && at_target {
+                                regions.push(depth + 1);
+                                pending = None;
+                            }
+                            depth += 1;
+                        }
+                        '}' | ')' | ']' => {
+                            if regions.last() == Some(&depth) {
+                                regions.pop();
+                            }
+                            depth = depth.saturating_sub(1);
+                            if pending.is_some_and(|p| p.depth > depth) {
+                                pending = None;
+                            }
+                        }
+                        ';' if at_target => pending = None,
+                        ',' if at_target && pending.is_some_and(|p| p.target != Target::Item) => {
+                            pending = None;
+                        }
+                        _ => {}
+                    }
                 }
-                let at_target = pending.is_some_and(|p| p.depth == depth);
-                match c {
-                    '{' | '(' | '[' => {
-                        if c == '{' && at_target {
-                            regions.push(depth + 1);
-                            pending = None;
-                            in_test = true;
-                        }
-                        depth += 1;
-                    }
-                    '}' | ')' | ']' => {
-                        if regions.last() == Some(&depth) {
-                            regions.pop();
-                        }
-                        depth = depth.saturating_sub(1);
-                        if pending.is_some_and(|p| p.depth > depth) {
-                            pending = None;
-                        }
-                    }
-                    ';' if at_target => pending = None,
-                    ',' if at_target && pending.is_some_and(|p| p.target != Target::Item) => {
-                        pending = None;
-                    }
-                    _ => {}
+                let after = !regions.is_empty() || pending.is_some();
+                if before || after {
+                    mask[at..end].fill(true);
                 }
             }
-            in_test
+            mask
         })
+        .collect()
+}
+
+/// For each line, whether any of its code is test code (see [`test_code`]).
+#[cfg(test)]
+fn test_lines(lines: &[Line]) -> Vec<bool> {
+    test_code(lines)
+        .iter()
+        .map(|mask| mask.iter().any(|&test| test))
         .collect()
 }
 
@@ -428,7 +442,7 @@ where
 /// `banned-patterns`: the code patterns that `agent/core/4-evidence.md` bans.
 pub(super) fn check_banned(tree: &Tree) -> Vec<Violation> {
     with_sources(tree, Rule::BannedPatterns, |src, out| {
-        let tests = test_lines(&src.lines);
+        let tests = test_code(&src.lines);
         for (index, line) in src.lines.iter().enumerate() {
             let number = index + 1;
             let mut report = |message: &str| {
@@ -461,9 +475,12 @@ pub(super) fn check_banned(tree: &Tree) -> Vec<Violation> {
             if note.starts_with("#[") && note.contains("test") {
                 report("commented-out test");
             }
-            let panics = find_token(code, ".unwrap()").is_some() || code.contains(".expect(");
-            let in_test = src.test_file || tests[index];
-            if panics && !in_test && !invariant_above(&src.lines, index) {
+            let panics_outside_tests = !src.test_file
+                && code
+                    .match_indices(".unwrap()")
+                    .chain(code.match_indices(".expect("))
+                    .any(|(at, _)| !tests[index][at]);
+            if panics_outside_tests && !invariant_above(&src.lines, index) {
                 report(
                     "`unwrap()` or `expect()` outside tests needs the invariant that makes it safe in a comment on the line above",
                 );
@@ -483,8 +500,12 @@ fn invariant_above(lines: &[Line], index: usize) -> bool {
 /// `direct-io`: what keeps the Clippy ban on operating system calls in force
 /// outside the runtime crates. Rejects any Clippy configuration file but the
 /// root `clippy.toml`; and, in every crate under `crates/` except `alloy-rt`
-/// and `alloy-sim`, an `allow` or `expect` of a lint in [`BAN_LINTS`] and the
-/// values in [`IO_VALUES`].
+/// and `alloy-sim`, an `allow`, `expect`, or `warn` of a lint in [`BAN_LINTS`]
+/// and the values in [`IO_VALUES`].
+///
+/// A lint attribute that a macro builds, or that `include!` brings in from a
+/// file that is not `.rs`, is not seen here; the gate's `clippy-forbid` step
+/// rejects those.
 pub(super) fn check_direct_io(tree: &Tree) -> Vec<Violation> {
     let mut out: Vec<Violation> = tree
         .files()
@@ -549,15 +570,45 @@ fn closing(text: &str, open: usize, open_with: char, close_with: char) -> Option
     None
 }
 
-/// Every lint in [`BAN_LINTS`] that an `allow(...)` or `expect(...)` inside an
-/// attribute names, as `(line index, level, lint)`. An attribute may span
-/// lines, and may wrap the level in `cfg_attr`.
+/// The lint levels below deny: each one lowers a lint that the command line
+/// denies.
+const LOWER_LEVELS: [&str; 3] = ["allow", "expect", "warn"];
+
+/// `code` with the `r#` of every raw identifier removed, so that
+/// `clippy::r#disallowed_methods` reads `clippy::disallowed_methods`. Raw
+/// strings are already blanked by the lexer.
+fn without_raw_prefixes(code: &str) -> String {
+    let chars: Vec<char> = code.chars().collect();
+    let mut out = String::with_capacity(code.len());
+    let mut i = 0;
+    while let Some(&c) = chars.get(i) {
+        let starts_token = i == 0 || !is_ident(chars[i - 1]);
+        let raw = c == 'r'
+            && starts_token
+            && chars.get(i + 1) == Some(&'#')
+            && chars
+                .get(i + 2)
+                .is_some_and(|&next| next.is_ascii_alphabetic() || next == '_');
+        if raw {
+            i += 2;
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+/// Every lint in [`BAN_LINTS`] that an `allow(...)`, `expect(...)`, or
+/// `warn(...)` inside an attribute names, as `(line index, level, lint)`. An
+/// attribute may span lines, may wrap the level in `cfg_attr`, and may name
+/// the lint with raw identifiers.
 fn lint_switches(lines: &[Line]) -> Vec<(usize, &'static str, &'static str)> {
     let mut code = String::new();
     let mut starts = Vec::new();
     for line in lines {
         starts.push(code.len());
-        code.push_str(&line.code);
+        code.push_str(&without_raw_prefixes(&line.code));
         code.push('\n');
     }
     let line_of = |at: usize| {
@@ -577,7 +628,7 @@ fn lint_switches(lines: &[Line]) -> Vec<(usize, &'static str, &'static str)> {
         };
         let close = closing(&code, open, '[', ']').unwrap_or(code.len());
         let attr = &code[open..close];
-        for level in ["allow", "expect"] {
+        for level in LOWER_LEVELS {
             let call = format!("{level}(");
             let mut from = 0;
             while let Some(offset) = find_token(&attr[from..], &call) {
@@ -724,6 +775,21 @@ fn g() {
         );
     }
 
+    #[test]
+    fn code_after_a_test_target_on_the_same_line_is_not_test_code() {
+        let src =
+            "pub fn one_line(x: Option<u8>) -> u8 { #[cfg(test)] let _a = x.unwrap(); x.unwrap() }";
+        let lines = lex(src);
+        let code = &lines[0].code;
+        let mask = &test_code(&lines)[0];
+        let first = code.find(".unwrap()").expect("the first call");
+        let second = code.rfind(".unwrap()").expect("the second call");
+        assert!(mask[code.find("#[cfg").expect("the attribute")]);
+        assert!(mask[first], "the statement the attribute applies to");
+        assert!(!mask[second], "the code after that statement");
+        assert!(!mask[code.find("pub").expect("the item")]);
+    }
+
     fn switches(src: &str) -> Vec<(usize, &'static str, &'static str)> {
         lint_switches(&lex(src))
     }
@@ -738,6 +804,8 @@ fn g() {
 #[allow(dead_code, clippy::style)]
 #[expect(clippy::all)]
 #[allow(clippy::disallowed_method)]
+#![warn(clippy::disallowed_methods)]
+#[allow(clippy::r#disallowed_types, r#clippy::r#style)]
 fn f() {}";
         assert_eq!(
             switches(src),
@@ -747,6 +815,9 @@ fn f() {}";
                 (5, "allow", "clippy::style"),
                 (6, "expect", "clippy::all"),
                 (7, "allow", "clippy::disallowed_method"),
+                (8, "warn", "clippy::disallowed_methods"),
+                (9, "allow", "clippy::disallowed_types"),
+                (9, "allow", "clippy::style"),
             ]
         );
     }
@@ -754,7 +825,8 @@ fn f() {}";
     #[test]
     fn other_lint_levels_and_lints_are_not_switches() {
         let src = "#![deny(clippy::all)]
-#![warn(clippy::disallowed_methods)]
+#![forbid(clippy::disallowed_methods)]
+#![warn(warnings, clippy::pedantic)]
 #![cfg_attr(test, deny(clippy::style), allow(dead_code))]
 #[allow(clippy::all_kinds, clippy::needless_return)]
 // #[allow(clippy::disallowed_methods)]
@@ -796,6 +868,13 @@ fn f() { let s = \"#[allow(clippy::all)]\"; disallow(clippy::all); }";
     0
 }";
         assert_eq!(test_lines(&lex(src)), [false; 6]);
+    }
+
+    #[test]
+    fn raw_prefixes_are_removed_from_identifiers_only() {
+        assert_eq!(without_raw_prefixes("clippy::r#all"), "clippy::all");
+        assert_eq!(without_raw_prefixes("r#fn x"), "fn x");
+        assert_eq!(without_raw_prefixes("bar#x r#1"), "bar#x r#1");
     }
 
     #[test]

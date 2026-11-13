@@ -201,7 +201,7 @@ impl Step {
 }
 
 /// The quality gate, in the order the steps run.
-const CI_STEPS: [Step; 5] = [
+const CI_STEPS: [Step; 6] = [
     Step::Cargo {
         name: "fmt",
         args: &["fmt", "--all", "--", "--check"],
@@ -222,6 +222,37 @@ const CI_STEPS: [Step; 5] = [
             "-D",
             "clippy::disallowed_methods",
             "-D",
+            "clippy::disallowed_types",
+        ],
+        hint: None,
+        tool: None,
+    },
+    // The direct-io ban at forbid level, which no attribute in source can lower
+    // (rustc rejects such an attribute with E0453), in every crate but the two
+    // runtime crates and this one, which opt out with an `allow`. `--no-deps`
+    // keeps the forbid off the excluded crates when they build as dependencies;
+    // the `clippy` step lints them.
+    Step::Cargo {
+        name: "clippy-forbid",
+        args: &[
+            "clippy",
+            "--workspace",
+            "--exclude",
+            "alloy-rt",
+            "--exclude",
+            "alloy-sim",
+            "--exclude",
+            "xtask",
+            "--no-deps",
+            "--all-targets",
+            "--all-features",
+            "--locked",
+            "--",
+            "-D",
+            "warnings",
+            "-F",
+            "clippy::disallowed_methods",
+            "-F",
             "clippy::disallowed_types",
         ],
         hint: None,
@@ -577,7 +608,17 @@ mod tests {
     #[test]
     fn ci_runs_the_gate_in_the_specified_order() {
         let names: Vec<_> = CI_STEPS.iter().map(Step::name).collect();
-        assert_eq!(names, ["fmt", "clippy", "test", "deny", "check-repo"]);
+        assert_eq!(
+            names,
+            [
+                "fmt",
+                "clippy",
+                "clippy-forbid",
+                "test",
+                "deny",
+                "check-repo"
+            ]
+        );
     }
 
     #[test]
@@ -600,8 +641,44 @@ mod tests {
             "-D",
             "clippy::disallowed_types"
         ]));
-        assert_eq!(cargo_args[2][..2], ["test", "--workspace"]);
-        assert_eq!(cargo_args[3], ["deny", "--locked", "--workspace", "check"]);
+        assert_eq!(cargo_args[2][0], "clippy");
+        assert!(cargo_args[2].ends_with(&[
+            "--",
+            "-D",
+            "warnings",
+            "-F",
+            "clippy::disallowed_methods",
+            "-F",
+            "clippy::disallowed_types"
+        ]));
+        assert_eq!(cargo_args[3][..2], ["test", "--workspace"]);
+        assert_eq!(cargo_args[4], ["deny", "--locked", "--workspace", "check"]);
+    }
+
+    /// The forbid step leaves out exactly the crates that opt out of the
+    /// direct-io ban: the runtime crates `check-repo` exempts, and xtask.
+    #[test]
+    fn the_forbid_step_excludes_only_the_crates_that_opt_out() {
+        let args = CI_STEPS
+            .iter()
+            .find_map(|step| match step {
+                Step::Cargo {
+                    name: "clippy-forbid",
+                    args,
+                    ..
+                } => Some(*args),
+                _ => None,
+            })
+            .expect("the gate has a `clippy-forbid` step");
+        let excluded: Vec<&str> = args
+            .windows(2)
+            .filter(|pair| pair[0] == "--exclude")
+            .map(|pair| pair[1])
+            .collect();
+        let mut expected = rules::IO_CRATES.to_vec();
+        expected.push("xtask");
+        assert_eq!(excluded, expected);
+        assert!(args.contains(&"--workspace") && args.contains(&"--no-deps"));
     }
 
     #[test]
@@ -636,7 +713,17 @@ mod tests {
             Outcome::Passed
         });
         assert_eq!(result, Ok(()));
-        assert_eq!(ran, ["fmt", "clippy", "test", "deny", "check-repo"]);
+        assert_eq!(
+            ran,
+            [
+                "fmt",
+                "clippy",
+                "clippy-forbid",
+                "test",
+                "deny",
+                "check-repo"
+            ]
+        );
     }
 
     #[test]

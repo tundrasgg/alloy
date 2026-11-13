@@ -3,9 +3,17 @@ getrandom::getrandom
 getrandom::getrandom_uninit
 rand::make_rng
 rand_core::SeedableRng::from_entropy
+tokio::task::Builder
+std::os::unix::fs::chown windows
+std::os::unix::fs::chroot windows
+std::os::unix::fs::fchown windows
+std::os::unix::fs::lchown windows
+std::os::unix::fs::symlink windows
 std::os::unix::net::UnixDatagram windows
 std::os::unix::net::UnixListener windows
 std::os::unix::net::UnixStream windows
+std::os::windows::fs::symlink_dir unix
+std::os::windows::fs::symlink_file unix
 tokio::fs::symlink windows
 tokio::fs::symlink_dir unix
 tokio::fs::symlink_file unix
@@ -13,3 +21,11 @@ tokio::net::UnixDatagram windows
 tokio::net::UnixListener windows
 tokio::net::UnixSocket windows
 tokio::net::UnixStream windows
+tokio::net::unix::pipe::OpenOptions windows
+tokio::net::unix::pipe::Receiver windows
+tokio::net::unix::pipe::Sender windows
+tokio::net::unix::pipe::pipe windows
+tokio::net::windows::named_pipe::ClientOptions unix
+tokio::net::windows::named_pipe::NamedPipeClient unix
+tokio::net::windows::named_pipe::NamedPipeServer unix
+tokio::net::windows::named_pipe::ServerOptions unix

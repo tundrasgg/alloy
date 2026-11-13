@@ -8,6 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::iter;
+use std::ops::Range;
 use std::path::Path;
 
 use crate::rules::{is_locked, is_task_id, task_type};
@@ -160,19 +161,38 @@ impl<'a> Subject<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Message<'a> {
     lines: Vec<&'a str>,
-    /// Index of the first footer line: the start of the trailer block that
-    /// [`trailer_block_start`] finds, else `lines.len()`.
-    footers_from: usize,
+    /// The lines of the trailer block that `git interpret-trailers --parse`
+    /// reads, which stops at a `---` divider; empty when there is none.
+    footers: Range<usize>,
+    /// The lines of the trailer block that `%(trailers)` reads, which ignores
+    /// the divider, when that block is not [`Self::footers`].
+    undivided: Option<Range<usize>>,
 }
 
 impl<'a> Message<'a> {
     /// Total over any text. Trailing blank lines are ignored.
     pub(crate) fn parse(text: &'a str) -> Self {
         let lines: Vec<&str> = text.trim_end().lines().collect();
-        let footers_from = trailer_block_start(&lines);
+        let block = |divider: bool| {
+            let end = trailer_search_end(text, divider);
+            let searched = text[..end].lines().count().min(lines.len());
+            let start = trailer_block_start(&lines[..searched]);
+            let stop = lines[..searched]
+                .iter()
+                .rposition(|line| !is_blank(line))
+                .map_or(start, |last| (last + 1).max(start));
+            if start < stop {
+                start..stop
+            } else {
+                lines.len()..lines.len()
+            }
+        };
+        let footers = block(true);
+        let undivided = Some(block(false)).filter(|other| *other != footers);
         Self {
             lines,
-            footers_from,
+            footers,
+            undivided,
         }
     }
 
@@ -186,7 +206,14 @@ impl<'a> Message<'a> {
     }
 
     fn footers(&self) -> &[&'a str] {
-        self.lines.get(self.footers_from..).unwrap_or_default()
+        self.lines.get(self.footers.clone()).unwrap_or_default()
+    }
+
+    /// The trailer block that git reads when it ignores a `---` divider, when
+    /// that is not the one [`Self::footers`] returns.
+    fn undivided_footers(&self) -> Option<&[&'a str]> {
+        let range = self.undivided.clone()?;
+        Some(self.lines.get(range).unwrap_or_default())
     }
 
     /// The well-formed task ids in the `Task:` footers.
@@ -228,6 +255,80 @@ fn is_git_space(c: char) -> bool {
 /// Whether git counts the line as blank: empty or only spaces.
 fn is_blank(line: &str) -> bool {
     line.chars().all(is_git_space)
+}
+
+/// git's scissors line, with the default comment character `#`. git ignores it
+/// and everything after it.
+const SCISSORS: &str = "# ------------------------ >8 ------------------------\n";
+
+/// The length of the start of `text` in which git looks for the trailer block.
+///
+/// This is `find_end_of_log_message` in git's `trailer.c`. With `divider`, as
+/// `git interpret-trailers --parse` runs it, the text first ends before the
+/// first line that starts with `---` and a space, tab, or line break. Then
+/// [`ignored_bytes`] come off its end.
+fn trailer_search_end(text: &str, divider: bool) -> usize {
+    let mut end = text.len();
+    if divider {
+        let mut at = 0;
+        for line in text.split_inclusive('\n') {
+            if line
+                .strip_prefix("---")
+                .is_some_and(|rest| rest.starts_with(is_git_space))
+            {
+                end = at;
+                break;
+            }
+            at += line.len();
+        }
+    }
+    end - ignored_bytes(text, end)
+}
+
+/// How many bytes at the end of `text[..len]` git ignores before it looks for
+/// trailers: everything from a scissors line, and a trailing run of comment
+/// lines, empty lines, and old-style `Conflicts:` blocks with their
+/// tab-indented paths.
+///
+/// This is `ignored_log_message_bytes` in git's `commit.c`, with the scissors
+/// search of `wt_status_locate_end`, which looks through the whole text.
+fn ignored_bytes(text: &str, len: usize) -> usize {
+    let cutoff = if text.starts_with(SCISSORS) {
+        0
+    } else {
+        text.find(&format!("\n{SCISSORS}"))
+            .map_or(len, |at| (at + 1).min(len))
+    };
+    let bytes = text.as_bytes();
+    // The start of the trailing run, where 0 means no run, as in git: a run
+    // that starts at the first byte only starts at its second line.
+    let mut run_start = 0;
+    let mut in_conflicts = false;
+    let mut bol = 0;
+    while bol < cutoff {
+        let next = text[bol..cutoff].find('\n').map_or(cutoff, |n| bol + n + 1);
+        if bytes[bol] == b'#' || bytes[bol] == b'\n' {
+            if run_start == 0 {
+                run_start = bol;
+            }
+        } else if text[bol..].starts_with("Conflicts:\n") {
+            in_conflicts = true;
+            if run_start == 0 {
+                run_start = bol;
+            }
+        } else if in_conflicts && bytes[bol] == b'\t' {
+            // A path in the conflicts block.
+        } else if run_start != 0 {
+            run_start = 0;
+            in_conflicts = false;
+        }
+        bol = next;
+    }
+    if run_start == 0 {
+        len - cutoff
+    } else {
+        len - run_start
+    }
 }
 
 /// The index of the first line of the trailer block, or `lines.len()` when the
@@ -341,48 +442,56 @@ pub(crate) fn check(message: &Message<'_>, facts: &Facts) -> Vec<Breach> {
             "`{key}:` is not allowed; the only footers are `Task:`, `Spec:`, `BREAKING CHANGE:`"
         )
     };
-    let mut last_rank = None;
+    // The rules judge every trailer either git reading finds. Only the block
+    // `git interpret-trailers --parse` reads counts toward which footers are
+    // present.
     let mut present = [false; FOOTERS.len()];
-    for line in message.footers() {
-        let Some((key, value)) = trailer(line) else {
-            add(
-                CommitRule::Footers,
-                format!("`{line}` in the footers is not a `Key: value` line"),
-            );
-            continue;
-        };
-        let Some(rank) = FOOTERS.iter().position(|k| *k == key) else {
-            add(CommitRule::Trailers, not_allowed(key));
-            continue;
-        };
-        if last_rank.is_some_and(|last| rank <= last) {
-            add(
-                CommitRule::Footers,
-                format!(
-                    "`{key}:` is repeated or out of order; the order is `Task:`, `Spec:`, `BREAKING CHANGE:`"
-                ),
-            );
-        }
-        last_rank = last_rank.max(Some(rank));
-        present[rank] = true;
-        let exact = line
-            .strip_prefix(key)
-            .and_then(|rest| rest.strip_prefix(": "))
-            .filter(|v| !v.is_empty() && !v.starts_with(char::is_whitespace));
-        if exact.is_none() {
-            add(
-                CommitRule::Footers,
-                format!(
-                    "`{line}` is not `{key}: <value>`, with no space before the colon and one after it"
-                ),
-            );
-        }
-        let text = exact.unwrap_or_else(|| value.trim());
-        if key == "Task" && !text.is_empty() && !text.split(", ").all(is_task_id) {
-            add(
-                CommitRule::TaskId,
-                format!("`Task: {text}` is not a list of `T-NNNN` ids separated by `, `"),
-            );
+    let blocks = iter::once(message.footers()).chain(message.undivided_footers());
+    for (block_index, block) in blocks.enumerate() {
+        let mut last_rank = None;
+        for line in block {
+            let Some((key, value)) = trailer(line) else {
+                add(
+                    CommitRule::Footers,
+                    format!("`{line}` in the footers is not a `Key: value` line"),
+                );
+                continue;
+            };
+            let Some(rank) = FOOTERS.iter().position(|k| *k == key) else {
+                add(CommitRule::Trailers, not_allowed(key));
+                continue;
+            };
+            if last_rank.is_some_and(|last| rank <= last) {
+                add(
+                    CommitRule::Footers,
+                    format!(
+                        "`{key}:` is repeated or out of order; the order is `Task:`, `Spec:`, `BREAKING CHANGE:`"
+                    ),
+                );
+            }
+            last_rank = last_rank.max(Some(rank));
+            if block_index == 0 {
+                present[rank] = true;
+            }
+            let exact = line
+                .strip_prefix(key)
+                .and_then(|rest| rest.strip_prefix(": "))
+                .filter(|v| !v.is_empty() && !v.starts_with(char::is_whitespace));
+            if exact.is_none() {
+                add(
+                    CommitRule::Footers,
+                    format!(
+                        "`{line}` is not `{key}: <value>`, with no space before the colon and one after it"
+                    ),
+                );
+            }
+            let text = exact.unwrap_or_else(|| value.trim());
+            if key == "Task" && !text.is_empty() && !text.split(", ").all(is_task_id) {
+                add(
+                    CommitRule::TaskId,
+                    format!("`Task: {text}` is not a list of `T-NNNN` ids separated by `, `"),
+                );
+            }
         }
     }
 
@@ -682,7 +791,7 @@ mod tests {
             ("feat(xtask): x\nTask: T-0001", &[]),
             (
                 "feat(xtask): x\n\nTask: T-0001\n# comment",
-                &["Task: T-0001", "# comment"],
+                &["Task: T-0001"],
             ),
             (
                 "chore(plan): x\n\nT-0006: one block",
@@ -702,6 +811,115 @@ mod tests {
         for (text, block) in cases {
             assert_eq!(Message::parse(text).footers(), block, "{text:?}");
         }
+    }
+
+    /// Each case is a message, the trailers `git interpret-trailers --parse`
+    /// printed for it, and, where they differ, the trailers it printed with
+    /// `--no-divider`, as `%(trailers)` reads them (git 2.44.0). git cuts the
+    /// message at a scissors line, at a trailing run of comment lines, empty
+    /// lines, and `Conflicts:` blocks, and, without `--no-divider`, at a `---`
+    /// line, before it looks for the trailer block.
+    #[test]
+    fn the_trailer_block_is_found_where_git_cuts_the_message() {
+        const CO: &str = "Co-Authored-By: S";
+        const TASK: &str = "Task: T-0001";
+        // A message, its trailer block, and the other block, if any.
+        type Case = (
+            &'static str,
+            &'static [&'static str],
+            Option<&'static [&'static str]>,
+        );
+        let cases: [Case; 15] = [
+            (
+                "chore(plan): x\n\nCo-Authored-By: S\n# ------------------------ >8 ------------------------\nprose\n",
+                &[CO],
+                None,
+            ),
+            (
+                "feat(xtask): x\n\nBody.\n\nCo-Authored-By: S\n# ------------------------ >8 ------------------------\n\nTask: T-0001\n",
+                &[CO],
+                None,
+            ),
+            (
+                "feat(xtask): x\n\nBody.\n\nCo-Authored-By: S\n---\n\nTask: T-0001\n",
+                &[CO],
+                Some(&[TASK]),
+            ),
+            (
+                "chore(plan): x\n\nCo-Authored-By: S\n\nConflicts:\n\n\tplan/STATE.md\n",
+                &[CO],
+                None,
+            ),
+            ("feat(xtask): x\n\nTask: T-0001\n# comment\n", &[TASK], None),
+            ("feat(xtask): x\n\nTask: T-0001\n---", &[], None),
+            (
+                "feat(xtask): x\n\nTask: T-0001\n--- x\nCo-Authored-By: S\n",
+                &[TASK],
+                Some(&[]),
+            ),
+            (
+                "feat(xtask): x\n\nTask: T-0001\n\nConflicts:\n\tplan/STATE.md\nprose\n",
+                &[],
+                None,
+            ),
+            (
+                "feat(xtask): x\n\nTask: T-0001\n\nConflicts:\n\tplan/STATE.md\n# x\n\n",
+                &[TASK],
+                None,
+            ),
+            (
+                "feat(xtask): x\n---\n\nCo-Authored-By: S\n",
+                &[],
+                Some(&[CO]),
+            ),
+            (
+                "feat(xtask): x\n\nTask: T-0001\n# ------------------------ >8 ------------------------",
+                &[TASK],
+                None,
+            ),
+            (
+                "feat(xtask): x\n\nTask: T-0001\n \t\n---\nx\n",
+                &[TASK],
+                Some(&[]),
+            ),
+            (
+                "feat(xtask): x\n\nCo-Authored-By: S\nConflicts:\n\tx\n",
+                &[CO],
+                None,
+            ),
+            (
+                "feat(xtask): x\n\nTask: T-0001\n---\tx\n",
+                &[TASK],
+                Some(&[]),
+            ),
+            (
+                "feat(xtask): x\n\nCo-Authored-By: S\n----\nTask: T-0001\n",
+                &[],
+                None,
+            ),
+        ];
+        for (text, block, undivided) in cases {
+            let message = Message::parse(text);
+            assert_eq!(message.footers(), block, "{text:?}");
+            assert_eq!(message.undivided_footers(), undivided, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn trailers_in_either_git_reading_are_judged() {
+        let text = "feat(xtask): x\n\nBody.\n\nCo-Authored-By: S\n# ------------------------ >8 ------------------------\n\nTask: T-0001\n";
+        assert_eq!(
+            rules(text, &Facts::default()),
+            ["trailers", "task-required"]
+        );
+        let text = "feat(xtask): x\n\nBody.\n\nCo-Authored-By: S\n---\n\nTask: T-0001\n";
+        assert_eq!(
+            rules(text, &Facts::default()),
+            ["trailers", "task-required"]
+        );
+        let text = "feat(xtask): x\n\nBody.\n\nTask: T-0001\n---\n\nCo-Authored-By: S\n";
+        assert_eq!(rules(text, &Facts::default()), ["trailers"]);
+        assert_eq!(Message::parse(text).task_ids(), ["T-0001"]);
     }
 
     /// git finds no trailer here, because its key grammar has no space;

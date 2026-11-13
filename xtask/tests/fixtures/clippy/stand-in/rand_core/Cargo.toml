@@ -1,0 +1,10 @@
+[package]
+name = "rand_core"
+version = "0.9.5"
+description = "Stand-in for rand_core 0.9.5 in the Clippy fixture: its public paths, and nothing that runs."
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+getrandom = { path = "../getrandom" }

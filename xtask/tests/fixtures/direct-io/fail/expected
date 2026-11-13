@@ -7,3 +7,5 @@ crates/demo/src/lib.rs:11: direct-io
 crates/demo/src/lib.rs:14: direct-io
 crates/demo/src/lib.rs:19: direct-io
 crates/demo/src/lib.rs:23: direct-io
+crates/demo/src/lib.rs:26: direct-io
+crates/demo/src/lib.rs:29: direct-io

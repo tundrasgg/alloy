@@ -2,7 +2,7 @@
 //! `#![allow(clippy::disallowed_methods)]` and `OsRng`.
 
 #![deny(clippy::all)]
-#![warn(clippy::disallowed_methods)]
+#![forbid(clippy::disallowed_methods)]
 #![cfg_attr(test, allow(dead_code))]
 
 use std::net::{IpAddr, SocketAddr};

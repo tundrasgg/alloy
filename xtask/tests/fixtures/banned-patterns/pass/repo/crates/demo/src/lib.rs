@@ -32,3 +32,6 @@ mod tests {
         v.expect("fine in tests");
     }
 }
+
+#[rustfmt::skip]
+pub fn one_line() { #[cfg(test)] let _b = Some(1).unwrap(); }

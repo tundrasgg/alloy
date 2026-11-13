@@ -1,0 +1,5 @@
+/// An `allow` that only `include!` brings in.
+#[allow(clippy::disallowed_methods, reason = "a fixture case")]
+pub fn included() -> std::time::Instant {
+    std::time::Instant::now()
+}
