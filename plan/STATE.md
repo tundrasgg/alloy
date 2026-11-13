@@ -11,8 +11,8 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0081 |
-| Decision `D-` | D-0031 |
+| Task `T-` | T-0082 |
+| Decision `D-` | D-0032 |
 | ADR | 0062 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0002 |
@@ -32,7 +32,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0007 | interface | developer | done | none | Define the alloy-rt and alloy-seam interface crates |
 | T-0008 | verify | verifier | active | none | Write conformance suites for the runtime seams |
 | T-0009 | build | developer | cancelled | none | Build the alloy-sim deterministic simulator |
-| T-0010 | verify | verifier | active | none | Write determinism and fault tests for the simulator |
+| T-0010 | verify | verifier | blocked | T-0077 | Write determinism and fault tests for the simulator |
 | T-0011 | build | developer | queued | T-0009, T-0021 | Build the NAT models in alloy-natlab |
 | T-0012 | verify | verifier | queued | T-0007, T-0021 | Write NAT model tests and the matrix file |
 | T-0013 | product | product | done | none | Write the brief for init, join, and first login |
@@ -86,7 +86,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0061 | build | developer | done | none | Add fuzz targets for every alloy-wire decoder |
 | T-0062 | build | developer | done | none | Allow thiserror and proptest in the dependency allowlist |
 | T-0063 | spec | architect | done | none | Shrink the AL transport header to 25 bytes of overhead |
-| T-0064 | build | developer | active | none | Rework alloy-wire for the compact transport header |
+| T-0064 | build | developer | review | none | Rework alloy-wire for the compact transport header |
 | T-0065 | spec | architect | done | none | State break-glass reach into tenant data accurately |
 | T-0066 | spec | architect | done | none | Close the open stored-binding and interface gaps in ARFC 0001 |
 | T-0067 | spec | architect | done | none | Settle timeout start and path joining in ARFC 0005 |
@@ -103,6 +103,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0078 | build | developer | queued | T-0077 | Build alloy-sim mem streams |
 | T-0079 | build | developer | queued | T-0068 | Run the commit check inside cargo xtask ci |
 | T-0080 | spec | architect | active | none | Replace path-move heuristics with verify-before-move |
+| T-0081 | build | developer | queued | T-0064 | Update the alloy-wire fuzz targets to the compact layout |
 
 ## First dispatch
 
@@ -160,6 +161,7 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 - Notes from T-0066 re-review (fold into the next ARFC 0001 or 0017 task): ARFC 0017 clause 3.12 lacks scenarios for four rules added in T-0066 round 2 (F1); the clause 3.11 conclusion about written running releases (F2); a global-group recover from a node without the switch re-allows rollback (F3).
 - Notes from T-0074 review (fold into the next task on these files): restore the space before `reason` in the `alloy-rt` entry of `deny.toml`; `alloy-crypto`'s `Hasher` doc overstates its buffer (one 64-byte block plus a chaining value).
 - Notes from T-0063 review (fold into the next ARFC 0003 task): an unbound VNI idle across a rekey loses its first packets (F1); the 4-sessions-per-peer cap can discard the working session during handshake retries (F2); bind replies reveal which VNIs a node hosts to any session peer (F3); the 2^31 stop rule does not match session choice (F4).
+- Tooling note: `cargo xtask ci` does not build `fuzz/`, so T-0064 broke the fuzz targets without the gate noticing; add a fuzz build check in the next `xtask` task.
 - Process notes (fold into the next process task): `agent/protocol/spec-change.md`'s behavior-change row matches the lean review rule; `agent/roles/reviewer.md` names interface, spec, and process tasks as review inputs (T-0073).
 - Process: a task that supersedes an ADR needs that ADR's status line and its index row in `touches`; the shared index rule has no append-only way to mark a superseded row (T-0044).
 - Spec: ARFC 0014 maps native errors, including `Unauthenticated`, to S3 errors; add `Unauthenticated` to `proto/alloy/common/errors.proto` when it is written (T-0044).
