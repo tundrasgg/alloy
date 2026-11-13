@@ -161,11 +161,23 @@ cookie reply (I-06).
 
 An initiator must drop a cookie reply whose `receiver_index` names no initiation
 it has pending, or whose `encrypted cookie` does not decrypt with the `mac1` of
-that initiation. Otherwise it keeps the cookie for that responder and uses it
-for `mac2` on every initiation it sends to that responder for 120 seconds from
-receipt, then discards it. The responder accepts the previous `cookie_secret`
-as well as the current one, so a cookie stays valid for at least those 120
-seconds.
+that initiation. Otherwise it keeps the cookie for that responder, in place of
+any cookie it held for that responder, and uses it for `mac2` on every
+initiation it sends to that responder for 120 seconds from receipt, then
+discards it.
+
+Cookie validity: a `cookie_secret` is current for 120 seconds and then accepted
+as the previous one for 120 more, so a cookie stays valid for at least 120
+seconds from its creation, as measured on the responder's clock. A responder
+under load must accept a `mac2` computed with a cookie it sent in a cookie reply,
+on every initiation from the same `src` that reaches it less than 120 seconds
+after it computed that cookie. The initiator's 120 seconds start at receipt,
+one network delay after creation, so this guarantee does not cover its whole
+keep window: an initiation sent less than one round trip between the two nodes
+before the window ends can reach the responder after the secret is retired. A
+responder under load answers such an initiation with a fresh cookie reply, as
+for any initiation without a valid `mac2`. This costs the initiator one round
+trip and gives no party state or work beyond one cookie reply.
 
 Key lifetimes: the `mac1` and cookie reply keys are derived from public keys
 and live as long as the static key they come from. `cookie_secret` lives 120
@@ -290,9 +302,29 @@ else changes.
 ## 6. Failure behavior
 
 Any message that fails to parse, authenticate, or pass the replay check must be
-dropped silently, with a counter incremented and no reply (I-06). Before
-authentication a receiver may do at most one MAC check per packet, or one DH per
-packet when not under load.
+dropped silently, with a counter incremented and no reply (I-06).
+
+Cost before authentication: a receiver must not spend more on a packet before
+the packet is authenticated than the table below allows. "DH" is one X25519
+operation. An initiation is authenticated when its encrypted payload decrypts
+and its counter passes 3.2. A response is authenticated when its encrypted
+payload decrypts. Every other message is authenticated when its authentication
+tag verifies.
+
+| Message | Allowed before it is authenticated |
+|---|---|
+| Initiation, not under load | One `mac1` check. Then two DH (`es`, `ss`) and the AEAD opens of the encrypted static and the encrypted payload |
+| Initiation, under load | One `mac1` check, then at most two `mac2` checks, with the cookies computed from the current and the previous `cookie_secret`. If no `mac2` is valid: the AEAD seal of one cookie reply (3.1), and no DH. If one is valid: as when not under load |
+| Response | One `mac1` check. Then, only if `receiver_index` names an initiation the receiver has pending: two DH (`ee`, `se`) and the AEAD open of the encrypted payload |
+| Cookie reply | Only if `receiver_index` names an initiation the receiver has pending: the AEAD open of the encrypted cookie |
+| Any other type | One MAC check, or one DH when not under load |
+
+The responder computes the two DH that build the response (`ee`, `se`) only
+after the initiation is authenticated, so they are not work before
+authentication. A handshake message therefore costs its receiver at most two DH
+before it is authenticated, an initiation under load without a valid `mac2`
+costs none, and a completed handshake costs each side four DH in total, as
+`IKpsk2` requires.
 
 ## 7. Limits
 
