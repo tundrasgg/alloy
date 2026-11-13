@@ -1,10 +1,11 @@
 //! Host faults (ARFC 0005 section 3.3): crash and restart, clock rate and
-//! step, and stalls, applied now or scheduled at a world time (clause
-//! 3.3.8).
+//! step, stalls, and disk faults, applied now or scheduled at a world time
+//! (clause 3.3.8).
 
 use std::sync::Arc;
 use std::time::Duration;
 
+use alloy_rt::RtPath;
 use alloy_seam::Detail;
 
 use crate::core::{After, Core, Event, MAX_NANOS, Shared};
@@ -58,6 +59,63 @@ pub enum Fault {
         /// How long, from the instant the fault applies.
         length: Duration,
     },
+    /// Replaces the read fault rates of `target` (clause 3.3.7).
+    Disk {
+        /// The host.
+        host: HostId,
+        /// Its regular files, or one of its devices.
+        target: DiskTarget,
+        /// The probability that a read operation fails with `Io`.
+        read_error: Ppm,
+        /// The probability that a read returning bytes has one bit flipped.
+        corrupt_read: Ppm,
+    },
+    /// Sets the capacity of the file namespace (clause 3.3.7).
+    Capacity {
+        /// The host.
+        host: HostId,
+        /// The bound in bytes. At or below the bytes in use, the disk is full.
+        bytes: u64,
+    },
+}
+
+/// What a `Disk` fault applies to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DiskTarget {
+    /// Every regular file of the host.
+    Files,
+    /// The block device at this path.
+    Device(RtPath),
+}
+
+/// A probability in parts per million, 0 to 1,000,000.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Ppm(u32);
+
+impl Ppm {
+    /// Never.
+    pub const ZERO: Ppm = Ppm(0);
+    /// Always.
+    pub const ALWAYS: Ppm = Ppm(1_000_000);
+
+    /// `ppm` parts per million.
+    ///
+    /// # Errors
+    ///
+    /// [`WorldError::Invalid`] above 1,000,000.
+    pub fn new(ppm: u32) -> Result<Ppm, WorldError> {
+        if ppm > 1_000_000 {
+            return Err(WorldError::Invalid(Detail::new(
+                "ppm must be 0 to 1,000,000",
+            )));
+        }
+        Ok(Ppm(ppm))
+    }
+
+    /// The parts per million.
+    pub fn get(self) -> u32 {
+        self.0
+    }
 }
 
 /// What a crash does to writes and namespace changes that no completed
@@ -80,7 +138,9 @@ impl Fault {
             | Fault::Restart { host, .. }
             | Fault::ClockRate { host, .. }
             | Fault::ClockStep { host, .. }
-            | Fault::Stall { host, .. } => *host,
+            | Fault::Stall { host, .. }
+            | Fault::Disk { host, .. }
+            | Fault::Capacity { host, .. } => *host,
         }
     }
 }
@@ -90,11 +150,18 @@ fn state(text: &str) -> WorldError {
 }
 
 impl Core {
-    /// The checks that do not depend on state (clause 3.3.8): the host
-    /// exists and values are in range.
+    /// The checks that do not depend on state (clause 3.3.8): the host and
+    /// device exist and values are in range.
     fn check_fault(&self, fault: &Fault) -> Result<(), WorldError> {
-        self.host(fault.host())?;
+        let host = self.host(fault.host())?;
         match fault {
+            Fault::Disk {
+                target: DiskTarget::Device(path),
+                ..
+            } if !host.disk.has_device(path) => Err(WorldError::Unknown(Detail::new(&format!(
+                "device {}",
+                path.as_str()
+            )))),
             Fault::ClockRate { ppm, .. } if !(-MAX_PPM..=MAX_PPM).contains(ppm) => Err(
                 WorldError::Invalid(Detail::new("ppm must be -500,000 to 500,000")),
             ),
@@ -117,10 +184,15 @@ impl Core {
         self.check_fault(&fault)?;
         let now = shared.now_nanos();
         let target = fault.host();
+        let text = format!("{fault:?}");
         let host = self.host_mut(target)?;
         match fault {
-            Fault::Crash { after_polls, .. } => {
-                if host.crashed || host.pending_crash {
+            Fault::Crash {
+                after_polls,
+                unsynced,
+                ..
+            } => {
+                if host.crashed || host.pending_crash.is_some() {
                     return Err(state("the host has crashed"));
                 }
                 let polled_here = self
@@ -132,13 +204,13 @@ impl Core {
                 let polls = self.polls;
                 let host = self.host_mut(target)?;
                 if after_polls > 0 {
-                    host.armed = Some((after_polls, polls));
+                    host.armed = Some((after_polls, polls, unsynced));
                     let text = format!("crash armed after {after_polls} polls");
                     shared.push(Some(target), KIND_FAULT, &text_field(&text));
                 } else if polled_here {
-                    host.pending_crash = true;
+                    host.pending_crash = Some(unsynced);
                 } else {
-                    self.crash(shared, target, after);
+                    self.crash(shared, target, unsynced, after);
                 }
             }
             Fault::Restart { rng_replay, .. } => {
@@ -166,6 +238,19 @@ impl Core {
                     return Err(state("the host has crashed"));
                 }
                 self.stall(shared, target, length);
+            }
+            Fault::Disk {
+                target: disk_target,
+                read_error,
+                corrupt_read,
+                ..
+            } => {
+                host.disk.set_rates(&disk_target, read_error, corrupt_read);
+                shared.push(Some(target), KIND_FAULT, &text_field(&text));
+            }
+            Fault::Capacity { bytes, .. } => {
+                host.disk.set_capacity(bytes);
+                shared.push(Some(target), KIND_FAULT, &text_field(&text));
             }
         }
         Ok(())

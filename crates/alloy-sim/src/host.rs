@@ -1,7 +1,7 @@
 //! Hosts and their `mem` runtime: the clock of clause 3.1.4, the random
 //! streams of clause 3.1.5, the tasks of clause 3.1.6, a `net` instance that
-//! lists `lo`, and a `disk-io` instance; the starts, crashes, and stalls of
-//! clauses 3.3.4 to 3.3.6.
+//! lists `lo`, and the `disk-io` instances of module `disk`; the starts,
+//! crashes, and stalls of clauses 3.3.4 to 3.3.6.
 
 use std::fmt;
 use std::future::{Future, poll_fn, ready};
@@ -13,16 +13,17 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use alloy_rt::{
-    BoxFuture, Clock, ClockSeam, DirEntry, DiskError, DiskFile, DiskIo, DiskIoSeam, Instant,
-    Interface, InterfaceAddr, InterfaceList, JoinError, ListenOptions, Listener, Metadata, Net,
-    NetError, NetSeam, OpenOptions, Rng, RngError, RngSeam, RtPath, Runtime, Spawn, SpawnError,
-    SpawnSeam, Stream as RtStream, StreamAddr, StreamOptions, TaskHandle, TaskId, TaskName,
-    UdpOptions, UdpSocket, WallTime,
+    BoxFuture, Clock, ClockSeam, DiskIoSeam, Instant, Interface, InterfaceAddr, InterfaceList,
+    JoinError, ListenOptions, Listener, Net, NetError, NetSeam, Rng, RngError, RngSeam, RtPath,
+    Runtime, Spawn, SpawnError, SpawnSeam, Stream as RtStream, StreamAddr, StreamOptions,
+    TaskHandle, TaskId, TaskName, UdpOptions, UdpSocket, WallTime,
 };
 use alloy_seam::{BuildError, ConfigError, ConfigValue, Detail, ImplName, RegistryBuilder};
 
 use crate::core::{After, BootJob, Core, End, Event, HostTimer, MAX_NANOS, Shared};
+use crate::disk::{Disk, MemDiskIo};
 use crate::exec::{Joint, Owner, TaskKey, lock};
+use crate::fault::Unsynced;
 use crate::stream::Stream;
 use crate::trace::{KIND_HOST_CRASH, KIND_HOST_STALL, KIND_HOST_START, KIND_RNG, KIND_TASK_SPAWN};
 use crate::world::HostId;
@@ -73,6 +74,12 @@ pub struct HostConfig {
     pub clock_ppm: i32,
     /// Nanoseconds added to `RunConfig::wall_start` for this host. Default 0.
     pub wall_offset: i64,
+    /// Block devices, created with the host. At most 64. Default empty.
+    pub devices: Vec<DeviceConfig>,
+    /// Bytes of the file namespace (clause 3.3.7). Default 1,073,741,824.
+    pub capacity: u64,
+    /// `block_size` of the file namespace, 512 or 4,096. Default 4,096.
+    pub block_size: u32,
 }
 
 impl HostConfig {
@@ -82,6 +89,9 @@ impl HostConfig {
             boot,
             clock_ppm: 0,
             wall_offset: 0,
+            devices: Vec::new(),
+            capacity: 1_073_741_824,
+            block_size: 4_096,
         }
     }
 }
@@ -92,8 +102,23 @@ impl fmt::Debug for HostConfig {
         f.debug_struct("HostConfig")
             .field("clock_ppm", &self.clock_ppm)
             .field("wall_offset", &self.wall_offset)
+            .field("devices", &self.devices)
+            .field("capacity", &self.capacity)
+            .field("block_size", &self.block_size)
             .finish_non_exhaustive()
     }
+}
+
+/// A block device, all zeros at creation. Its path and missing parent
+/// directories are created durable with the host (clause 3.3.7).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceConfig {
+    /// Its path: not the root, nor another device's path or below it.
+    pub path: RtPath,
+    /// A multiple of `block_size`, from `block_size` to 2^40.
+    pub len: u64,
+    /// 512 or 4,096.
+    pub block_size: u32,
 }
 
 /// A host's state.
@@ -192,10 +217,10 @@ pub(crate) struct Host {
     pub(crate) crashed: bool,
     /// A crash applied during a poll of one of the host's tasks, which takes
     /// effect when that poll returns (clause 3.3.4).
-    pub(crate) pending_crash: bool,
-    /// An armed crash: the polls left, and the number of the last poll that
-    /// started before it was armed.
-    pub(crate) armed: Option<(u32, u64)>,
+    pub(crate) pending_crash: Option<Unsynced>,
+    /// An armed crash: the polls left, the number of the last poll that
+    /// started before it was armed, and its mode.
+    pub(crate) armed: Option<(u32, u64, Unsynced)>,
     /// The world time the stalls in force end at.
     pub(crate) stall_until: u64,
     /// The key of the event at `stall_until`, while a stall is in force.
@@ -207,20 +232,29 @@ pub(crate) struct Host {
     /// The runtime of the current start, while it runs.
     pub(crate) runtime: Option<Runtime>,
     pub(crate) clock: Arc<Mutex<HostClock>>,
-    /// Per start: the `rng` instances built, and the start whose streams
-    /// they draw. That source is never itself a replay: a replay of a
-    /// replay draws the streams of the first start of the chain.
-    rng: Vec<(u64, u32)>,
+    /// The `rng` instances of each start.
+    rng: Vec<RngStart>,
+    /// The file namespace and devices, which persist across crashes.
+    pub(crate) disk: Disk,
+}
+
+/// The `rng` instances of one start: how many it has built, and, for a start
+/// that replays start `s`, `s` and how many instances `s` had built then.
+/// Only that many instances draw the streams of `s` (clause 3.1.5).
+#[derive(Debug)]
+struct RngStart {
+    built: u64,
+    replay: Option<(u32, u64)>,
 }
 
 impl Host {
     /// A host created at world time `now`, not yet started.
-    pub(crate) fn new(config: HostConfig, now: u64, wall_start: i64) -> Host {
+    pub(crate) fn new(config: HostConfig, disk: Disk, now: u64, wall_start: i64) -> Host {
         Host {
             boot: config.boot,
             start: 0,
             crashed: true,
-            pending_crash: false,
+            pending_crash: None,
             armed: None,
             stall_until: 0,
             stall_event: None,
@@ -236,6 +270,7 @@ impl Host {
                 steps: 0,
             })),
             rng: Vec::new(),
+            disk,
         }
     }
 
@@ -254,7 +289,7 @@ impl Host {
     }
 
     /// Whether objects of start `start` still work.
-    fn live(&self, start: u32) -> bool {
+    pub(crate) fn live(&self, start: u32) -> bool {
         self.start == start && !self.crashed
     }
 
@@ -290,12 +325,11 @@ impl Core {
         entry.start += 1;
         let start = entry.start;
         entry.crashed = false;
-        // Start `s` drew the streams of its own source, so a replay of `s`
-        // draws those too (clause 3.3.4).
-        let source = replay
-            .and_then(|s| entry.rng.get(s.saturating_sub(1) as usize))
-            .map_or(start, |(_, source)| *source);
-        entry.rng.push((0, source));
+        let replay = replay.and_then(|s| {
+            let source = entry.rng.get(s.saturating_sub(1) as usize)?;
+            Some((s, source.built))
+        });
+        entry.rng.push(RngStart { built: 0, replay });
         lock(&entry.clock).lines.push(Line { w0: now, h0: 0 });
         let id = TaskId(entry.next_task);
         entry.next_task += 1;
@@ -316,7 +350,7 @@ impl Core {
                 clock: Arc::clone(&clock),
             }),
             Arc::new(MemNet { at: at.clone() }),
-            Arc::new(MemDiskIo { at: at.clone() }),
+            Arc::new(MemDiskIo::new(at.clone())),
             Arc::new(rng),
             Arc::new(MemSpawn::new(at.clone())),
         );
@@ -336,9 +370,15 @@ impl Core {
     }
 
     /// Crashes `host` at once (clause 3.3.4): writes `host-crash`, ends every
-    /// task of the host in ascending task number, and ends its stalls and
-    /// any armed or pending crash.
-    pub(crate) fn crash(&mut self, shared: &Shared, host: HostId, after: &mut After) {
+    /// task of the host in ascending task number, ends its stalls and any
+    /// armed or pending crash, and keeps of its disk what `unsynced` says.
+    pub(crate) fn crash(
+        &mut self,
+        shared: &Shared,
+        host: HostId,
+        unsynced: Unsynced,
+        after: &mut After,
+    ) {
         shared.push(Some(host), KIND_HOST_CRASH, &[]);
         let mut doomed: Vec<(TaskId, TaskKey)> = self
             .exec
@@ -356,8 +396,13 @@ impl Core {
         let mut stall_event = None;
         if let Ok(entry) = self.host_mut(host) {
             entry.crashed = true;
-            entry.pending_crash = false;
+            entry.pending_crash = None;
             entry.armed = None;
+            // Each start crashes at most once, so each crash draws its own
+            // stream.
+            let ids = [u64::from(host.0), u64::from(entry.start)];
+            let mut draws = Stream::new(shared.seed(), b"disk-crash", &ids);
+            entry.disk.crash(unsynced, &mut draws);
             entry.stall_until = 0;
             stall_event = entry.stall_event.take();
             entry.parked.clear();
@@ -411,38 +456,53 @@ impl Core {
         let Ok(entry) = self.host_mut(host) else {
             return;
         };
-        let crash = if entry.pending_crash {
-            true
-        } else if let Some((left, since)) = entry.armed
+        let crash = if let Some(unsynced) = entry.pending_crash {
+            Some(unsynced)
+        } else if let Some((left, since, unsynced)) = entry.armed
             && number > since
         {
-            entry.armed = (left > 1).then(|| (left - 1, since));
-            left <= 1
+            entry.armed = (left > 1).then(|| (left - 1, since, unsynced));
+            (left <= 1).then_some(unsynced)
         } else {
-            false
+            None
         };
-        if crash {
-            self.crash(shared, host, after);
+        if let Some(unsynced) = crash {
+            self.crash(shared, host, unsynced, after);
         }
     }
 
-    /// A new `rng` instance of the start at `at`.
+    /// A new `rng` instance of the start at `at`. The instance at index `i`
+    /// of start `k` draws the stream of index `i` of start `k`, unless `k`
+    /// replays a start `s` that had built more than `i` instances when `k`
+    /// began: then it draws what instance `i` of `s` draws (clause 3.3.4).
+    /// So no instance repeats a stream unless an `rng_replay` asks for it.
     fn new_rng(&mut self, at: &Place) -> MemRng {
-        let (index, source) = match self
-            .hosts
-            .get_mut(at.host.0 as usize)
-            .and_then(|host| host.rng.get_mut(at.start.saturating_sub(1) as usize))
-        {
-            Some((next, source)) => {
-                *next += 1;
-                (*next - 1, *source)
+        let start_index = |start: u32| start.saturating_sub(1) as usize;
+        let (index, owner) = match self.hosts.get_mut(at.host.0 as usize) {
+            Some(host) => {
+                let index = host.rng.get_mut(start_index(at.start)).map_or(0, |own| {
+                    own.built += 1;
+                    own.built - 1
+                });
+                // Each replayed start is earlier than the start replaying
+                // it, so this ends.
+                let mut owner = at.start;
+                while let Some(RngStart {
+                    replay: Some((source, limit)),
+                    ..
+                }) = host.rng.get(start_index(owner))
+                    && index < *limit
+                {
+                    owner = *source;
+                }
+                (index, owner)
             }
             None => (0, at.start),
         };
         let stream = Stream::new(
             at.shared.seed(),
             b"rng",
-            &[u64::from(at.host.0), u64::from(source), index],
+            &[u64::from(at.host.0), u64::from(owner), index],
         );
         MemRng {
             at: at.clone(),
@@ -462,10 +522,10 @@ fn spawn_body(id: TaskId, name: &str) -> Vec<u8> {
 
 /// The host and start a `mem` instance belongs to.
 #[derive(Clone)]
-struct Place {
-    shared: Arc<Shared>,
-    host: HostId,
-    start: u32,
+pub(crate) struct Place {
+    pub(crate) shared: Arc<Shared>,
+    pub(crate) host: HostId,
+    pub(crate) start: u32,
 }
 
 impl fmt::Debug for Place {
@@ -812,63 +872,6 @@ impl Net for MemNet {
     }
 }
 
-/// The `mem` disk of one start. It holds no namespace: every call returns
-/// `Unsupported`, and `Io` once the start has crashed (clause 3.3.4).
-/// T-0094 builds the namespace, files, and block devices.
-#[derive(Debug)]
-struct MemDiskIo {
-    at: Place,
-}
-
-impl MemDiskIo {
-    fn refuse<T: Send + 'static>(&self) -> BoxFuture<'static, Result<T, DiskError>> {
-        let error = if self.at.live() {
-            DiskError::Unsupported
-        } else {
-            DiskError::Io
-        };
-        Box::pin(ready(Err(error)))
-    }
-}
-
-impl DiskIo for MemDiskIo {
-    fn open<'a>(
-        &'a self,
-        _path: &'a RtPath,
-        _options: OpenOptions,
-    ) -> BoxFuture<'a, Result<Box<dyn DiskFile>, DiskError>> {
-        self.refuse()
-    }
-
-    fn metadata<'a>(&'a self, _path: &'a RtPath) -> BoxFuture<'a, Result<Metadata, DiskError>> {
-        self.refuse()
-    }
-
-    fn list<'a>(&'a self, _dir: &'a RtPath) -> BoxFuture<'a, Result<Vec<DirEntry>, DiskError>> {
-        self.refuse()
-    }
-
-    fn create_dir<'a>(&'a self, _path: &'a RtPath) -> BoxFuture<'a, Result<(), DiskError>> {
-        self.refuse()
-    }
-
-    fn remove<'a>(&'a self, _path: &'a RtPath) -> BoxFuture<'a, Result<(), DiskError>> {
-        self.refuse()
-    }
-
-    fn rename<'a>(
-        &'a self,
-        _from: &'a RtPath,
-        _to: &'a RtPath,
-    ) -> BoxFuture<'a, Result<(), DiskError>> {
-        self.refuse()
-    }
-
-    fn sync_dir<'a>(&'a self, _dir: &'a RtPath) -> BoxFuture<'a, Result<(), DiskError>> {
-        self.refuse()
-    }
-}
-
 /// Checks a `mem` configuration: version 1 of `message Empty {}`, whose
 /// fields are all unknown and ignored (section 4.2).
 fn check_config(value: &ConfigValue) -> Result<(), BuildError> {
@@ -948,7 +951,7 @@ fn registry(at: &Place, clock: &Arc<Mutex<HostClock>>) -> RegistryBuilder {
     let place = at.clone();
     let disk_factory: alloy_seam::Factory<DiskIoSeam> = Arc::new(move |_, config| {
         check_config(config)?;
-        Ok(Arc::new(MemDiskIo { at: place.clone() }))
+        Ok(Arc::new(MemDiskIo::new(place.clone())))
     });
     let place = at.clone();
     let rng_factory: alloy_seam::Factory<RngSeam> = Arc::new(move |_, config| {

@@ -42,6 +42,8 @@ enum Pending {
         host: Option<HostId>,
         kind: u16,
         body: Vec<u8>,
+        /// The bytes the record's `digest` covers.
+        data: Vec<u8>,
     },
     Fail(Detail),
 }
@@ -203,11 +205,18 @@ impl Shared {
 
     /// Queues one record at the current world time.
     pub(crate) fn push(&self, host: Option<HostId>, kind: u16, body: &[u8]) {
+        self.push_data(host, kind, body, Vec::new());
+    }
+
+    /// Queues one record at the current world time, with the bytes its
+    /// `digest` covers, which observers see (clause 3.6.1).
+    pub(crate) fn push_data(&self, host: Option<HostId>, kind: u16, body: &[u8], data: Vec<u8>) {
         lock(&self.pending).push_back(Pending::Record {
             time: self.now_nanos(),
             host,
             kind,
             body: body.to_vec(),
+            data,
         });
     }
 
@@ -234,8 +243,9 @@ impl Shared {
                     host,
                     kind,
                     body,
+                    data,
                 }) => {
-                    if trace.write(time, host, kind, &body, &[]) {
+                    if trace.write(time, host, kind, &body, &data) {
                         self.end();
                     }
                 }

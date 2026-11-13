@@ -153,7 +153,8 @@ fn a_host_start_writes_its_records_and_runs_boot() {
         }));
         assert_eq!(
             format!("{config:?}"),
-            "HostConfig { clock_ppm: 0, wall_offset: 0, .. }"
+            "HostConfig { clock_ppm: 0, wall_offset: 0, devices: [], capacity: 1073741824, \
+             block_size: 4096, .. }"
         );
         let host = world.add_host(config).map_err(fail)?;
         assert_eq!(host, HostId(0));
@@ -965,4 +966,66 @@ fn a_call_completes_only_in_the_history_that_returned_it() {
     });
     assert_eq!(second.result, RunResult::Pass);
     assert_eq!(get(&entries)[0].completed, None);
+}
+
+/// Finding F1 of the T-0076 review (D-0043): two replays of one start that
+/// each build more `rng` instances than it did draw distinct streams in
+/// those extra instances; only the instances the replayed start reached
+/// repeat its streams (clause 3.1.5).
+#[test]
+fn extra_instances_of_two_replays_of_one_start_draw_distinct_streams() {
+    let draws: Shared<Vec<(u32, usize, u64)>> = Arc::default();
+    let kept = Arc::clone(&draws);
+    observed(17, move |world| async move {
+        let config = HostConfig::new(boot(move |b: HostBoot| {
+            let draws = Arc::clone(&kept);
+            async move {
+                let mut rngs = vec![Arc::clone(b.runtime.rng())];
+                if b.start > 1 {
+                    let mem = alloy_seam::ImplName::new("mem").expect("name");
+                    let config = alloy_seam::ConfigValue::defaults(1).expect("v1");
+                    let registry = b.registry.build();
+                    let built = registry.instantiate::<alloy_rt::RngSeam>(&(), &mem, &config);
+                    rngs.push(built.expect("mem builds"));
+                }
+                for (index, rng) in rngs.iter().enumerate() {
+                    let mut bytes = [0u8; 8];
+                    rng.fill(&mut bytes).expect("mem never fails");
+                    let draw = (b.start, index, u64::from_le_bytes(bytes));
+                    draws
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push(draw);
+                }
+            }
+        }));
+        let host = world.add_host(config).map_err(fail)?;
+        for _ in 0..2 {
+            world.sleep(Duration::from_millis(1)).await;
+            let crash = Fault::Crash {
+                host,
+                after_polls: 0,
+                unsynced: Unsynced::Lost,
+            };
+            world.apply(crash).map_err(fail)?;
+            let restart = Fault::Restart {
+                host,
+                rng_replay: Some(1),
+            };
+            world.apply(restart).map_err(fail)?;
+        }
+        world.sleep(Duration::from_millis(1)).await;
+        Ok(())
+    });
+    let draws = get(&draws);
+    let places: Vec<(u32, usize)> = draws.iter().map(|d| (d.0, d.1)).collect();
+    assert_eq!(places, [(1, 0), (2, 0), (2, 1), (3, 0), (3, 1)]);
+    // Instance 0 of each replay repeats start 1's; the extra instances
+    // differ from each other and from start 1's.
+    assert_eq!(draws[1].2, draws[0].2);
+    assert_eq!(draws[3].2, draws[0].2);
+    let mut distinct = vec![draws[0].2, draws[2].2, draws[4].2];
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(distinct.len(), 3, "{draws:?}");
 }

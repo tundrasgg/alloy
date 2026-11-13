@@ -13,11 +13,13 @@ use alloy_rt::{BoxFuture, Runtime};
 use alloy_seam::Detail;
 
 use crate::core::{After, MAX_NANOS, Shared};
+use crate::disk::Disk;
 use crate::exec::lock;
 use crate::fault::Fault;
 use crate::history::History;
 use crate::hook;
 use crate::host::{Host, HostConfig, HostState, MAX_HOSTS, MAX_PPM};
+use crate::stream::Stream;
 use crate::trace::{KIND_NOTE, Observer, text_field};
 
 /// Identifies a host of a world. Ids are given in creation order from 0, and
@@ -129,13 +131,16 @@ impl World {
         Ok(())
     }
 
-    /// Creates a host and starts it at the current world time: it writes
-    /// `host-start` and the `task-spawn` of its `boot` task, whose future
-    /// `config.boot` builds before this returns (clause 3.3.4).
+    /// Creates a host with its devices and starts it at the current world
+    /// time: it writes `host-start` and the `task-spawn` of its `boot` task,
+    /// whose future `config.boot` builds before this returns (clause 3.3.4).
     ///
     /// # Errors
     ///
     /// [`WorldError::Invalid`] for a `clock_ppm` outside -500,000 to 500,000,
+    /// a `block_size` other than 512 or 4,096, more than 64 devices, and a
+    /// device that clause 3.3.7 rejects: one with a length outside its
+    /// range, or whose path is the root, another device's, or below one.
     /// [`WorldError::Limit`] when the world holds 10,000 hosts,
     /// [`WorldError::Busy`] inside an observer, and [`WorldError::Ended`]
     /// after the run.
@@ -154,7 +159,9 @@ impl World {
             }
             // At most 10,000 hosts, so the id fits a u32.
             let id = HostId(core.hosts.len() as u32);
-            let host = Host::new(config, self.0.now_nanos(), self.0.wall_start());
+            let reads = Stream::new(self.0.seed(), b"disk-read", &[u64::from(id.0)]);
+            let disk = Disk::new(config.block_size, config.capacity, &config.devices, reads)?;
+            let host = Host::new(config, disk, self.0.now_nanos(), self.0.wall_start());
             core.hosts.push(host);
             core.start(&self.0, id, None, &mut after);
             id
@@ -305,7 +312,6 @@ mod tests {
     use std::task::Waker;
 
     use super::*;
-    use crate::stream::Stream;
 
     #[test]
     fn a_dropped_sleep_removes_its_timer() {

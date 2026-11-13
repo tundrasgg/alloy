@@ -32,6 +32,8 @@ pub(crate) const KIND_TASK_END: u16 = 0x0012;
 pub(crate) const KIND_TIMER_FIRE: u16 = 0x0020;
 /// Kind `clock-fault`: the rate offset after the fault and the wall step.
 pub(crate) const KIND_CLOCK_FAULT: u16 = 0x0021;
+/// Kind `disk-op`: one operation of a disk call.
+pub(crate) const KIND_DISK_OP: u16 = 0x0050;
 /// Kind `rng`: the bytes one `fill` filled.
 pub(crate) const KIND_RNG: u16 = 0x0060;
 /// Kind `fault`: a text describing the fault.
@@ -70,7 +72,7 @@ pub(crate) fn kind_name(kind: u16) -> &'static str {
         0x0040 => "stream-open",
         0x0041 => "stream-data",
         0x0042 => "stream-close",
-        0x0050 => "disk-op",
+        KIND_DISK_OP => "disk-op",
         KIND_RNG => "rng",
         KIND_FAULT => "fault",
         KIND_NOTE => "note",
