@@ -73,8 +73,9 @@ guest list with states and configurations, `/etc/network/interfaces`, and the
 SHA-256 of every file under `/etc/pve`, each as its own check.
 
 On a remote machine the driver runs only the snapshot script, the probe script,
-the install, and the uninstall. It passes each script in the SSH command line,
-so nothing is copied to the node.
+the install, and the uninstall. It writes the snapshot and probe scripts to the
+standard input of `ssh.exe`, which runs `sh -s -- <arguments>` on the node, so
+nothing is copied to the node and no script passes through a command line.
 
 To look at a snapshot by hand, from a POSIX shell for a Linux node and from an
 elevated PowerShell for the Windows client:
@@ -84,14 +85,50 @@ ssh root@<node-b> sh -s -- --proxmox < tests/e2e/host-snapshot.sh
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\e2e\host-snapshot.ps1
 ```
 
-What a snapshot leaves out, so that it does not change on its own: link
-reference counts and bridge timers, address and route lifetimes, firewall
-counters and quota usage, `iptables-save` comment lines and chain counters,
-`net.netfilter.nf_conntrack_count`, the cluster file system's status files at
-the top of `/etc/pve` and the `timestamp` field of its HA status files, the link
-speed of Windows adapters, and the running status of Windows services (their
-start type is kept). Things that do change on their own and are kept can still
-fail a comparison: an IPv6 temporary address that rotates, a DHCP lease that
-moves to another address, a Proxmox VE key rotation, or a Windows firewall rule
-that another program adds while the check runs. Rerun the check when one of
-those shows in the differences.
+## What a comparison ignores
+
+Clause 3.17.6 removes counters, statistics, and timestamps. The snapshots also
+leave out the state below, which changes with no action by Alloy. Everything
+else the commands of the clause print is compared.
+
+| State left out | Where | Why |
+|---|---|---|
+| Link reference counts (`promiscuity`, `allmulti`) and bridge `*_timer` values | `ip -d link show` | Counters and running timers |
+| Address `valid_lft` and `preferred_lft` in seconds (`forever` is kept) | `ip address show` | Remaining lifetimes count down |
+| Route `expires` | `ip route`, `ip -6 route` | Remaining lifetimes count down |
+| Rule counters, quota usage, `last used` ages, set element `expires` | `nft list ruleset` | Counters and countdowns |
+| Comment lines and chain packet and byte counters | `iptables-save`, `ip6tables-save` | The comments carry the time of the dump; counters |
+| `net.netfilter.nf_conntrack_count` | `sysctl -a` | A counter |
+| Units in the state `transient` or `generated` | `systemctl list-unit-files` | No install places them. systemd makes transient units at run time, such as the `session-<n>.scope` of each login, this check's SSH logins included. Generators make generated units from other configuration, such as `.mount` units |
+| The status dot files at the top of `/etc/pve` (`.version`, `.members`, `.vmlist`, `.clusterlog`, `.rrd`, `.debug`) and `*.tmp.<pid>` names | `/etc/pve` digests | Status written by the cluster file system; temporary names before a rename |
+| The `"timestamp":<n>` field | HA status files under `/etc/pve` | A timestamp |
+| Every property not named in `host-snapshot.ps1`, among them adapter link speeds and address and route lifetimes | Every Windows section | Measured rates and countdowns. The named properties are the ones an install or a configuration change sets |
+| Service `Status` (the start type is kept) | `Get-Service` | Windows starts and stops demand-start and trigger-start services on its own |
+
+After an install, the comparison also drops the unit or service `alloyd` and,
+on Windows, takes the `PATH` entry the install appends as expected, as clause
+3.17.6 allows. On a Proxmox VE node the three Proxmox VE sections are compared
+as their own checks, not left out.
+
+Things that do change on their own and are kept can still fail a comparison:
+an IPv6 temporary address that rotates, a DHCP lease that moves to another
+address, a Proxmox VE key rotation, or a Windows firewall rule that another
+program adds while the check runs. Rerun the check when one of those shows in
+the differences.
+
+## Checking the scripts
+
+Every shell script parses, each on its own (`sh -n a b` would parse only `a`):
+
+```
+for f in tests/e2e/*.sh; do sh -n "$f" || exit 1; done
+```
+
+Every PowerShell script parses, in Windows PowerShell 5.1 and in PowerShell 7.
+The variables passed by `[ref]` must exist first, or the parse never runs and
+the command still exits 0:
+
+```
+powershell -NoProfile -Command '$t = $null; $e = $null; foreach ($f in Get-ChildItem tests/e2e/*.ps1) { $null = [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$t, [ref]$e); if ($e.Count -gt 0) { $e; exit 1 } }'
+pwsh -NoProfile -Command '<the same>'
+```

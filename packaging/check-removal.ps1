@@ -121,6 +121,42 @@ try {
     $code = 0
     try { Read-AlloyManifest } catch { $code = $_.Exception.Data['AlloyExitCode'] }
     Test-Case "a manifest under the .alloy-old name that does not list the directory ends with exit 1 ($code)" ($code -eq 1)
+
+    # T-0098: the whole uninstall of a clean client install, as install.ps1
+    # leaves it, ends without an error. Elevation is assumed, the service has a
+    # name no service has, and the search path entry is one the machine path
+    # does not hold, so nothing outside the temporary directory changes.
+    if (Test-AlloyWindows) {
+        Remove-Item -LiteralPath "$root.alloy-old" -Recurse -Force
+        Reset-AlloyState
+        $AlloyState.Paths.Service = 'alloy-check-' + [Guid]::NewGuid().ToString('N').Substring(0, 12)
+        $lic = Join-Path $root 'licenses'
+        [void](New-Item -ItemType Directory -Path $root)
+        [void](New-Item -ItemType Directory -Path $lic)
+        $lines = "alloy-manifest 1`nversion 0.0.1-preview.1`nkind client`nstate complete`ndir $root`n"
+        foreach ($f in @((Join-Path $root 'alloy.exe'), (Join-Path $root 'alloyd.exe'), $lic, (Join-Path $lic 'LICENSE'), (Join-Path $root 'uninstall.ps1'))) {
+            if ($f -ceq $lic) { $lines += "dir $f`n"; continue }
+            Write-AlloyText $f 'stand-in'
+            $lines += "file $((Get-FileHash -Algorithm SHA256 -LiteralPath $f).Hash.ToLowerInvariant()) $f`n"
+        }
+        Write-AlloyText $AlloyState.Paths.Manifest ($lines + "service $($AlloyState.Paths.Service)`npath $root`n")
+        function Test-AlloyElevated { return $true }
+        $err = $null
+        $said = @()
+        try {
+            $said = @(Invoke-AlloyUninstall 'none' 6>&1 | ForEach-Object { [string]$_ })
+        } catch {
+            $err = $_.Exception.Message
+        } finally {
+            Remove-AlloyTemp
+        }
+        Test-Case "the uninstall of a clean client install ends without an error ($err)" ($null -eq $err -and $said -contains 'Alloy is uninstalled.')
+        Test-Case 'and removes the install directory and every marker' (
+            -not (Test-Path -LiteralPath $root) -and -not (Test-Path -LiteralPath "$root.alloy-old") -and -not (Test-Path -LiteralPath "$root.alloy-new"))
+        Test-Case 'and each object it says it left in place has a name' (-not ($said | Where-Object { $_ -clike 'Left  *' }))
+    } else {
+        Write-Output "skip  $name with $($edition): the whole uninstall runs only on Windows"
+    }
 } finally {
     Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction SilentlyContinue
 }

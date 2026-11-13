@@ -5,8 +5,9 @@
 #
 # Run it as root on the machine. It only reads: it writes no file, starts no
 # service, and changes nothing. The output is one section per command of the
-# clause, each headed by a line `### <name>`, with counters, statistics, and
-# timestamps removed so that two snapshots of an unchanged machine are equal.
+# clause, each headed by a line `### <name>`, with counters, statistics,
+# timestamps, and the units no install places (see norm_units) removed so that
+# two snapshots of an unchanged machine are equal.
 # With --proxmox it adds the Proxmox VE sections of the clause.
 #
 # Every top-level command before the last line only defines a function or sets
@@ -80,6 +81,17 @@ norm_sysctl() {
     grep '^net\.' | grep -v '^net\.netfilter\.nf_conntrack_count ' | sort
 }
 
+# `systemctl list-unit-files`: units in the state `transient` or `generated`
+# have no unit file that anything installed. systemd makes transient units at
+# run time, such as the `session-<n>.scope` of each login, the SSH login of
+# this check included, and generators make generated units from other
+# configuration, such as a `.mount` unit for an fstab line. Neither is a unit
+# an install places (a file in /etc/systemd/system), and both change with no
+# action by Alloy.
+norm_units() {
+    awk '$2 != "transient" && $2 != "generated"'
+}
+
 linux_sections() {
     section 'ip -d link show'
     run ip -d link show | norm_link
@@ -120,7 +132,7 @@ linux_sections() {
     run sysctl -a | norm_sysctl
 
     section 'systemctl list-unit-files'
-    run systemctl list-unit-files --no-legend --no-pager
+    run systemctl list-unit-files --no-legend --no-pager | norm_units
 
     section 'getent passwd'
     run getent passwd
