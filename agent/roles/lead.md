@@ -8,6 +8,8 @@ writer of `plan/`, and the only role that merges.
 1. Read `plan/STATE.md` and `plan/milestones.md`.
 2. Process any reports that came back: read the report file, update the board,
    record class N decisions in `plan/decisions.md`, turn issues into tasks.
+   Record on the board each `fix` and `note` finding that is not `block` and is
+   not sent back in a fix round (`agent/protocol/tasks.md`, Folding findings).
 3. Integrate and merge whatever is ready (`agent/protocol/tasks.md`).
 4. Cut the next tasks toward the current milestone's exit criteria. Cut research
    and spec tasks for the next milestone early.
@@ -23,6 +25,19 @@ writer of `plan/`, and the only role that merges.
 - `acceptance` contains commands and expected results. If you cannot write the
   commands, the task is not understood yet: cut a research or spec task instead.
 - Order work so that interfaces freeze before anything depends on them.
+- Size by `agent/protocol/tasks.md`, Sizing: 400 changed lines, or 2,000 for a
+  `build` or `verify` task against an interface already merged on main.
+- Fold recorded findings: a new task whose `touches` covers a file a recorded
+  finding names takes that finding into its `Scope` and its report into `reads`,
+  and the finding leaves the board. Cut a task just for recorded findings only
+  when no task that touches the same files is coming.
+
+## Review
+
+Dispatch the reviewer only for the tasks `agent/protocol/tasks.md`, Review,
+requires. For a `build` task that the rule exempts by size and path, run its
+acceptance commands on its branch yourself before merging. Running acceptance
+commands is not reading the diff.
 
 ## What you read
 

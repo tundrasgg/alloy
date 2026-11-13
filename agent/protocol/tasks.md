@@ -49,16 +49,49 @@ keeps the history.
      failed.
    - The developer claims a test is wrong: it reports a `test-issue`. The lead
      dispatches the architect to rule on it against the spec.
-4. **Review.** Lead dispatches the reviewer on `task/T-A`. Board: `review`.
+4. **Review.** Lead dispatches the reviewer on `task/T-A`. Board: `review`. A
+   task that Review below exempts skips this step and step 5.
 5. **Fix.** `block` findings go back to the developer once. `fix` findings go
-   back in the same round if there are any `block` findings, otherwise they become
-   a follow-up task. `note` findings are recorded and not acted on.
+   back in the same round if there are any `block` findings. Every other `fix`
+   and `note` finding is folded (Folding findings below).
 6. **Merge.** Lead squashes `task/T-A` onto main as one Conventional Commits
    commit whose footer names both tasks, `Task: T-A, T-B`, and marks both tasks
    `done`. See `agent/eng/git.md`.
 
-Research, product, spec, and process tasks skip steps 3 to 5. A spec task that
-changes behavior gets one review by the reviewer role before merge.
+Research, product, spec, and process tasks skip step 3, and take steps 4 and 5
+only when Review below requires a review.
+
+## Review
+
+One review by the reviewer role is required before merge for:
+
+- a `build` or `interface` task,
+- a `spec` or `process` task that changes behavior in a security-relevant area:
+  cryptography, authentication, authorization, tenant isolation, or a wire or
+  on-disk format.
+
+A `verify` task is reviewed together with its paired build task, on the build
+task's branch (step 4).
+
+No review for:
+
+- a `spec` clarification, which changes no behavior
+  (`agent/protocol/spec-change.md`),
+- a `research` task,
+- a `build` task under 100 changed lines confined to `xtask/`, `.github/`, or
+  `fuzz/`, once the lead has run its acceptance commands on its branch and they
+  gave the expected results.
+
+Every other task merges without review.
+
+## Folding findings
+
+A `fix` or `note` finding that is not sent back in a `block` fix round is
+recorded on the board: the report path, the finding id, and the files its
+`where` names. When the lead cuts the next task whose `touches` covers one of
+those files, it puts the finding in that task's `Scope`, adds the report to its
+`reads`, and removes the finding from the board. The lead cuts a task just for
+recorded findings only when no task that touches the same files is coming.
 
 ## Readiness
 
@@ -138,5 +171,7 @@ it and dispatches that task's role again with the next round.
 
 ## Sizing
 
-Target 400 changed lines or fewer and one crate. If a task cannot be described in
-a goal of three sentences, split it.
+Target 400 changed lines or fewer and one crate. A `build` or `verify` task
+against an interface already merged on main targets 2,000 changed lines or fewer,
+still in one crate and on one concern. If a task cannot be described in a goal of
+three sentences, split it.
