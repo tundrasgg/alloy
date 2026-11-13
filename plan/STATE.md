@@ -111,7 +111,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0085 | build | developer | done | none | Build the AL handshake and transport crypto in alloy-crypto |
 | T-0086 | verify | verifier | active | none | Write fixed IKpsk2 handshake vectors for ARFC 0003 |
 | T-0087 | product | product | done | none | Set the design standard for the CLI, console, and APIs |
-| T-0088 | spec | architect | review | none | Specify install, uninstall, and the Windows client node |
+| T-0088 | spec | architect | active | none | Specify install, uninstall, and the Windows client node |
 | T-0089 | build | developer | active | none | Let binary crates set their exit code |
 | T-0090 | spec | architect | active | none | Keep path checks apart from probe-set challenges |
 | T-0091 | build | developer | queued | T-0088 | Create the alloy and alloyd binaries |
