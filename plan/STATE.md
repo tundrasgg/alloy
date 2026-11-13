@@ -21,7 +21,9 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 
 ## Paused
 
-The pilot paused dispatch. T-0075 round 2 finished after the pause and needs its re-review. Still in flight when paused: T-0008 round 2, T-0055, T-0079, and the T-0080 review. The next lead session processes their reports first (merge, or dispatch the review each needs), then continues with T-0076 to T-0078 and the board below.
+The pilot paused dispatch. T-0075 round 2 finished after the pause and needs its re-review. T-0008 finished and merged after the pause. Still in flight when paused: T-0055, T-0079, and the T-0080 review. The next lead session processes their reports first (merge, or dispatch the review each needs), then continues with T-0076 to T-0078 and the board below.
+
+Pilot-supplied note for the next session, not yet investigated: a Clippy run printed the `xtask/tests/fixtures/clippy` banned-call list for `crates/demo/src/lib.rs` (38 lines from `std::process::Command` at 8:19 through `tokio::runtime::Builder` at 140:5, including the `unix`-tagged `std::os::unix::fs` and `tokio::net::unix::pipe` items). T-0046 noted the `unix`-tagged fixture lines were only ever run on Windows and that the first Linux CI run is their check. Start by checking the latest GitHub Actions run on main and comparing this output with the fixture's `expected` file.
 
 ## Board
 
@@ -34,7 +36,7 @@ The pilot paused dispatch. T-0075 round 2 finished after the pause and needs its
 | T-0005 | research | researcher | done | none | Research NAT behaviors and define lab presets |
 | T-0006 | spec | architect | done | none | Specify the alloy-rt and alloy-seam interfaces |
 | T-0007 | interface | developer | done | none | Define the alloy-rt and alloy-seam interface crates |
-| T-0008 | verify | verifier | active | none | Write conformance suites for the runtime seams |
+| T-0008 | verify | verifier | done | none | Write conformance suites for the runtime seams |
 | T-0009 | build | developer | cancelled | none | Build the alloy-sim deterministic simulator |
 | T-0010 | verify | verifier | blocked | T-0077 | Write determinism and fault tests for the simulator |
 | T-0011 | build | developer | queued | T-0009, T-0021 | Build the NAT models in alloy-natlab |
