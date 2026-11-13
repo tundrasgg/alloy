@@ -9,6 +9,35 @@ board and cuts a new one.
 
 A task file carries no status. Status lives only on the board.
 
+## Reads
+
+The `reads` list is what the role reads, and reading is most of what a task
+costs. It names the least that lets the role do the task.
+
+- An entry names a whole file, or one section of a file as `<path>#<section>`.
+  `<section>` is the section's number when its heading has one
+  (`spec/arfc-0005-simulator-and-natlab.md#3.1`) and its heading text otherwise
+  (`agent/protocol/tasks.md#Readiness`). A section includes its subsections.
+- An entry for a file over 150 lines names the sections the task needs, one
+  entry per section. A file of 150 lines or fewer is named whole.
+- The role reads each named section, not the whole file, plus anything it finds
+  it needs on the way: a clause the section cites, a term it defines elsewhere.
+
+## Report lifetime
+
+Reports are read by the lead while a task is open. After that git keeps them,
+and the tree does not.
+
+- In the commit that marks a task `done` or `cancelled`, the lead removes the
+  task's reports, `plan/reports/T-NNNN.*.md`, from the tree. It keeps a report
+  that a task not yet `done` or `cancelled` lists in `reads`, or that a finding
+  recorded on the board cites (Folding findings below), and removes it in the
+  commit that drops the last such reference.
+- Git history keeps every removed report. A task that needs one names it in its
+  notes as `git show <commit>:<path>`, with a commit that holds the report, and
+  the role runs that command to read it.
+- Task files stay in the tree.
+
 ## Types
 
 | Type | Role | Output |
@@ -56,7 +85,7 @@ keeps the history.
    and `note` finding is folded (Folding findings below).
 6. **Merge.** Lead squashes `task/T-A` onto main as one Conventional Commits
    commit whose footer names both tasks, `Task: T-A, T-B`, and marks both tasks
-   `done`. See `agent/eng/git.md`.
+   `done`, removing their reports (Report lifetime). See `agent/eng/git.md`.
 
 Research, product, spec, and process tasks skip step 3, and take steps 4 and 5
 only when Review below requires a review.

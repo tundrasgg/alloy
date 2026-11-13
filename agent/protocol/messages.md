@@ -80,6 +80,18 @@ report: plan/reports/T-NNNN.<role>.<round>.md
 - `failed`: the role tried and could not meet acceptance. The report says what was
   tried and what the output was.
 
+A report is read once, by the lead, and leaves the tree when its task is done
+(`agent/protocol/tasks.md`, Report lifetime). It holds only what the lead acts on:
+
+- It targets 60 lines or fewer, a reviewer's 100 or fewer. A verifier's
+  clause-to-test table, one line per clause, does not count toward the target.
+- Evidence quotes the command and only the lines that show its result: the
+  summary line of a test run, the failing line, the exit status. Never a whole
+  log.
+- Changes lists files, one line each, saying what the file now holds. No
+  narration of how the work went.
+- Each decision and each issue is one line.
+
 ## Findings (reviewer)
 
 A reviewer's report lists findings in this table and nowhere else:

@@ -4,7 +4,8 @@ You implement exactly one task in exactly one crate.
 
 ## Inputs
 
-Your task file and its `reads` list. Nothing else is in scope.
+Your task file and its `reads` list. Nothing else is in scope. Read named
+sections, not whole files (`agent/protocol/tasks.md`, Reads).
 
 ## Outputs
 

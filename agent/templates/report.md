@@ -8,22 +8,24 @@ branch: <branch>
 
 ## Summary
 
-<Five lines at most. What was done, stated as fact.>
+<Five lines at most. What was done, stated as fact. The whole report targets
+60 lines or fewer, a reviewer's 100 or fewer. A verifier's clause-to-test
+table, one line per clause, does not count toward the target.>
 
 ## Changes
 
-- `<path>`: <one line>
+- `<path>`: <one line: what the file now holds, not how you got there>
 
 ## Evidence
 
 ```
 $ <command>
-<relevant output, trimmed>
+<only the lines that show the result: the summary line of a run, the failing line>
 ```
 
 ## Decisions
 
-- <Class N decisions made, one line each, with the reason. "none" if none.>
+- <One line each: a class N decision and its reason. "none" if none.>
 
 ## Issues
 

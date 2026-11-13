@@ -7,17 +7,31 @@
 
 ## Adding a dependency
 
-Adding a crate is a class N decision that needs a research note covering the
-fields in `agent/roles/researcher.md`. The lead adds it to `deny.toml` in the
-task that needs it and records it in `plan/decisions.md`.
+Adding a crate is a class N decision. The task that adds it adds the crate to
+the `allow` list in `deny.toml` (`agent/protocol/tasks.md`, Shared workspace
+files) and records in its report, each with its source (a URL, or a command and
+its output such as `cargo tree`):
+
+- the license,
+- maintenance: the date of the last release or meaningful commit,
+- the tree: how many crates it adds to `Cargo.lock`, and that each passes the
+  rules below.
+
+The lead records the decision in `plan/decisions.md`. No research note is needed,
+unless the choice is between alternatives (two candidate crates, or a crate
+against writing it ourselves): then a research task compares them first, with
+the fields in `agent/roles/researcher.md`.
 
 A crate qualifies when all hold:
 
 - **License** is compatible with MIT OR Apache-2.0: MIT, Apache-2.0, BSD-2-Clause,
   BSD-3-Clause, ISC, Zlib, Unicode-3.0, or the same dual license. No copyleft of
   any strength: no GPL, AGPL, LGPL, MPL, or SSPL code is linked or vendored.
-  One exception: `libfuzzer-sys` may carry NCSA, in fuzz targets under `fuzz/`
-  only, and no other crate may use NCSA (ADR 0060).
+  Two exceptions, each confined by its ADR. `libfuzzer-sys` may carry NCSA, in
+  fuzz targets under `fuzz/` only, and no other crate may use NCSA (ADR 0060).
+  The Windows release archives may ship the signed Wintun DLL unmodified under
+  its own license (ADR 0062). The DLL is not a crate, and a crate that binds
+  the Wintun API passes these rules like any other.
 - **Maintained**: a release or meaningful commit in the last twelve months, or the
   crate is small and finished.
 - **Necessary**: writing it ourselves would take more than a task or would be

@@ -5,12 +5,16 @@ writer of `plan/`, and the only role that merges.
 
 ## Loop
 
-1. Read `plan/STATE.md` and `plan/milestones.md`.
+1. Read `plan/STATE.md`. Read `plan/milestones.md` once per session, and again
+   only when the current milestone changes.
 2. Process any reports that came back: read the report file, update the board,
    record class N decisions in `plan/decisions.md`, turn issues into tasks.
    Record on the board each `fix` and `note` finding that is not `block` and is
    not sent back in a fix round (`agent/protocol/tasks.md`, Folding findings).
-3. Integrate and merge whatever is ready (`agent/protocol/tasks.md`).
+3. Integrate and merge whatever is ready (`agent/protocol/tasks.md`). In the
+   commit that marks a task `done` or `cancelled`, remove its reports from the
+   tree, except those still referenced (`agent/protocol/tasks.md`, Report
+   lifetime).
 4. Cut the next tasks toward the current milestone's exit criteria. Cut research
    and spec tasks for the next milestone early.
 5. Commit `plan/`, then dispatch every ready task in one turn.
@@ -19,9 +23,12 @@ writer of `plan/`, and the only role that merges.
 ## Cutting tasks
 
 - Copy `agent/templates/task.md`. Fill every field.
-- `reads` lists exactly the files the role needs: the spec sections, the
-  engineering rules, the interface files. Too little starves the role, too much
-  buries it.
+- `reads` lists exactly what the role needs: the spec sections, the
+  engineering rules, the interface files. A file over 150 lines is named by
+  section, `<path>#<section>` (`agent/protocol/tasks.md`, Reads). Too little
+  starves the role, too much buries it.
+- A report that has left the tree is named in the notes as
+  `git show <commit>:<path>`, never in `reads`.
 - `acceptance` contains commands and expected results. If you cannot write the
   commands, the task is not understood yet: cut a research or spec task instead.
 - Order work so that interfaces freeze before anything depends on them.

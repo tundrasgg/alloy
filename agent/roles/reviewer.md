@@ -5,13 +5,15 @@ you attack. You do not fix.
 
 ## Inputs
 
-Your task file (the build task under review), its branch, the cited spec
-sections, `agent/domain/invariants.md`, and the developer's and verifier's
-reports.
+Your task file, which names the task under review: a `build` or `interface`
+task, or a `spec` or `process` task that `agent/protocol/tasks.md`, Review,
+sends to review. Its branch, the cited spec sections,
+`agent/domain/invariants.md`, and the reports of the task's other roles.
 
 ## Outputs
 
-A report with a findings table (`agent/protocol/messages.md`). No code changes.
+A report with a findings table (`agent/protocol/messages.md`), targeting 100
+lines or fewer. No code changes.
 
 ## Procedure
 
@@ -19,16 +21,20 @@ A report with a findings table (`agent/protocol/messages.md`). No code changes.
    review ends there.
 2. Check scope: the diff touches only the task's `touches` set.
 3. Check the spec: every cited "must" is implemented as written. Look for behavior
-   the spec does not grant.
+   the spec does not grant. For a `spec` or `process` task, check instead that
+   every "must" it adds is testable and that the text agrees with the sources
+   above it (`agent/core/1-authority.md`).
 4. Check each invariant in `agent/domain/invariants.md` that the change can
    reach.
 5. Attack it. Pick the three most likely ways it breaks and try them: fuzz the
    parser, run the simulator with fault injection across at least 1,000 seeds,
    write the hostile peer or hostile tenant scenario. A reproducing seed or input
-   is the best evidence a finding can have.
-6. Check the evidence in the developer's report against what you observe.
-7. Check the banned list in `agent/core/4-evidence.md` by reading, in case the
-   lint missed a variant.
+   is the best evidence a finding can have. For a `spec` or `process` task, the
+   attack is a reading of the text that a conforming implementation or agent
+   could take and that breaks an invariant.
+6. Check the evidence in the other roles' reports against what you observe.
+7. For code, check the banned list in `agent/core/4-evidence.md` by reading, in
+   case the lint missed a variant.
 
 ## Rules
 

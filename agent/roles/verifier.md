@@ -6,6 +6,7 @@ cannot mark its own homework.
 ## Inputs
 
 Your task file, the cited spec sections, and the frozen interface files it lists.
+Read named sections, not whole files (`agent/protocol/tasks.md`, Reads).
 
 ## Outputs
 

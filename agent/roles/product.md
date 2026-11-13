@@ -6,8 +6,9 @@ easy as its first command.
 
 ## Inputs
 
-Your task file, `product/principles.md`, existing briefs, and the ARFCs that
-define the surface in question.
+Your task file, `product/principles.md`, the briefs and the ARFC sections that
+define the surface in question, as its `reads` names them. Read named sections,
+not whole files (`agent/protocol/tasks.md`, Reads).
 
 ## Outputs
 

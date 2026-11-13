@@ -8,7 +8,9 @@ Your task file. It states one question and what the answer will be used for.
 
 ## Outputs
 
-`research/R-NNNN.md` from `agent/templates/research.md`, and a report.
+`research/R-NNNN.md` from `agent/templates/research.md`, and a report. The
+report's summary states the answer in one line and points to the note. It does
+not repeat the note.
 
 ## Rules
 

@@ -9,7 +9,12 @@ deleted.
   2,000 changed lines or fewer, still one crate and one concern. Larger work is
   split before dispatch.
 - **Fixed overhead.** A task costs one task file and one report per role. No other
-  process documents exist. No status prose, no summaries of summaries.
+  process documents exist. No status prose, no summaries of summaries. A report
+  targets 60 lines, a reviewer's 100, and leaves the tree once its task is done;
+  git keeps it (`agent/protocol/tasks.md`, Report lifetime).
+- **Read narrowly.** Reading is most of what a task costs. A task names the
+  sections a role needs, and the role reads those, not whole files
+  (`agent/protocol/tasks.md`, Reads).
 - **One review pass, where it protects something.** A `build` or `interface`
   task gets one review. So does a `spec` or `process` task that changes behavior
   in a security-relevant area: cryptography, authentication, authorization,

@@ -8,13 +8,20 @@ Do these in order, every session, with no exceptions.
 
 1. Read this file.
 2. Read all six files in `agent/core/`. They are short and they bind every role.
-3. Read `agent/protocol/messages.md`.
+3. Read `agent/protocol/messages.md`. The lead reads all of it. Every other role
+   reads its sections Report (role to lead) and Issues raised in reports, plus
+   Later rounds when its round is above 1, plus Findings (reviewer) when it is
+   the reviewer.
 4. Read your role file in `agent/roles/`.
-5. If your harness has a bindings file, read it. Claude Code: `.claude/harness.md`.
+5. Lead: if your harness has a bindings file, read it. Claude Code:
+   `.claude/harness.md`. Other roles skip it: it maps dispatch and tiers, which
+   only the lead uses.
 6. Lead: read `plan/STATE.md`, then `agent/protocol/tasks.md`.
-   Every other role: read the task file named in your dispatch message, then every
-   path in its `reads` list.
-7. Begin work. Load anything else only when the task calls for it.
+   Every other role: read the task file named in your dispatch message, then each
+   entry in its `reads` list, only the named section where an entry names one
+   (`agent/protocol/tasks.md`, Reads).
+7. Begin work. Load anything else only when the task calls for it, and then only
+   the section you need.
 
 You have no memory of earlier sessions and you must not try to have one. The
 repository is the only state. If something is not in the repository, you do not
@@ -51,7 +58,7 @@ A third tier, deep, is reserved for rare, extremely high stakes tasks. See
 | `research/` | Research notes | researcher |
 | `plan/STATE.md` | The board. Single source of live status | lead only |
 | `plan/tasks/` | Task files, immutable after dispatch | lead only |
-| `plan/reports/` | One report per task, role, and round | the reporting role |
+| `plan/reports/` | One report per task, role, and round, removed once its task is done | the reporting role |
 | `plan/decisions.md` | One line per notable decision | lead only |
 | `crates/`, `ui/`, `xtask/` | Product code | developer |
 | `tests/conformance/` | Conformance suites | verifier only |
@@ -66,7 +73,7 @@ A third tier, deep, is reserved for rare, extremely high stakes tasks. See
 | Branches, commits, merges | `agent/eng/git.md` |
 | A term you do not know | `agent/domain/glossary.md` |
 | Review of any kind | `agent/domain/invariants.md` |
-| A subsystem | its ARFC, found through `spec/README.md` |
+| A subsystem | the sections you need of its ARFC, found through `spec/README.md` |
 | Why something is the way it is | `adr/README.md` |
 | Crate boundaries | `plan/workspace.md` |
 
