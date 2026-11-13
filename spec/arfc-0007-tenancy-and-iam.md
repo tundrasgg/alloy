@@ -42,7 +42,8 @@ with any credential.
 
 Access keys sign requests with AWS Signature Version 4, on every API surface. A
 token is `base64url(payload) "." base64url(signature)` where the payload is a
-Protocol Buffers message `{principal, org, issued, expires, key_id, scope}`.
+Protocol Buffers message `{principal, org, issued, expires, key_id, scope,
+derives_from, via_temporary_key}`. A temporary key carries such a token.
 
 An access key belongs to exactly one principal, a service account or a user, and
 grants that principal's policies, no more and no less. It has a `name`, unique
@@ -53,9 +54,16 @@ access key authenticates without a password and without a second factor.
 A session token or a temporary key **derives from** an access key when the
 request that obtained it was authenticated by that access key, or by a session
 token or temporary key that derives from that access key. A refreshed session
-token derives from whatever the token it replaces derives from. The control plane
-records what each session token and temporary key derives from. A caller cannot
-set or change it.
+token derives from whatever the token it replaces derives from. A credential
+therefore derives from at most one access key. The control plane writes the id of
+that access key into `derives_from` of the credential's token, and leaves it empty
+when the credential derives from no access key. It sets `via_temporary_key` when
+the request that obtained the credential was authenticated by a temporary key, or
+by a session token or temporary key whose `via_temporary_key` is set. A refresh
+copies both fields. Both are covered by the signature, so a caller cannot set or
+change them. Derivation is carried only in the token: the control plane keeps no
+derivation record per session token or temporary key, so derivation adds no
+control plane state that grows with the number of credentials issued (I-21).
 
 ### 2.4 Policies
 
@@ -117,9 +125,12 @@ for a user must fail with `PermissionDenied`, whatever the caller's policies.
 3.9.2 A login code for a user is issued only by: `alloy init`, for the user it
 creates (ARFC 0002 section 3.1); the user itself, in a request authenticated by
 one of its access keys or by a session token; or a local admin (3.10). A request
-authenticated by a temporary key must not issue a login code. A user must not be
-able to issue a login code for any other principal. Issuing is authorized as
-action `iam:IssueLoginCode` with the user the code is for as the resource. Every
+authenticated by a temporary key, or by a session token whose `via_temporary_key`
+is set (2.3), must not issue a login code, so no credential obtained through a
+temporary key, directly or through any chain of credentials, can issue one. A
+user must not be able to issue a login code for any other principal. Issuing is
+authorized as action `iam:IssueLoginCode` with the user the code is for as the
+resource. Every
 built-in org role and the cluster role `cloud-admin` allow it on the holder's own
 user. A user with no role cannot issue one. A matching deny in a policy attached
 to that user, to a group it belongs to, or to its org refuses the call whoever
@@ -144,7 +155,11 @@ name, and the secret. The secret must not be returned by any later call (I-22).
 The exchange is authenticated by the login code and by nothing else. It is
 authorized, when it commits, as the user the code was issued for: it must fail
 with `PermissionDenied` and create no key if that user is disabled or deleted, or
-its org is disabled (3.7).
+its org is disabled (3.7). No policy is evaluated at the exchange, so no action
+and no resource are checked: a valid, unspent login code and the checks in this
+clause are its whole authorization (3.4). Policies were evaluated when the code
+was issued (3.9.2), and a deny attached after that does not refuse the exchange
+(section 8).
 
 3.9.5 `issued_by` of a user access key is one of: the id of the access key that
 authenticated the request that issued the login code; the id of the access key
@@ -155,20 +170,29 @@ never by the caller, and is returned whenever the key is listed or read.
 
 3.9.6 A user access key is listed and revoked through the same methods as a
 service account's access key, and revocation must take effect within 5 seconds
-across the cluster (ARFC 0020 section 3.4). Every built-in org role allows a user
-to list and revoke its own keys. A key may revoke itself.
+across the cluster (ARFC 0020 section 3.4). Every built-in org role and the
+cluster role `cloud-admin` allow a user to list and revoke its own keys. A key may
+revoke itself.
 
 3.9.7 Revoking an access key must, in the same transaction, void every unspent
 login code that was issued by that key or by a session token that derives from
 it. Within 5 seconds of the revocation, across the cluster, every session token
 and temporary key that derives from the revoked key must be refused, and such a
-session token must not be refreshable. A user access key **descends** from
-another access key when its `issued_by` is that key, or a key that descends from
-that key. Revoking a key in the middle of such a chain does not cut the chain:
-the keys that descended through it still descend from the keys above it. The
-revocation response must state how many unrevoked user access keys descend from
-the revoked key. A revocation with `descendants: true` must revoke all of them in
-the same transaction, each with the effects of this clause.
+session token must not be refreshable. A session token or temporary key whose
+`derives_from` names an access key must be accepted, and refreshed, only while
+that key is kept (3.9.11), is unrevoked, and was created before the credential
+was issued. A user access key **descends** from another access key when its
+`issued_by` is that key, or a key that descends from that key. Revoking a key in
+the middle of such a chain does not cut the chain: the keys that descended
+through it still descend from the keys above it (3.9.11). The revocation response
+must state how many unrevoked user access keys descend from the revoked key. A
+revocation with `descendants: true` must revoke all of them in the same
+transaction, each with the effects of this clause. A revocation request that
+names a key that is already revoked and still kept (3.9.11) must succeed, however
+the key was revoked, through `replaces` (3.9.10) included. It revokes and voids
+nothing again for that key, its response states how many unrevoked user access
+keys descend from it, and with `descendants: true` it revokes all of them in one
+transaction, each with the effects of this clause.
 
 3.9.8 Disabling or deleting a user must revoke every access key of that user and
 void every unspent login code issued for it, in the same transaction.
@@ -195,6 +219,22 @@ the context it is logging in to, whenever that context holds one. A computer
 therefore holds at most one unrevoked user access key per context for as long as
 it keeps its key store. A computer that lost its key store cannot name its old
 key: that key stays until it is revoked (3.9.6).
+
+3.9.11 Lineage state. An access key is **kept** while it is unrevoked, and after
+its revocation for exactly as long as at least one unrevoked user access key
+descends from it (3.9.7). In the transaction after which no unrevoked key descends
+from a revoked key, the control plane must delete that key: a key revoked with no
+unrevoked descendant is deleted by its own revocation, and a revocation with
+`descendants: true` deletes, among others, the key it names and every key it
+revokes. A kept revoked key is listed and read like an unrevoked one, marked
+revoked, with its id, name, `issued_by`, and creation time. A request that names
+an access key that is not kept, a revocation included, must fail with `NotFound`
+and change nothing.
+Every key that an unrevoked key descends from is therefore kept, so deleting a key
+never changes which kept keys descend from which, and the guarantees of 3.9.7 and
+section 8 hold for every kept key. Kept keys are bounded per user (section 7),
+and derivation adds no state (2.3). Apart from the issuer recorded with each
+unspent login code (ARFC 0002), nothing else is kept for lineage.
 
 ### 3.10 Local admin
 
@@ -270,17 +310,23 @@ must revoke no access key. Whether a failed exchange spends the login code is
 defined with the login code, in ARFC 0002, except where this ARFC says it must
 not (3.9.3 and section 7). If the audit record of a local admin call or of an
 exchange cannot be committed, the call must fail and change nothing. If the
-control plane cannot determine what a session token or temporary key derives
-from, it must refuse that credential.
+control plane cannot read the state of the access key that a session token or
+temporary key derives from (2.3), it must refuse that credential.
 
 ## 7. Limits
 
 64 KiB per policy. 20 policies per principal. 1,000 projects per org. 100
-unrevoked access keys per principal, counting user access keys. An exchange for a
-user that already has 100, after any revocation through `replaces` (3.9.10), must
-fail, must not spend the login code, and its error must name the limit. Names,
-including access key names: 1 to 63 characters, `[a-z0-9-]`, starting with a
-letter. A key name is cut to 59 characters before a number is appended (3.9.3).
+unrevoked access keys per principal, counting user access keys. 1,000 kept access
+keys per user, unrevoked and revoked together (3.9.11). An exchange for a user
+that already has 100 unrevoked keys or 1,000 kept keys, counted after any
+revocation through `replaces` (3.9.10) and the deletions it causes, must fail,
+must not spend the login code, and its error must name the limit. No limit
+refuses, delays, or narrows a revocation. Lineage state is bounded by these
+limits alone: derivation keeps no control plane state per session token or
+temporary key (2.3), and revoked keys are kept only within the 1,000 (I-21).
+Names, including access key names: 1 to 63 characters, `[a-z0-9-]`, starting
+with a letter. A key name is cut to 59 characters before a number is appended
+(3.9.3).
 One local admin per control node.
 
 ## 8. Security
@@ -290,12 +336,20 @@ second factor. Stolen, it grants exactly its user's policies until revoked (ARFC
 0020 sections 2.1 and 3.4). Those policies include issuing login codes for the
 same user, so a thief can create further keys, with the stolen key or with a
 session token obtained with it. Every such key descends from the stolen key
-(2.3, 3.9.5, 3.9.7), a temporary key cannot issue a login code (3.9.2), and
-revoking the stolen key ends the session tokens and temporary keys that derive
-from it (3.9.7). So one revocation with `descendants: true` removes every
-credential of that user that exists because of the stolen key. It has two
-limits. It does not undo anything else done with the user's policies, such as a
-service account's access key or an attached policy: the audit log lists those.
+(2.3, 3.9.5, 3.9.7), no credential obtained through a temporary key can issue a
+login code (3.9.2), and revoking the stolen key ends the session tokens and
+temporary keys that derive from it (3.9.7). So one revocation with `descendants:
+true` removes every credential of that user that exists because of the stolen
+key. The stolen key may already be revoked, through `replaces` on a new login or
+otherwise: it stays kept while any unrevoked key descends from it, and the
+revocation may name it (3.9.7, 3.9.11). Lineage state is bounded (section 7,
+I-21) without dropping any key that an unrevoked key descends from. The price is
+that a thief can fill the 1,000 kept keys of the user by issuing and replacing
+keys, which refuses new logins of that user, as revoking the user's keys could.
+The same revocation deletes every key the thief made and frees the room. The
+remedy has two limits. It does not undo anything else done with the user's
+policies, such as a service account's access key or an attached policy: the
+audit log lists those.
 And a user access key whose `issued_by` is `session` descends from no key: if a
 session token that derives from no access key is stolen, the keys made with it
 are found through `issued_by` and the audit log and are revoked one by one.
@@ -326,4 +380,4 @@ boundary, and a compromised compute node is refused by the control plane under
 3.10.4, not by its own `alloyd`, so ARFC 0020 section 3.3 holds. It cannot be
 revoked short of removing the node's `control` role or its record.
 
-Upholds I-02, I-05, I-15, I-22.
+Upholds I-02, I-05, I-15, I-21, I-22.
