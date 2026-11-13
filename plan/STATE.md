@@ -80,7 +80,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0057, R-0001 to R-0008
 | T-0055 | verify | verifier | queued | T-0054 | Write conformance vectors for AL handshake and transport bytes |
 | T-0056 | process | architect | done | none | Let parallel tasks add crates to the shared workspace files |
 | T-0057 | spec | architect | active | none | Keep stored seam configuration readable across releases |
-| T-0058 | process | architect | active | none | Align core and lead rules with shared workspace files |
+| T-0058 | process | architect | done | none | Align core and lead rules with shared workspace files |
 | T-0059 | spec | architect | active | none | Discard sessions a failed handover's successor touched |
 
 ## First dispatch
