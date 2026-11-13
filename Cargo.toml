@@ -6,6 +6,7 @@ members = [
     "crates/alloy-seam",
     "crates/alloy-wire",
     "tests/conformance/rt",
+    "tests/conformance/wire",
     "xtask",
 ]
 # The fuzz targets are their own workspace: they build only under `cargo fuzz`.
