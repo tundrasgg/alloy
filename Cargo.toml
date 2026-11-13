@@ -4,6 +4,7 @@ members = [
     "crates/alloy-crypto",
     "crates/alloy-rt",
     "crates/alloy-seam",
+    "crates/alloy-sim",
     "crates/alloy-wire",
     "tests/conformance/rt",
     "tests/conformance/wire",

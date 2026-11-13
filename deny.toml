@@ -35,8 +35,9 @@ allow-wildcard-paths = true
 # named here. Nothing else builds.
 allow = [
     { crate = "alloy-crypto", reason = "workspace member: the only crate with cryptographic dependencies (agent/eng/crypto.md)" },
-    { crate = "alloy-rt",reason = "workspace member: runtime seams (ARFC 0005)" },
+    { crate = "alloy-rt", reason = "workspace member: runtime seams (ARFC 0005)" },
     { crate = "alloy-seam", reason = "workspace member: seam registry (ARFC 0001)" },
+    { crate = "alloy-sim", reason = "workspace member: deterministic simulator (ARFC 0005)" },
     { crate = "alloy-wire", reason = "workspace member: AL message codec (ARFC 0003)" },
     { crate = "arrayvec", reason = "blake3 dependency" },
     { crate = "autocfg", reason = "build dependency of num-traits, in the proptest tree" },

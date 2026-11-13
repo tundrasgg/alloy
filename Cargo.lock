@@ -27,6 +27,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "alloy-sim"
+version = "0.0.0"
+dependencies = [
+ "alloy-crypto",
+ "alloy-rt",
+ "alloy-seam",
+ "thiserror",
+]
+
+[[package]]
 name = "alloy-wire"
 version = "0.0.0"
 
