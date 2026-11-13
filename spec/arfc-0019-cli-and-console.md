@@ -1,9 +1,9 @@
 # ARFC 0019: CLI and console
 
 - Status: draft
-- Depends on: 0008
+- Depends on: 0002, 0007, 0008
 - Crates: alloy (binary), ui/console
-- Decisions: 0002
+- Decisions: 0002, 0040, 0041
 
 ## 1. Purpose
 
@@ -14,8 +14,9 @@ starting with PB-0001 (task T-0013).
 ## 2. Model
 
 The CLI is one binary, `alloy`, for Linux, macOS, and Windows. It holds
-**contexts**: a cluster endpoint, a pinned CA fingerprint or public name, a
-credential, and a default org and project.
+**contexts**: a name, one to four API endpoints, a pinned API CA fingerprint
+(`api_ca_fp`, ARFC 0002 section 3.7) or public name, an access key, and a
+default org and project. At most one context is current.
 
 The console is a web application served by control nodes at the API endpoint. It
 is written in TypeScript and built into static files embedded in `alloyd`.
@@ -49,7 +50,10 @@ returns the operation.
 denied, 5 conflict, 6 unavailable.
 
 3.1.8 Errors print the API error's message, then a line starting `Try:` with the
-next command when one exists.
+next command when one exists. Warnings take the same form: a line starting
+`Warning:`, then `Try:` when a command removes the cause. Errors and warnings go
+to standard error, so standard output under `--output json` or `yaml` carries
+only the API representation.
 
 3.1.9 Configuration is in `$XDG_CONFIG_HOME/alloy/` or the platform equivalent.
 Credentials are stored in the operating system keychain where one exists,
@@ -57,6 +61,49 @@ otherwise in a file readable only by the user.
 
 3.1.10 Shell completion for bash, zsh, fish, and PowerShell is generated from the
 same definitions as the commands.
+
+3.1.11 `alloy login` has four forms. A login code or certificate that fails a
+check in ARFC 0002 section 3.7 ends the command before any request is sent. A
+certificate mismatch exits 1 with no `Try:` line, since no command makes it
+safe. No endpoint answering within 10 seconds exits 6.
+
+| Form | Behavior |
+|---|---|
+| `alloy login <login code> [--context <name>]` | Logs in to the context named by `--context`, else by the first endpoint's address, with `:<port>` added when the port is not 443 and an IPv6 address then written in brackets, as in `[fd00::1]:8443`. Exchanges the code (ARFC 0002 section 3.7), sending as `name` the hostname by the rule of ARFC 0007 clause 3.9.3, and as `replaces` the id of the access key that context holds, when it holds one (ARFC 0007 clause 3.9.10). Stores the returned key as 3.1.9 says. Creates or replaces the context with every endpoint in the code, `api_ca_fp`, the key, and the organization and project from the exchange, no default project when the exchange returns none. Makes it current, and prints the user, the organization, and the key name the exchange returned |
+| `alloy login <address> [--context <name>]` | Connects to the API at the address. Picks the context named by `--context`, else the one context whose pinned fingerprint matches the presented certificate authority. Replaces that context's endpoints with the address, keeps its access key, and makes it current. Several matching contexts and no `--context` is a usage error. A named context that does not match, or no match while contexts exist, is a certificate mismatch. No context at all exits 4 as not logged in |
+| `alloy login` | With a current context, confirms its access key with the API and prints the principal. With none, exits 4 as not logged in |
+| `alloy login --issue-code` | Calls `IssueLoginCode` (ARFC 0002 section 3.7) for the current context's user and prints the new code once. With no current context, it follows 3.1.14 |
+
+3.1.12 Node commands:
+
+| Command | Behavior |
+|---|---|
+| `alloy node list` | Columns `NAME`, `ROLES`, `ZONE`, `STATE`, `MESH`, `VERSION`. `STATE` is a node state from ARFC 0002 section 2. `MESH` is `direct` or `relay-only` (ARFC 0004 section 3.7), or `-` for a `pending` or `joining` node. `ROLES` lists roles in the order `anchor`, `control`, `compute`, `storage`, joined by commas |
+| `alloy node approve <name>` | Calls `ApproveNode` (ARFC 0002 section 3.3). Fails with `Conflict` for a node that is not `pending` |
+| `alloy node reject <name>` | Calls `RejectNode`. Fails with `Conflict` for a node that is not `pending` |
+| `alloy node update <name>` | Takes `--roles <list>` and `--advertise <addr>[,...]`, for any node. Adding `anchor` or `control` to a node with no advertise address fails as ARFC 0002 section 3.10 says unless `--advertise` is given in the same command |
+| `alloy node leave` | As ARFC 0002 section 3.9 says |
+
+3.1.13 Join tokens and login codes are printed only by the command that creates
+them, once, on standard output. `alloy login` stores the access key secret that
+the exchange returns and never prints it. None of the three appear in logs, in
+error messages, or in `--output json` or `yaml` (I-22). `--output json` or
+`yaml` on a command that prints a join token or login code is a usage error.
+
+3.1.14 Local admin. A command run with no current context, by user id 0, on a
+machine where the local admin socket exists (ARFC 0007 clause 3.10.2), is sent
+through that socket as the local admin when it is one of:
+
+| Command | Local admin action (ARFC 0007 clause 3.10.1) |
+|---|---|
+| `alloy login --issue-code [--user <name>] [--org <name>]` | `iam:IssueLoginCode` for that user, default `admin` in org `default`. The CLI generates the secret as for any login code |
+| `alloy token create` | `cluster:CreateJoinToken` |
+| `alloy node update <name>` | `cluster:UpdateNode`, where `<name>` is this machine's own node |
+
+`--user` and `--org` are accepted on this path only, and are a usage error on
+any other. A refusal through the socket exits 4. Any other command with no
+current context, and any of these three run by another user or on a machine
+without the socket, exits 4 as not logged in.
 
 ### 3.2 Console
 
@@ -72,14 +119,20 @@ command.
 3.2.4 It works in the current and previous major versions of Chromium, Firefox,
 and Safari, and meets WCAG 2.2 level AA.
 
-3.2.5 Standing warnings (single anchor, unprotected pool, relay-only node, expiring
-records) are visible on the cluster overview and on the affected resource.
+3.2.5 Standing warnings (single anchor, unprotected pool, relay-only node,
+expiring records, an advertise address that is gone (ARFC 0002 section 3.10),
+nodes on two releases) are visible on the cluster overview and on the affected
+resource. The API reports each one with its kind, the affected resource, a
+message, and the command that removes it. The console and the CLI show that list
+and derive none themselves. The CLI prints the standing warnings that concern
+nodes after the table of `alloy node list`, and every standing warning after
+`alloy init` and `alloy join`, each in the form of 3.1.8 on standard error.
 
 ## 6. Failure behavior
 
 The CLI retries idempotent calls on `Unavailable` and `RateLimited` with backoff
-up to 30 seconds, and reuses the idempotency key on retried mutations. The console
-shows stale data as stale, with its age.
+up to 30 seconds, and reuses the idempotency key on retried mutations. The
+console shows stale data as stale, with its age.
 
 ## 7. Limits
 
@@ -88,10 +141,9 @@ load under 300 KiB compressed.
 
 ## 8. Security
 
-The CLI pins the cluster's CA fingerprint on first login and refuses a changed
-one. Upholds I-22.
+The CLI pins the API CA fingerprint carried in the login code, with no trust on
+first use, and refuses a changed one. Upholds I-22.
 
 ## 9. Open questions
 
-- Command wording and the init and join experience. Task T-0013.
 - UI framework choice. Research task to be cut in M9.

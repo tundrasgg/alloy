@@ -108,3 +108,4 @@ or supersede it.
 | ADR | Decision |
 |---|---|
 | [0029](0029-upgrades-are-rolling-with-process-handover-and-a-one-release.md) | Upgrades are rolling, with process handover and a one-release skew |
+| [0040](0040-init-and-join-need-no-flags-and-a-one-use-login-code-carries.md) | Init and join need no flags, and a one-use login code carries the first credential |
