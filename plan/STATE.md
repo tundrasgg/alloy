@@ -96,7 +96,7 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008
 | T-0071 | process | architect | done | none | Record the NCSA exception for libfuzzer-sys in ADR 0060 |
 | T-0072 | build | developer | cancelled | none | Run the commit message check in CI from the current cut |
 | T-0073 | process | architect | done | none | Adopt lean task sizing and review rules |
-| T-0074 | build | developer | active | none | Create alloy-crypto with BLAKE3 content hashing |
+| T-0074 | build | developer | review | none | Create alloy-crypto with BLAKE3 content hashing |
 | T-0075 | build | developer | queued | T-0074 | Build the alloy-sim executor, runs, and trace |
 | T-0076 | build | developer | queued | T-0075 | Build alloy-sim hosts, mem runtime, and faults |
 | T-0077 | build | developer | queued | T-0076 | Build alloy-sim networks, UDP, and the echo scenario |
