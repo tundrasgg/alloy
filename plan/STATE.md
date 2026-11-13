@@ -11,8 +11,8 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0054 |
-| Decision `D-` | D-0022 |
+| Task `T-` | T-0057 |
+| Decision `D-` | D-0023 |
 | ADR | 0056 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0002 |
@@ -76,6 +76,9 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0055, R-0001 to R-0008
 | T-0051 | build | developer | blocked | T-0053 | Run the commit message check in CI |
 | T-0052 | spec | architect | active | none | Make the local admin a full break-glass administrator |
 | T-0053 | build | developer | queued | T-0046 | Parse commit trailers only from the last paragraph |
+| T-0054 | build | developer | active | none | Build alloy-wire for AL handshake and transport messages |
+| T-0055 | verify | verifier | queued | T-0054 | Write conformance vectors for AL handshake and transport bytes |
+| T-0056 | process | architect | active | none | Let parallel tasks add crates to the shared workspace files |
 
 ## First dispatch
 
