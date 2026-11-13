@@ -36,7 +36,7 @@ Only tasks that are not done or cancelled. A finished task leaves the board in t
 | T-0113 | verify | verifier | review | T-0111 | Write the M11 rung 2 join and node list check |
 | T-0114 | build | developer | active | none | Add the Node kind, status messages, and node state to alloy-state |
 | T-0116 | build | developer | active | none | Implement the crossed rekey rule in alloy-link |
-| T-0118 | build | developer | review | none | Move API TLS behind alloy-crypto and bound idle callers |
+| T-0118 | build | developer | active | none | Move API TLS behind alloy-crypto and bound idle callers |
 | T-0119 | spec | architect | queued | before rung 5 | Keep VNI binds alive across crossed rekeys, record the ADR |
 | T-0120 | build | developer | active | none | Build the disk-io protection operations in os and mem |
 | T-0121 | build | developer | queued | T-0120, T-0114 | Create keys and stores locked down in alloy-id and alloy-state |
