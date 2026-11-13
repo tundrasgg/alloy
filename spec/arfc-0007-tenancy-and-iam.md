@@ -99,25 +99,44 @@ through the API by a cloud admin requires an explicit, audited grant from that o
 or a break glass action that the org's audit log records. The same holds for a
 local admin (3.10.1, 3.10.6).
 
-There is one way to tenant data outside the API, and the rule above does not
-cover it. A node reads and alters the guests, volumes, and VPC traffic it serves
-(ARFC 0020 clause 3.3), and managing nodes and pools decides which node serves
-them. A cloud admin who also controls a node, through its hardware or as user id
-0 on it, can make that node serve an org's guests or volumes, by joining it
-(ARFC 0002 section 3.2), giving it roles, or steering placement (ARFC 0011
-clause 3.4.1 and section 3.5), and then read them there. A local admin is always
-such a party for its own node: it is user id 0 on that node and may give it the
-`compute` and `storage` roles (3.10.1). Every call that sets this way up is in
-the audit log, as every cloud admin action is (ARFC 0018 clause 3.3.1). A local
-admin's call is in the cluster chain and, when it is a write, raises the
-standing warning (3.10.6, 3.10.8). It is in an org's chain only when it reads or
-changes that org or a resource in it (3.10.6), and creating a join token or
-changing a node's roles does neither. No audit record covers what is then read
-on the node, since ARFC 0018 clause 3.3.1 records API calls and authentication
-attempts. ARFC 0020 trusts the hardware and kernel of each node (section 2.2)
-and does not defend against a malicious cloud admin with access to a node's
-hardware (section 8), so this way lies outside the boundary that this clause and
-3.2 enforce (this ARFC, section 8).
+The rule above binds calls through the API and nothing else. User id 0 on a
+control node can read all tenant data, of every org. That includes the control
+plane state on the node's disks, which holds every resource, of every org, in
+each consensus group the node belongs to (ARFC 0006 sections 2.1 and 2.2), the
+user data and SSH keys of instances among them (ARFC 0011 section 2), and the
+access key secrets that let that party act as any principal that holds an access
+key (section 8). It includes all data that any node the party controls stores,
+serves, or carries: guests, volumes, objects, registry content, and VPC traffic
+(ARFC 0020 clause 3.3, ARFC 0012 section 1). That holds whether the node already
+holds the data, as the first node that `alloy init` creates holds every org's
+guests and volumes (ARFC 0002 section 3.1), or the party makes a node hold it
+through calls that manage nodes, pools, and placement (ARFC 0011 clause 3.4.1,
+ARFC 0012 clause 3.1.1 and section 6). This ARFC does not bound that reach and
+does not list its means. Every local admin is called by that party, user id 0 on
+its own control node (3.10.2). A cloud admin who controls any node, through its
+hardware or as user id 0 on it, can take the same reach, since `cloud-admin`
+allows giving that node the `control` role (3.10.1). ARFC 0020 section 2.2
+already trusts that party: it trusts the control node quorum and the hardware
+and kernel of each node, and puts their compromise outside the model, and its
+section 8 does not defend against a malicious cloud admin with access to a
+node's hardware. So that reach lies outside the boundary that this clause and
+3.2 enforce (section 8).
+
+What the audit log records of that party is exactly what passes through the API.
+ARFC 0018 clause 3.3.1 requires a record for every mutating API call, every
+authentication attempt, every authorization denial, and every cloud admin
+action, including break glass access, and its clause 3.3.3 commits each record
+in the control plane transaction of the change it describes. An action that does
+not reach the control plane through the API has no transaction for a record to
+commit in, so this ARFC rules that a cloud admin action in ARFC 0018 clause 3.3.1
+is one that reaches the control plane through the API. Recorded: every call
+through the local admin socket, and every refused connection to it (3.10.2,
+3.10.6), and every call signed with another principal's credential, such as an
+access key whose secret was read from the node, which is recorded as a call of
+that principal (ARFC 0018 clause 3.3.1). Not recorded: anything done outside the
+API, such as reading a node's disks, memory, or key files, or the data a node
+stores, serves, or carries. No record shows that such a read happened, and no
+standing warning (3.10.8) is raised by it.
 
 3.4 Authorization must run on every API call, before any state is read on the
 caller's behalf, and its decision must take under 1 ms at the 99th percentile with
@@ -335,12 +354,12 @@ What is not policy binds a local admin call as it binds every caller:
 
 - The fixed policy grants no access to the contents of an org's resources (3.3):
   like the cluster role `cloud-admin`, it allows no action that reads or changes
-  them. Its `iam` part can still lead to such access, by a change of who has
-  access or by a new credential of a principal that already has it. Each such
-  call is a break-glass action in the sense of 3.3, and 3.10.6 records it in
-  that org's chain (section 8). Its cluster part can lead to such access only
-  outside the API, through a node it controls, its own node always among them,
-  as 3.3 states for every cloud admin who controls a node.
+  them. Its `iam` part can still lead to such access through the API, for
+  example by a change of who has access or by a new credential of a principal
+  that already has it. Each such call is a break-glass action in the sense of
+  3.3, and 3.10.6 records it in that org's chain (section 8). The fixed policy
+  bounds what the API serves to a local admin. It does not bound what user id 0
+  on that control node can read, which is all tenant data (3.3).
 - A user access key is created only by an exchange (3.9.1). A local admin issues
   a login code instead.
 - A login code is refused when, as the call commits, the user or its org is
@@ -445,9 +464,11 @@ Second, a deny in a policy attached on the side of the target, and only in
 these: the resource policy of the target resource (2.4); a policy attached to
 the target's project; a policy attached to the target's org, when that org is
 not `O`; and, when the target is a principal, a policy attached to that
-principal or to a group it belongs to (3.9.2). A deny in any other place must
-not refuse the call. The local admin can list each of those policies and detach
-it (rows "see" and "unbind"), except a resource policy, which is changed through
+principal or to a group it belongs to (3.9.2). When the target is an org, that
+org lies in no org (2.1), so the target has no org in this sense, and a policy
+attached to that org is not on the side of the target. A deny in any other
+place, such a policy included, must not refuse the call. The local admin can
+list each of those policies and detach it (rows "see" and "unbind"), except a resource policy, which is changed through
 the resource's own service and so lies outside the fixed policy (3.10.1).
 
 Once the local admin has detached the ones that match, the call must be allowed
@@ -616,11 +637,12 @@ across control nodes is open (ARFC 0002 section 9). The control plane promises
 to survive the loss of a minority of control nodes (I-11). No ARFC promises
 anything when a control node is hostile.
 
-What the socket adds to that party's reach is what no access key in the cluster
-grants: identity state that no holder of an access key could change, for example
-in an org whose admins all log in with a password, and cluster administration
-where no cloud admin holds an access key, the way through a node of 3.3
-included. ARFC 0020 section 2.2 trusts that party there as well. In exchange the
+That party can already read all tenant data (3.3), and the socket adds nothing
+to what it can read. What the socket adds is calls that no access key in the
+cluster could make: changes to identity state that no holder of an access key
+could change, for example in an org whose admins all log in with a password, and
+cluster administration where no cloud admin holds an access key. ARFC 0020
+section 2.2 trusts that party there as well. In exchange the
 socket moves its power from key files to calls that pass authorization and
 consensus (3.10.5) and are evident: every call is in the cluster chain as
 `root@<node name>`, every call that touches an org is in that org's chain
@@ -635,9 +657,9 @@ by its own `alloyd`, so ARFC 0020 section 3.3 holds. A stolen credential gains
 nothing either: the local admin holds no credential, cannot be assumed,
 delegated, or granted, and nothing a credential can set binds it, so a stolen
 key grants its principal's policies only until it is revoked (ARFC 0020 section
-3.4) and can no longer stop its own revocation. The one way to make a new local
-admin is to give a node the `control` role. A cloud admin could always do that,
-and it makes the node a voter of the control plane whether or not a local admin
+3.4) and can no longer stop its own revocation. Giving a node the `control`
+role makes a new local admin, and nothing else does. A cloud admin could always
+do that, and it makes the node a voter of the control plane whether or not a local admin
 exists. Removing the role or the node record ends that local admin (3.10.3,
 3.10.4), and nothing else revokes one.
 
@@ -645,60 +667,57 @@ Tenant isolation. The local admin lives in no org, and its fixed policy reaches
 the identity state of every org under no policy of that org. I-02 and 3.2 guard
 the boundary between orgs (ARFC 0020 section 2.3): a principal of one org never
 reaches another org's resources. The local admin stands on the cluster side of
-that boundary, where 3.3 already puts cluster administrators, and it is
-consistent with I-02 for four reasons, of which the second names every way to
-tenant data through the API. The one way outside the API, through a node, is
-stated after them. No principal of any org gains reach
-through it, since it has no credential and cannot be assumed, delegated, or
-granted. Its fixed policy allows no action that reads or changes the contents
-of an org's resources (3.3, 3.10.1). Its `iam` part can still lead to tenant
-data, and only by getting a credential of a principal that has access in that
-org. There are two ways to one, and each is a local admin write to that org's
-identity state:
+that boundary, where 3.3 already puts cluster administrators. The party that
+calls it, user id 0 on a control node, can read all tenant data of every org
+(3.3), and nothing in this section narrows that. What follows says what the API
+gives a local admin, what the audit log records of it, and why this is
+consistent with I-02.
 
-| Way | Local admin write | What else that org's chain records |
+No principal of any org gains reach through the local admin, since it has no
+credential and cannot be assumed, delegated, or granted. Its fixed policy allows
+no action that reads or changes the contents of an org's resources (3.3,
+3.10.1). Its `iam` part can still lead to tenant data through the API by getting
+a credential of a principal that has access in that org. For example:
+
+| Kind of call | Local admin write | What else that org's chain records |
 |---|---|---|
-| Change who has access | Grants a role, attaches or changes a policy, or changes group membership, for a principal whose credential it holds or then makes in the second way | What the second way records |
+| Change who has access | Grants a role, attaches or changes a policy, or changes group membership, for a principal whose credential it holds or then makes as in the next row | What the next row records |
 | Make a credential of a principal that already has access, an org `owner` for example | For a user, issues a login code (3.10.7). For a service account, creates an access key, which 3.9.1 does not forbid. For either, any other `iam` action that sets how the principal authenticates, such as a password or an identity provider | The exchange of the login code, which the API serves and the socket does not (3.10.2), and the new key with `issued_by` `root@<node name>` (3.9.5, 3.9.9). A service account's new key names `root@<node name>` in `issued_by` (2.3) |
 
-Neither way needs a grant from the org, so each of these writes is a
-break-glass action in the sense of 3.3. Each is recorded in that org's own
-chain with principal `root@<node name>`, in the transaction that makes the
-change (3.10.6), which is what 3.3 requires of break-glass access, and each
-raises the standing warning (3.10.8). A call then made with such a credential
-is authorized by the policies that bind its principal and is audited as any
-call of that principal is (ARFC 0018 clause 3.3.1). No other local admin call
-leads to tenant data through the API: every other action of the fixed policy is
-one that the cluster role `cloud-admin` allows, which grants no action on
-contents (3.3), and no response to a local admin holds a secret other than that
-of a credential the call creates (3.9.4, I-22), which is the second way. So the
-org's admins can see every step by which a local admin comes to hold a
-credential for their data. The record does not stop user id 0, whom ARFC 0020
-section 2.2 trusts. Every other local admin call that reads or changes anything
-in an org is recorded in that org's chain too (3.10.6). And its
-responses go only to user id 0 on a control node, so no org learns anything
-about another, and a denied cross-org request stays indistinguishable from a
-request for a resource that does not exist (3.2).
+Each such call is a write to that org's identity state that needs no grant from
+the org, so it is a break-glass action in the sense of 3.3. It is recorded in
+that org's own chain with principal `root@<node name>`, in the transaction that
+makes the change (3.10.6), which is what 3.3 requires of break-glass access, and
+it raises the standing warning (3.10.8). A call then made with such a credential
+is authorized by the policies that bind its principal and is audited as any call
+of that principal is (ARFC 0018 clause 3.3.1). No response to a local admin
+holds a secret other than that of a credential the call creates (3.9.4, I-22).
 
-Through a node. Outside the API, the local admin, like any cloud admin who
-controls a node, can reach tenant data as 3.3 states. It gives its own node the
-`compute` or `storage` role (`cluster:UpdateNode`, 3.10.1), or, where it also
-controls another machine, joins that machine (`cluster:CreateJoinToken`). It
-then steers placement with the node and pool management that `cloud-admin`
-allows (ARFC 0011 clause 3.4.1 and section 3.5), and reads on that node the
-guests and volumes it then serves (ARFC 0020 clause 3.3). Each of those calls is
-a local admin write: it is in the cluster chain as `root@<node name>` and raises
-the standing warning (3.10.6, 3.10.8), so other cloud admins can see that the
-way was prepared. A call among them that neither reads nor changes an org, such
-as a change of a node's roles, is in no org's chain, and no record covers what
-is read on the node. This is consistent with 3.3, which states this way, and
-with I-02 and 3.2, which bind what principals reach through calls and are
-enforced by authorization on every call (ARFC 0020 section 2.3). This way passes
-no authorization check on tenant data: it reads through the kernel of a node,
-which ARFC 0020 section 2.2 trusts, by a cloud admin with access to that node,
-which ARFC 0020 section 8 does not defend against in version 1. The local admin
-adds no new party to that case: it is user id 0 on a control node, which ARFC
-0020 section 2.2 already trusts, and any cloud admin who is user id 0 on a node
-can prepare the same way with its own credential.
+What the audit log records of a local admin is the same whatever the call leads
+to. Every local admin call is in the cluster chain as `root@<node name>`, every
+allowed local admin call that reads or changes an org, or anything in it, is in
+that org's chain too, and every local admin write raises the standing warning
+(3.10.6, 3.10.8). A local admin call that reads and changes no org, such as
+giving a node a role, joining a machine, or changing pools and placement, is in
+no org's chain, even when it makes a node hold that org's data. What user id 0
+then reads on a node, or reads with no call at all, such as control plane
+state, access key secrets, or data that a node already holds, is in no chain and
+raises no warning (3.3). A call signed with an access key whose secret user id 0
+read on the node is audited as a call of that key's principal, not as
+`root@<node name>` (ARFC 0018 clause 3.3.1). The record does not stop user id
+0, whom ARFC 0020 section 2.2 trusts.
+
+This is consistent with I-02 and 3.2, which bind what principals reach through
+calls and are enforced by authorization on every call (ARFC 0020 section 2.3).
+The local admin's responses go only to user id 0 on a control node, so no org
+learns anything about another through them, and a denied cross-org request stays
+indistinguishable from a request for a resource that does not exist (3.2). What
+user id 0 reads outside the API passes no authorization check on tenant data: it
+reads through the hardware and kernel of a node, whose compromise ARFC 0020
+section 2.2 puts outside the model, and ARFC 0020 section 8 does not defend
+against a malicious cloud admin with access to a node's hardware in version 1.
+The local admin adds no new party to that case: it is user id 0 on a control
+node, which ARFC 0020 section 2.2 already trusts, and any cloud admin who
+controls a node can take the same reach with its own credential (3.3).
 
 Upholds I-02, I-05, I-15, I-21, I-22.
