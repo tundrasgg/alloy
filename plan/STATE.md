@@ -44,7 +44,7 @@ ADR 0036, ADR 0040 to ADR 0043, ADR 0045, R-0001 to R-0007, and PB-0001 are allo
 | T-0019 | research | researcher | done | none | Research licenses inside the Cloud Hypervisor UEFI images |
 | T-0020 | spec | architect | done | none | Resolve the per-guest seccomp clause in ARFC 0011 |
 | T-0021 | spec | architect | blocked | T-0031 | Resolve NAT spec issues found by R-0003 |
-| T-0022 | spec | architect | review | none | Apply PB-0001 to ARFC 0002 and ARFC 0019 |
+| T-0022 | spec | architect | queued | T-0023 | Apply PB-0001 to ARFC 0002 and ARFC 0019 |
 | T-0023 | spec | architect | review | none | Specify user access keys and the local admin path |
 | T-0024 | spec | architect | queued | T-0021 | Fix the default mesh port and TCP 443 sharing |
 | T-0025 | process | architect | done | none | Let parallel tasks share append-only index files |
