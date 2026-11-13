@@ -11,13 +11,13 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0065 |
-| Decision `D-` | D-0025 |
-| ADR | 0059 |
+| Task `T-` | T-0068 |
+| Decision `D-` | D-0026 |
+| ADR | 0060 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0002 |
 
-ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0058, R-0001 to R-0008, and PB-0001 are allocated to the tasks below.
+ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0059, R-0001 to R-0008, and PB-0001 are allocated to the tasks below.
 
 ## Board
 
@@ -29,8 +29,8 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0058, R-0001 to R-0008
 | T-0004 | research | researcher | done | none | Research Cloud Hypervisor against ARFC 0011 |
 | T-0005 | research | researcher | done | none | Research NAT behaviors and define lab presets |
 | T-0006 | spec | architect | done | none | Specify the alloy-rt and alloy-seam interfaces |
-| T-0007 | interface | developer | active | none | Define the alloy-rt and alloy-seam interface crates |
-| T-0008 | verify | verifier | queued | T-0007 | Write conformance suites for the runtime seams |
+| T-0007 | interface | developer | review | none | Define the alloy-rt and alloy-seam interface crates |
+| T-0008 | verify | verifier | queued | T-0007, T-0066, T-0067 | Write conformance suites for the runtime seams |
 | T-0009 | build | developer | queued | T-0007, T-0050 | Build the alloy-sim deterministic simulator |
 | T-0010 | verify | verifier | queued | T-0007, T-0050 | Write determinism and fault tests for the simulator |
 | T-0011 | build | developer | queued | T-0009, T-0021 | Build the NAT models in alloy-natlab |
@@ -74,12 +74,12 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0058, R-0001 to R-0008
 | T-0049 | process | architect | done | none | Fix the P-256 rules in the crypto engineering file |
 | T-0050 | spec | architect | review | none | Specify the alloy-sim world and scenario interface |
 | T-0051 | build | developer | blocked | T-0053 | Run the commit message check in CI |
-| T-0052 | spec | architect | review | none | Make the local admin a full break-glass administrator |
+| T-0052 | spec | architect | done | none | Make the local admin a full break-glass administrator |
 | T-0053 | build | developer | queued | T-0046 | Parse commit trailers only from the last paragraph |
 | T-0054 | build | developer | done | none | Build alloy-wire for AL handshake and transport messages |
 | T-0055 | verify | verifier | queued | T-0064 | Write conformance vectors for AL handshake and transport bytes |
 | T-0056 | process | architect | done | none | Let parallel tasks add crates to the shared workspace files |
-| T-0057 | spec | architect | review | none | Keep stored seam configuration readable across releases |
+| T-0057 | spec | architect | done | none | Keep stored seam configuration readable across releases |
 | T-0058 | process | architect | done | none | Align core and lead rules with shared workspace files |
 | T-0059 | spec | architect | review | none | Discard sessions a failed handover's successor touched |
 | T-0060 | spec | architect | cancelled | none | Settle the open fragment and queue details in ARFC 0003 |
@@ -87,6 +87,9 @@ ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0058, R-0001 to R-0008
 | T-0062 | build | developer | review | none | Allow thiserror and proptest in the dependency allowlist |
 | T-0063 | spec | architect | queued | T-0059 | Shrink the AL transport header to 25 bytes of overhead |
 | T-0064 | build | developer | queued | T-0063 | Rework alloy-wire for the compact transport header |
+| T-0065 | spec | architect | active | none | State break-glass reach into tenant data accurately |
+| T-0066 | spec | architect | active | none | Close the open stored-binding and interface gaps in ARFC 0001 |
+| T-0067 | spec | architect | queued | T-0050 | Settle timeout start and path joining in ARFC 0005 |
 
 ## First dispatch
 
@@ -136,7 +139,7 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 - Spec: ARFC 0008 clause 3.8 names the ACME account key and its type, and ARFC 0002 section 2's RFC 6979 rule covers it, as ADR 0053 decides; ARFC 0002 and 0008 `Decisions` headers list 0053 (T-0049).
 - From T-0052 (after it merges): I-02 in `agent/domain/invariants.md` names the break-glass action as the second way across an org boundary; a spec task names the `iam` methods for users, roles, and policies and what `cloud-admin` allows, before any build task cites ARFC 0007 clause 3.10.7; PB-0001 mentions the `local-admin-used` warning; `tests/conformance/authn` cases listed in `plan/reports/T-0052.architect.1.md`.
 - Interface (after T-0007 and T-0057 merge): add ARFC 0001 clause 3.19 to `alloy-seam` (`ConfigCodec`, `register_config`, `config`, `configs`) and the `PartialEq` bound on `SeamConfig`, with its verify pair.
-- From T-0057 (after it and T-0059 merge): ARFC 0017 clause 3.7 refuses an upgrade to `R + 1` until `R` is finalized and makes the binding rewrite part of `--finalize`; ARFC 0017 clause 3.10 names the upgrade conformance suite; ARFC 0006 clause 3.10 says how a backup restore handles versioned state across releases.
+- From T-0057 (after it and T-0059 merge; the ARFC 0017 clause 3.7 part is in T-0066): ARFC 0017 clause 3.10 names the upgrade conformance suite; ARFC 0006 clause 3.10 says how a backup restore handles versioned state across releases.
 - Process: a task that supersedes an ADR needs that ADR's status line and its index row in `touches`; the shared index rule has no append-only way to mark a superseded row (T-0044).
 - Spec: ARFC 0014 maps native errors, including `Unauthenticated`, to S3 errors; add `Unauthenticated` to `proto/alloy/common/errors.proto` when it is written (T-0044).
 - Process: a dependency policy for npm packages, since `deny.toml` covers Cargo only (T-0035).
