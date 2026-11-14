@@ -158,10 +158,10 @@ looks.
 ## Web console
 
 The console in the browser. ARFC 0019 section 3.2 fixes what it can do; these
-rules fix how it feels. The style references are Linear, Notion, and Raycast
-(D-0033): quiet, dense, keyboard-driven, and fast. Alloy copies none of their
-assets, icons, layouts, colors, names, or trade dress. A screen that a reviewer
-can trace to one of those products is a defect.
+rules fix how it feels. The console follows Linear's design language as closely
+as it can (D-0067): its layout, spacing, type, color, and interactions. Raycast
+and Notion are secondary references. Alloy copies no logo, name, icon, image, or
+code from any of them.
 
 **Keyboard first**
 
@@ -214,10 +214,9 @@ can trace to one of those products is a defect.
 - C14. Text contrast is at least 4.5 to 1 and the contrast of controls and focus
   indicators at least 3 to 1 (WCAG 2.2 level AA). There are a light and a dark
   theme, following the operating system's setting by default.
-- C15. Two type families: the platform's system interface font for text and its
-  system monospace font for identifiers, addresses, commands, and keys. No font
-  file is downloaded. The whole console uses at most four text sizes and two
-  weights. Numbers in tables use tabular figures and are right aligned.
+- C15. Two type families: Inter, self-hosted, for text, and the system monospace
+  font for identifiers, addresses, commands, and keys. The whole console uses at
+  most four text sizes and three weights. Numbers in tables use tabular figures and are right aligned.
 - C16. Motion lasts 150 ms or less and only shows where something came from or
   went. There is none when the user's system asks for reduced motion.
 
@@ -230,6 +229,16 @@ can trace to one of those products is a defect.
   0019 clause 3.1.6).
 - C19. An empty list says what is empty, and offers the create action and its CLI
   command (T21).
+
+**Copy**
+
+- C20. Text shows state; it never narrates the interface or repeats an
+  instruction. No hints such as "(generated, edit to change)" or "press Enter
+  to …" in the body: shortcuts appear as keycaps, explanations in tooltips.
+- C21. Every string is the shortest thing that is true and useful at a glance.
+  Detail a user did not ask for goes in a tooltip or a documentation link, never
+  inline. An action that an icon expresses, such as copy, is an icon button
+  with a tooltip, not a word.
 
 ## Native API
 
