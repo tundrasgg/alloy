@@ -12,9 +12,9 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0137 |
+| Task `T-` | T-0139 |
 | Decision `D-` | D-0066 |
-| ADR | 0069 |
+| ADR | 0070 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0003 |
 
@@ -33,6 +33,8 @@ Only tasks that are not done or cancelled. A finished task leaves the board in t
 | T-0113 | verify | verifier | review | T-0136 | Write the M11 rung 2 join and node list check |
 | T-0119 | spec | architect | queued | before rung 5 | Keep VNI binds alive across crossed rekeys, record the ADR |
 | T-0136 | build | developer | active | none | Build M11 rung 2 end to end: API, init, join, and the CLI |
+| T-0137 | spec | architect | active | none | Specify the al0 host interface on Linux and Windows |
+| T-0138 | build | developer | active | none | Build the alloy-path path manager for direct paths |
 | T-0134 | verify | verifier | review | T-0136 | Update the rung 2 check for the login flow |
 
 ## Still to cut for M0
