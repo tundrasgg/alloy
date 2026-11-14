@@ -12,7 +12,7 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0149 |
+| Task `T-` | T-0150 |
 | Decision `D-` | D-0075 |
 | ADR | 0072 |
 | Research `R-` | R-0009 |
@@ -37,6 +37,7 @@ Only tasks that are not done or cancelled. A finished task leaves the board in t
 | T-0143 | spec | architect | review | none | Close the al0 gaps of the T-0137 re-review |
 | T-0145 | build | developer | paused | none | Close the CLI join gaps left after rung 2's merge |
 | T-0148 | build | developer | active | none | Make the documented e2e driver commands bind node lists |
+| T-0149 | build | developer | active | none | Open the local admin socket on Linux |
 
 ## Still to cut for M0
 
