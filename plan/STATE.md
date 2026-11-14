@@ -12,8 +12,8 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0150 |
-| Decision `D-` | D-0075 |
+| Task `T-` | T-0152 |
+| Decision `D-` | D-0076 |
 | ADR | 0072 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0003 |
@@ -38,6 +38,8 @@ Only tasks that are not done or cancelled. A finished task leaves the board in t
 | T-0145 | build | developer | paused | none | Close the CLI join gaps left after rung 2's merge |
 | T-0148 | build | developer | active | none | Make the documented e2e driver commands bind node lists |
 | T-0149 | build | developer | active | none | Open the local admin socket on Linux |
+| T-0150 | spec | architect | active | none | Leave Windows prompt firewall rules out of the host snapshot |
+| T-0151 | build | developer | blocked | T-0150 | Apply the snapshot exclusions of 3.17.6 in host-snapshot.ps1 |
 
 ## Still to cut for M0
 
