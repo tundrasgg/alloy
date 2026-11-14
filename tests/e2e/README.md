@@ -48,8 +48,13 @@ From an elevated 64-bit PowerShell on the Windows client, at the repository
 root:
 
 ```
-powershell -NoProfile -ExecutionPolicy Bypass -File tests\e2e\rung1.ps1 -Version <version> -LinuxNode root@<node-a>, root@<node-b> -ProxmoxNode root@<node-b>
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\e2e\rung1.ps1 -Version <version> -LinuxNode root@<node-a>,root@<node-b> -ProxmoxNode root@<node-b>
 ```
+
+Write each node list as one word, with commas and no space: under `-File`,
+PowerShell passes every argument as a string, so a space would make the second
+node a word of its own, which the driver rejects as a usage error. The same
+holds for rung 2.
 
 For each Linux node over SSH, then for the Windows client itself, it:
 
@@ -103,7 +108,7 @@ instead of the local admin socket (ARFC 0019 clause 3.1.14). Then, from an
 elevated 64-bit PowerShell on the Windows client, at the repository root:
 
 ```
-powershell -NoProfile -ExecutionPolicy Bypass -File tests\e2e\rung2.ps1 -Version <version> -LinuxNode root@<node-a>, root@<node-b> -ProxmoxNode root@<node-b>
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\e2e\rung2.ps1 -Version <version> -LinuxNode root@<node-a>,root@<node-b> -ProxmoxNode root@<node-b>
 ```
 
 `init` runs on the first `-LinuxNode`. `-TimeoutSeconds` (default 30) bounds

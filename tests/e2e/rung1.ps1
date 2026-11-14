@@ -5,7 +5,7 @@
 # in to every Linux node as root without a prompt:
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tests\e2e\rung1.ps1 `
-#       -Version <version> -LinuxNode root@<node-a>, root@<node-b> -ProxmoxNode root@<node-b>
+#       -Version <version> -LinuxNode root@<node-a>,root@<node-b> -ProxmoxNode root@<node-b>
 #
 # Each machine must start clean: no Alloy install and no Alloy data directory.
 # For each Linux node over SSH, then for this Windows machine, it takes a host
@@ -20,8 +20,14 @@
 # the node. It prints one PASS or FAIL line per
 # check, then a summary, and exits 0 when every check passed, 1 when any
 # failed, and 2 on a usage error.
+#
+# Write each node list as one word, with commas and no space: under -File,
+# PowerShell passes every argument as a string. Each -LinuxNode and
+# -ProxmoxNode element is split on commas, so `-LinuxNode a,b` under -File and
+# `-LinuxNode a, b` or `@('a', 'b')` in-process all give the nodes a and b.
+# Every parameter is named: a word that no parameter takes is a usage error.
 
-[CmdletBinding()]
+[CmdletBinding(PositionalBinding = $false)]
 param(
     # The release to install, such as 0.0.1-preview.1.
     [Parameter(Mandatory = $true)]
@@ -32,7 +38,12 @@ param(
 
     # The SSH destinations, among -LinuxNode, of the nodes that are Proxmox VE
     # hosts.
-    [string[]]$ProxmoxNode = @()
+    [string[]]$ProxmoxNode = @(),
+
+    # Every word that no parameter takes, such as the second node of
+    # `-LinuxNode a, b` under -File. Any is a usage error.
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$UnexpectedArgument = @()
 )
 
 Set-StrictMode -Version 2.0
@@ -52,6 +63,21 @@ function Exit-Usage {
 }
 
 # ---------------------------------------------------------------- arguments
+
+if (@($UnexpectedArgument).Count -gt 0) {
+    Exit-Usage ("no parameter takes '$(@($UnexpectedArgument) -join "' '")': write each node list as one word, " +
+        'such as -LinuxNode root@<node-a>,root@<node-b>')
+}
+
+# Splits each element of a node list on commas and drops empty pieces.
+function Split-NodeList {
+    param([string[]]$List)
+    return @(@($List) | ForEach-Object { "$_" -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+}
+$LinuxNode = @(Split-NodeList $LinuxNode)
+$ProxmoxNode = @(Split-NodeList $ProxmoxNode)
+Write-Verbose "-LinuxNode: $(@($LinuxNode).Count) nodes: $(@($LinuxNode) -join ' ')"
+Write-Verbose "-ProxmoxNode: $(@($ProxmoxNode).Count) nodes: $(@($ProxmoxNode) -join ' ')"
 
 if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?(\+[0-9A-Za-z.]+)?$') {
     Exit-Usage "-Version '$Version' is not a release version"
