@@ -77,17 +77,21 @@ pub fn parse_args<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, 
         Some("version") => Command::Version,
         Some("-h" | "--help") => Command::Help,
         Some(other) if other.starts_with('-') => {
-            return Err(UsageError::new(format!("`{other}` is not an alloyd flag.")));
+            return Err(UsageError::new(format!(
+                "`{}` is not an alloyd flag.",
+                shown(other)
+            )));
         }
         Some(other) => {
             return Err(UsageError::new(format!(
-                "`{other}` is not an alloyd command."
+                "`{}` is not an alloyd command.",
+                shown(other)
             )));
         }
         None => {
             return Err(UsageError::new(format!(
                 "The argument {} is not valid UTF-8.",
-                first.display()
+                shown(&first.to_string_lossy())
             )));
         }
     };
@@ -95,10 +99,25 @@ pub fn parse_args<I: IntoIterator<Item = OsString>>(args: I) -> Result<Command, 
         None => Ok(command),
         Some(extra) => Err(UsageError::new(format!(
             "`alloyd {}` takes no arguments, and `{}` was given.",
-            first.display(),
-            extra.display()
+            shown(&first.to_string_lossy()),
+            shown(&extra.to_string_lossy())
         ))),
     }
+}
+
+/// `arg` with every control character escaped as Rust escapes it (`\n`,
+/// `\u{1b}`), so that no argument echoed to a terminal moves its cursor or
+/// changes its state (T-0091 review F3).
+fn shown(arg: &str) -> String {
+    let mut out = String::with_capacity(arg.len());
+    for c in arg.chars() {
+        if c.is_control() {
+            out.extend(c.escape_default());
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -134,6 +153,20 @@ mod tests {
         for (args, message) in cases {
             assert_eq!(parse(args).unwrap_err().message(), message, "{args:?}");
         }
+    }
+
+    #[test]
+    fn control_characters_in_arguments_are_escaped() {
+        let message = parse(&["\u{1b}]0;x\u{7}"]).unwrap_err().to_string();
+        assert!(
+            !message.chars().any(|c| c.is_control() && c != '\n'),
+            "{message:?}"
+        );
+        assert!(message.starts_with("`\\u{1b}]0;x\\u{7}` is not an alloyd command."));
+        let message = parse(&["version", "a\nb"]).unwrap_err().to_string();
+        assert!(message.starts_with("`alloyd version` takes no arguments, and `a\\nb` was given."));
+        let message = parse(&["-\r"]).unwrap_err().to_string();
+        assert!(message.starts_with("`-\\r` is not an alloyd flag."));
     }
 
     #[test]
