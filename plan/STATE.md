@@ -40,9 +40,6 @@ Only tasks that are not done or cancelled. A finished task leaves the board in t
 | T-0119 | spec | architect | queued | before rung 5 | Keep VNI binds alive across crossed rekeys, record the ADR |
 | T-0120 | build | developer | active | none | Build the disk-io protection operations in os and mem |
 | T-0121 | build | developer | queued | T-0120, T-0114 | Create keys and stores locked down in alloy-id and alloy-state |
-| T-0122 | spec | architect | active | none | Supersede ADR 0008 with when the simulator gates work |
-| T-0123 | product | product | active | none | Bring the README status up to date |
-| T-0124 | product | product | active | none | Write the console brief and its browser API protocol need |
 
 ## Still to cut for M0
 
@@ -110,6 +107,8 @@ Only tasks that are not done or cancelled. A finished task leaves the board in t
 - Spec: ARFC 0004 section 8 states the probe reflection bound from section 3.2 (T-0021 follow-up).
 
 ## M11 notes
+
+- Console (PB-0002): cut a spec task from its `spec-issue` entries (browser auth, wire form, serving and pinning, watches) and then the console build; off the rung path.
 
 - After rung 2: split ARFC 0005 into the runtime seams and the simulator and NAT lab, so runtime readers never load simulator text (pilot, spec size).
 
