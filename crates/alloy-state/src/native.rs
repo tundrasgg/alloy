@@ -3,6 +3,10 @@
 //! commit and immediate durability, the state store with immediate durability
 //! and the default commit.
 //!
+//! Before `redb` opens its file, the build creates it through the `disk-io`
+//! seam of its context with `Protection::Private` (clause 5.2), and blocks
+//! until that is durable.
+//!
 //! `redb` does its file access synchronously, so each call runs its
 //! transaction inline on the task that awaits it. ADR 0064 confines these
 //! stores to `os` runtimes, where a call holds one runtime thread for the
@@ -11,10 +15,11 @@
 use std::fmt;
 use std::io::ErrorKind;
 use std::ops::Bound;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use alloy_rt::{DiskError, Protection, Runtime, SyncKind};
 use alloy_seam::{BoxFuture, BuildError, ConfigError, ConfigValue, Detail, SeamConfig};
 use redb::{
     Database, DatabaseError, Durability, ReadTransaction, ReadableDatabase, ReadableTable,
@@ -23,6 +28,7 @@ use redb::{
 
 use crate::config::NativeStoreConfig;
 use crate::export::{Export, Reader, Source, batch_full};
+use crate::rt::block_on;
 use crate::rules::{
     LOG_ID_LEN, check_append, check_apply, check_scan_limit, corrupt, decode_log_id, decode_vote,
     encode_log_id, encode_vote, invalid, read_full, scan_full,
@@ -56,24 +62,81 @@ struct Db {
     failed: AtomicBool,
 }
 
+fn invalid_dir(detail: &str) -> BuildError {
+    BuildError::Config(ConfigError::Invalid {
+        field: Detail::new("dir"),
+        detail: Detail::new(detail),
+    })
+}
+
+/// Creates `file` in `dir` through the `disk-io` seam of `runtime` with
+/// [`Protection::Private`] when it is missing, and makes it durable, so that
+/// `redb` opens a file that never had more access than that: mode `0600` on
+/// Linux, and on Windows owner `Administrators` and the list inherited from
+/// `dir` (ARFC 0006 clause 5.2, ARFC 0005 clause 3.1.15). A file that exists
+/// is left as it is. `redb` opens the file without truncating or replacing
+/// it.
+///
+/// # Errors
+///
+/// [`BuildError::Config`] naming `dir` when it is not an existing directory
+/// under the seam's root, and [`BuildError::Failed`] for any other error, for
+/// example on Windows `PermissionDenied` for a process that may not name
+/// `Administrators` as owner. `redb` is then not called.
+fn create_protected(runtime: &Runtime, dir: &Path, file: &str) -> Result<(), BuildError> {
+    let disk = runtime.disk_io();
+    let native = dir
+        .to_str()
+        .ok_or_else(|| invalid_dir("is not valid UTF-8"))?;
+    let failed = |error: DiskError| {
+        BuildError::Failed(Detail::new(&format!(
+            "creating {file} in {native}: {error}"
+        )))
+    };
+    let rt_dir = disk.rt_path(native).map_err(|error| match error {
+        DiskError::InvalidPath => invalid_dir("is not a path under the disk-io root"),
+        other => failed(other),
+    })?;
+    let path = rt_dir.join(file).map_err(failed)?;
+    let created = block_on(async {
+        match disk.create_file(&path, Protection::Private).await {
+            Ok(handle) => {
+                handle.sync(SyncKind::All).await?;
+                disk.sync_dir(&rt_dir).await?;
+                drop(handle);
+                Ok(())
+            }
+            Err(DiskError::AlreadyExists) => Ok(()),
+            Err(error) => Err(error),
+        }
+    });
+    created.map_err(|error| match error {
+        DiskError::NotFound | DiskError::NotDirectory => {
+            invalid_dir("is not an existing directory")
+        }
+        other => failed(other),
+    })
+}
+
 impl Db {
-    /// Opens or creates `file` in the configured directory, then runs `init`,
-    /// which creates the tables so that reads never meet a missing one.
+    /// Creates `file` in the configured directory as [`create_protected`]
+    /// says, opens it, then runs `init`, which creates the tables so that
+    /// reads never meet a missing one.
     fn open(
+        runtime: &Runtime,
         config: &ConfigValue,
         file: &str,
         init: fn(&WriteTransaction) -> Result<(), StoreError>,
     ) -> Result<Db, BuildError> {
         let config = NativeStoreConfig::from_value(config).map_err(BuildError::Config)?;
-        let path = config.checked_dir().map_err(BuildError::Config)?.join(file);
+        let dir = config.checked_dir().map_err(BuildError::Config)?;
+        create_protected(runtime, dir, file)?;
+        let path = dir.join(file);
         let db = Database::create(&path).map_err(|error| match error {
             DatabaseError::Storage(redb::StorageError::Io(io))
                 if matches!(io.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) =>
             {
-                BuildError::Config(ConfigError::Invalid {
-                    field: Detail::new("dir"),
-                    detail: Detail::new("is not an existing directory"),
-                })
+                invalid_dir("is not an existing directory")
             }
             other => BuildError::Failed(Detail::new(&format!("{}: {other}", path.display()))),
         })?;
@@ -462,6 +525,9 @@ impl Drop for NativeInstall {
 impl StateInstall for NativeInstall {
     fn write(&self, chunk: Vec<u8>) -> BoxFuture<'_, Result<(), StoreError>> {
         Box::pin(async move {
+            // After an `Io` failure every call fails with `Io`, a malformed
+            // chunk included (clause 5.4.7).
+            self.db.run(|_| Ok(()))?;
             let mut pairs = Vec::new();
             self.reader
                 .lock()
@@ -517,8 +583,11 @@ impl StateInstall for NativeInstall {
     }
 }
 
-pub(crate) fn log_factory(config: &ConfigValue) -> Result<Arc<dyn LogStore>, BuildError> {
-    let db = Db::open(config, "log.redb", |txn| {
+pub(crate) fn log_factory(
+    runtime: &Runtime,
+    config: &ConfigValue,
+) -> Result<Arc<dyn LogStore>, BuildError> {
+    let db = Db::open(runtime, config, "log.redb", |txn| {
         drop(txn.open_table(ENTRIES).map_err(store_error)?);
         drop(txn.open_table(META).map_err(store_error)?);
         Ok(())
@@ -526,8 +595,11 @@ pub(crate) fn log_factory(config: &ConfigValue) -> Result<Arc<dyn LogStore>, Bui
     Ok(Arc::new(NativeLog(db)))
 }
 
-pub(crate) fn state_factory(config: &ConfigValue) -> Result<Arc<dyn StateStore>, BuildError> {
-    let db = Db::open(config, "state.redb", |txn| {
+pub(crate) fn state_factory(
+    runtime: &Runtime,
+    config: &ConfigValue,
+) -> Result<Arc<dyn StateStore>, BuildError> {
+    let db = Db::open(runtime, config, "state.redb", |txn| {
         drop(txn.open_table(PAIRS).map_err(store_error)?);
         drop(txn.open_table(META).map_err(store_error)?);
         Ok(())

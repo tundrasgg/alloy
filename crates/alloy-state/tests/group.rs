@@ -81,7 +81,7 @@ async fn scenario(world: World) -> Result<(), Failure> {
 
     let labels = BTreeMap::from([("zone".to_owned(), "a".to_owned())]);
     let n1 = group
-        .create("Node", Scope::Cluster, "n1", b"roles".to_vec(), labels)
+        .create("Item", Scope::Cluster, "n1", b"roles".to_vec(), labels)
         .await
         .map_err(fail)?;
     check(
@@ -89,14 +89,14 @@ async fn scenario(world: World) -> Result<(), Failure> {
         "a new resource has generation 1",
     )?;
     let again = group
-        .create("Node", Scope::Cluster, "n1", Vec::new(), BTreeMap::new())
+        .create("Item", Scope::Cluster, "n1", Vec::new(), BTreeMap::new())
         .await;
     check(
         again == Err(GroupError::Resource(ResourceError::AlreadyExists)),
         "a second create conflicts",
     )?;
     let got = group
-        .get("Node", &Scope::Cluster, "n1")
+        .get("Item", &Scope::Cluster, "n1")
         .await
         .map_err(fail)?;
     check(
@@ -126,7 +126,7 @@ async fn scenario(world: World) -> Result<(), Failure> {
     for i in 0..20 {
         let name = format!("n{}", i + 2);
         group
-            .create("Node", Scope::Cluster, &name, Vec::new(), BTreeMap::new())
+            .create("Item", Scope::Cluster, &name, Vec::new(), BTreeMap::new())
             .await
             .map_err(fail)?;
     }
@@ -134,11 +134,11 @@ async fn scenario(world: World) -> Result<(), Failure> {
         .create("Other", Scope::Cluster, "x", Vec::new(), BTreeMap::new())
         .await
         .map_err(fail)?;
-    let nodes = group.list("Node").await.map_err(fail)?;
+    let nodes = group.list("Item").await.map_err(fail)?;
     check(nodes.len() == 21, "list returns one kind only")?;
 
     let deleting = group
-        .delete("Node", &Scope::Cluster, "n3", 1)
+        .delete("Item", &Scope::Cluster, "n3", 1)
         .await
         .map_err(fail)?;
     check(
@@ -146,11 +146,11 @@ async fn scenario(world: World) -> Result<(), Failure> {
         "delete marks",
     )?;
     group
-        .remove("Node", &Scope::Cluster, "n3", 2)
+        .remove("Item", &Scope::Cluster, "n3", 2)
         .await
         .map_err(fail)?;
     let gone = group
-        .get("Node", &Scope::Cluster, "n3")
+        .get("Item", &Scope::Cluster, "n3")
         .await
         .map_err(fail)?;
     check(gone.is_none(), "remove removes")?;
@@ -170,12 +170,12 @@ async fn scenario(world: World) -> Result<(), Failure> {
 
     let group = open(&registry, &runtime).await?;
     let got = group
-        .get("Node", &Scope::Cluster, "n1")
+        .get("Item", &Scope::Cluster, "n1")
         .await
         .map_err(fail)?;
     check(got.as_ref() == Some(&n1), "a resource survives a restart")?;
     let n9 = group
-        .create("Node", Scope::Cluster, "n99", Vec::new(), BTreeMap::new())
+        .create("Item", Scope::Cluster, "n99", Vec::new(), BTreeMap::new())
         .await
         .map_err(fail)?;
     group.shutdown().await.map_err(fail)?;
@@ -183,7 +183,7 @@ async fn scenario(world: World) -> Result<(), Failure> {
     // A restart without a snapshot applies the log at open.
     let group = open(&registry, &runtime).await?;
     let got = group
-        .get("Node", &Scope::Cluster, "n99")
+        .get("Item", &Scope::Cluster, "n99")
         .await
         .map_err(fail)?;
     check(
@@ -191,7 +191,7 @@ async fn scenario(world: World) -> Result<(), Failure> {
         "a write after the snapshot survives a restart",
     )?;
     check(
-        group.list("Node").await.map_err(fail)?.len() == 21,
+        group.list("Item").await.map_err(fail)?.len() == 21,
         "the list after restarts",
     )?;
     group.shutdown().await.map_err(fail)?;
@@ -236,7 +236,7 @@ async fn restart_at_once(world: World, count: u64) -> Result<(), Failure> {
     for i in 0..count {
         let (name, spec) = node(&format!("n{i}"));
         group
-            .create("Node", Scope::Cluster, &name, spec, BTreeMap::new())
+            .create("Item", Scope::Cluster, &name, spec, BTreeMap::new())
             .await
             .map_err(fail)?;
     }
@@ -245,7 +245,7 @@ async fn restart_at_once(world: World, count: u64) -> Result<(), Failure> {
     for i in 0..count {
         let (name, spec) = node(&format!("n{i}"));
         let got = group
-            .get("Node", &Scope::Cluster, &name)
+            .get("Item", &Scope::Cluster, &name)
             .await
             .map_err(fail)?;
         check(
@@ -277,7 +277,7 @@ async fn restart_after_failure(world: World, fail_after: u64) -> Result<(), Fail
         for i in 0..40 {
             let (name, spec) = node(&format!("n{i}"));
             match group
-                .create("Node", Scope::Cluster, &name, spec, BTreeMap::new())
+                .create("Item", Scope::Cluster, &name, spec, BTreeMap::new())
                 .await
             {
                 Ok(_) => acknowledged.push(name),
@@ -290,7 +290,7 @@ async fn restart_after_failure(world: World, fail_after: u64) -> Result<(), Fail
         }
     }
     if failed {
-        let read = group.get("Node", &Scope::Cluster, "n0").await;
+        let read = group.get("Item", &Scope::Cluster, "n0").await;
         check(
             matches!(read, Err(GroupError::Unavailable(_))),
             "a failed member serves nothing (section 6)",
@@ -302,7 +302,7 @@ async fn restart_after_failure(world: World, fail_after: u64) -> Result<(), Fail
     let group = open(&registry, &runtime).await?;
     for name in &acknowledged {
         let got = group
-            .get("Node", &Scope::Cluster, name)
+            .get("Item", &Scope::Cluster, name)
             .await
             .map_err(fail)?;
         check(got.is_some(), "an acknowledged write survives")?;
@@ -330,7 +330,7 @@ async fn oversized(world: World) -> Result<(), Failure> {
     )));
     for len in [MAX_RESOURCE, 70_000_000] {
         let refused = group
-            .create("Node", Scope::Cluster, "big", vec![0; len], BTreeMap::new())
+            .create("Item", Scope::Cluster, "big", vec![0; len], BTreeMap::new())
             .await
             .map(drop);
         check(refused == over, "a create over 1 MiB is refused")?;
@@ -339,7 +339,7 @@ async fn oversized(world: World) -> Result<(), Failure> {
     let fits = MAX_RESOURCE - 81;
     let n1: Resource = group
         .create(
-            "Node",
+            "Item",
             Scope::Cluster,
             "fit",
             vec![1; fits],
@@ -354,12 +354,12 @@ async fn oversized(world: World) -> Result<(), Failure> {
         "an update over 1 MiB is refused",
     )?;
     let got = group
-        .get("Node", &Scope::Cluster, "fit")
+        .get("Item", &Scope::Cluster, "fit")
         .await
         .map_err(fail)?;
     check(got == Some(n1), "the group serves on after a refusal")?;
     group
-        .create("Node", Scope::Cluster, "small", Vec::new(), BTreeMap::new())
+        .create("Item", Scope::Cluster, "small", Vec::new(), BTreeMap::new())
         .await
         .map_err(fail)?;
     group.shutdown().await.map_err(fail)

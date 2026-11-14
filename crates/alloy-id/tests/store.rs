@@ -22,20 +22,13 @@ fn data_dir(runtime: &Runtime) -> Result<DataDir, String> {
     Ok(DataDir::new(Arc::clone(runtime.disk_io()), dir))
 }
 
+/// The data directory, created as `init` creates it: protected, and durable
+/// before anything is written in it.
 async fn make_dir(runtime: &Runtime) -> Result<DataDir, String> {
     let dir = RtPath::new("/alloyd").map_err(err("path"))?;
-    runtime
-        .disk_io()
-        .create_dir(&dir)
+    DataDir::create(Arc::clone(runtime.disk_io()), dir)
         .await
-        .map_err(err("create"))?;
-    // `init` makes the new directory durable before it writes in it.
-    runtime
-        .disk_io()
-        .sync_dir(&RtPath::root())
-        .await
-        .map_err(err("sync"))?;
-    data_dir(runtime)
+        .map_err(err("create"))
 }
 
 fn secrets() -> NodeSecrets {

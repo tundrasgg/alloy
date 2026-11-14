@@ -414,16 +414,22 @@ impl openraft::AsyncRuntime for AlloyRt {
     where
         F: Future<Output = T>,
     {
-        let signal = Arc::new(Signal::default());
-        let waker = Waker::from(Arc::clone(&signal));
-        let mut cx = Context::from_waker(&waker);
-        let mut future = Box::pin(future);
-        loop {
-            if let Poll::Ready(value) = future.as_mut().poll(&mut cx) {
-                return value;
-            }
-            signal.wait();
+        block_on(future)
+    }
+}
+
+/// Blocks the thread until `future` completes: polls it on this thread, and
+/// between polls sleeps until its waker is called.
+pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
+    let signal = Arc::new(Signal::default());
+    let waker = Waker::from(Arc::clone(&signal));
+    let mut cx = Context::from_waker(&waker);
+    let mut future = Box::pin(future);
+    loop {
+        if let Poll::Ready(value) = future.as_mut().poll(&mut cx) {
+            return value;
         }
+        signal.wait();
     }
 }
 

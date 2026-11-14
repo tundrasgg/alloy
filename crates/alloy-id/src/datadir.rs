@@ -5,8 +5,10 @@
 //! above it, and its host file, as the operating system reports them. They
 //! decide what `init` and `join` may do with the path ([`check_for_init`])
 //! and whether `alloyd` may read a secret ([`check_at_start`]). Gathering the
-//! facts, and creating the directory with its mode or access control list,
-//! are operating system calls that belong to `alloy-rt`.
+//! facts is the `disk-io` seam's `security` call. Creating or adopting the
+//! directory with its mode or access control list is
+//! [`DataDir::create`](crate::DataDir::create) or
+//! [`DataDir::adopt`](crate::DataDir::adopt).
 
 /// The first line of every host file.
 pub const HOST_FILE_FIRST_LINE: &str = "alloy-host 1";
