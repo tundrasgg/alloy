@@ -10,6 +10,7 @@ members = [
     "crates/alloy-rt",
     "crates/alloy-seam",
     "crates/alloy-sim",
+    "crates/alloy-state",
     "crates/alloy-wire",
     "crates/alloyd",
     "tests/conformance/rt",
@@ -57,7 +58,8 @@ thiserror = "=2.0.21"
 # The native API (ARFC 0008 clause 3.10): Protocol Buffers by `prost`, gRPC by
 # `tonic`, served and called over `hyper`'s HTTP/2 on connections that
 # alloy-api makes through the `alloy-rt` net seam. `tonic` has only `codegen`:
-# its transport would open sockets and spawn tasks outside `alloy-rt`.
+# its transport would open sockets and spawn tasks outside `alloy-rt`. TLS is
+# reached only through alloy-crypto (agent/eng/crypto.md rule 1).
 bytes = "=1.11.1"
 http = "=1.5.0"
 http-body-util = "=0.1.5"
@@ -71,6 +73,19 @@ tower-service = "=0.3.3"
 # so the build needs neither `protoc` nor the network.
 protox = "=0.10.0"
 tonic-prost-build = { version = "=0.14.9", default-features = false }
+# Raft for the control plane groups (ADR 0064), used only by alloy-state. The
+# default features add the tokio runtime and clap; alloy-state runs openraft on
+# its own `AsyncRuntime` over `alloy-rt` instead.
+openraft = { version = "=0.10.0", default-features = false }
+# Stream combinators for the openraft storage adapters in alloy-state; already
+# in the openraft tree.
+futures-util = { version = "=0.3.34", default-features = false, features = ["std"] }
+# The generator trait openraft's runtime draws election timeouts through;
+# alloy-state implements it over the `alloy-rt` rng seam.
+rand_core = { version = "=0.10.1", default-features = false }
+# The `native` log-store and state-store files (ADR 0064, ARFC 0006 section
+# 4.2), used only by alloy-state.
+redb = { version = "=4.5.0", default-features = false, features = ["std"] }
 # The standing choice for logging (agent/eng/deps.md), used by `alloyd`. The
 # `attributes` feature, a procedural macro tree, is off.
 tracing = { version = "=0.1.44", default-features = false, features = ["std"] }
