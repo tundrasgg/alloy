@@ -13,7 +13,7 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 | Series | Next |
 |---|---|
 | Task `T-` | T-0137 |
-| Decision `D-` | D-0065 |
+| Decision `D-` | D-0066 |
 | ADR | 0069 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0003 |
@@ -32,9 +32,6 @@ Only tasks that are not done or cancelled. A finished task leaves the board in t
 | T-0084 | verify | verifier | paused | D-0044 | Run the runtime conformance suites against os |
 | T-0113 | verify | verifier | review | T-0136 | Write the M11 rung 2 join and node list check |
 | T-0119 | spec | architect | queued | before rung 5 | Keep VNI binds alive across crossed rekeys, record the ADR |
-| T-0129 | build | developer | review | none | Build peer_uid and the durable replace in alloy-rt |
-| T-0130 | build | developer | review | none | Add JoinToken, Organization, User, and login codes to alloy-state |
-| T-0135 | build | developer | active | none | Close the replay gap for keys that were once peers |
 | T-0136 | build | developer | active | none | Build M11 rung 2 end to end: API, init, join, and the CLI |
 | T-0134 | verify | verifier | review | T-0136 | Update the rung 2 check for the login flow |
 
@@ -104,6 +101,8 @@ Only tasks that are not done or cancelled. A finished task leaves the board in t
 - Spec: ARFC 0004 section 8 states the probe reflection bound from section 3.2 (T-0021 follow-up).
 
 ## M11 notes
+
+- From T-0130 review (fold into the next `alloy-state` task): F1, the generic `Group::update`, `delete`, and `remove` skip the identity kinds' checks (`check_kind`), as T-0114's F1 did for `Node`; and the notes in `plan/reports/T-0130.reviewer.1.md`.
 
 - From T-0111 review (fold into the `alloyd init` and `alloyd join` builds): F1, `decode` drops messages ARFC 0006 section 4.3 says must be answered or accepted; F2, `Requester::receive` takes a reply after its time limit; F3 to F5 (notes), O(N) expiry per request, a missing data directory logged once instead of every 60 s, and the rest in `plan/reports/T-0111.reviewer.1.md`.
 

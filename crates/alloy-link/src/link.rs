@@ -119,6 +119,10 @@ pub struct Link {
     /// [`UNKNOWN_REPLAY_ENTRIES`] for keys never added, listed in
     /// `transient`.
     highest: BTreeMap<PublicKey, u64>,
+    /// Every static key ever passed to [`Link::add_peer`]. Its entry in
+    /// `highest` is never evicted, even after [`Link::remove_peer`] and
+    /// later unknown initiations from it.
+    added: BTreeSet<PublicKey>,
     /// The keys of `highest` never added as peers, each with the sequence
     /// number of its latest accepted initiation. `transient_order` is the
     /// same map inverted, so the least recent is evicted first.
@@ -172,6 +176,7 @@ impl Link {
             backlog: 0,
             peers: BTreeMap::new(),
             highest: BTreeMap::new(),
+            added: BTreeSet::new(),
             transient: BTreeMap::new(),
             transient_order: BTreeMap::new(),
             transient_seq: 0,
@@ -201,6 +206,7 @@ impl Link {
     /// it becomes a peer like any other, and `psk` applies from its next
     /// handshake.
     pub fn add_peer(&mut self, peer: PublicKey, psk: PresharedKey) {
+        self.added.insert(peer);
         if let Some(seq) = self.transient.remove(&peer) {
             self.transient_order.remove(&seq);
         }
@@ -231,7 +237,8 @@ impl Link {
     /// or until it has neither a session nor a pending initiation, when the
     /// link forgets it. The highest counter accepted from it (section 3.2)
     /// is kept for at most [`UNKNOWN_REPLAY_ENTRIES`] such keys, the least
-    /// recently accepted evicted first.
+    /// recently accepted evicted first, and for good when the key was ever
+    /// added as a peer.
     ///
     /// Turned off, later initiations from keys that are not admitted peers
     /// are dropped with [`DropReason::UnknownPeer`]. Unknown initiators
@@ -767,8 +774,13 @@ impl Link {
 
     /// Marks `key`'s entry in `highest` as the most recently accepted of the
     /// keys never added as peers, and evicts the least recent beyond
-    /// [`UNKNOWN_REPLAY_ENTRIES`].
+    /// [`UNKNOWN_REPLAY_ENTRIES`]. A key ever added as a peer is left out,
+    /// so its entry, which may guard initiations accepted while it was a
+    /// peer, is never evicted.
     fn note_transient(&mut self, key: PublicKey) {
+        if self.added.contains(&key) {
+            return;
+        }
         self.transient_seq += 1;
         let seq = self.transient_seq;
         if let Some(old) = self.transient.insert(key, seq) {
@@ -1530,9 +1542,6 @@ fn draw<const N: usize>(rng: &dyn Rng) -> Result<[u8; N], DropReason> {
     Ok(bytes)
 }
 
-/// Overwrites this frame's copy of secret bytes once the key type that
-/// erases itself holds them. `black_box` keeps the store from being removed
-/// as dead.
 /// The source address in a cookie `src` (section 3.1): an IPv4 or IPv6
 /// address and port lose the port, and any other `src` is taken whole.
 fn source_address(src: &[u8]) -> &[u8] {
@@ -1542,6 +1551,9 @@ fn source_address(src: &[u8]) -> &[u8] {
     }
 }
 
+/// Overwrites this frame's copy of secret bytes once the key type that
+/// erases itself holds them. `black_box` keeps the store from being removed
+/// as dead.
 fn wipe(bytes: &mut [u8]) {
     bytes.fill(0);
     std::hint::black_box(bytes);
