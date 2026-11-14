@@ -71,6 +71,14 @@ impl StaticSecret {
         PublicKey(x25519_dalek::PublicKey::from(&self.0).to_bytes())
     }
 
+    /// Returns a copy of the 32 private key bytes as they were given to
+    /// [`StaticSecret::from_bytes`], for storage (ARFC 0002 section 3.14).
+    /// The copy erases itself when it is dropped.
+    #[must_use]
+    pub fn to_bytes(&self) -> zeroize::Zeroizing<[u8; KEY_LEN]> {
+        zeroize::Zeroizing::new(self.0.to_bytes())
+    }
+
     pub(crate) fn dalek(&self) -> &x25519_dalek::StaticSecret {
         &self.0
     }

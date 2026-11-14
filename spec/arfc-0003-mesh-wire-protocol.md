@@ -203,8 +203,9 @@ static key and must drop an initiation whose counter is not higher. No wall cloc
 is involved. Across a process handover that table travels with the sessions, and
 a process that resumes after a failed handover raises it to the counters its
 successor accepted (3.9). The node channel takes its request ids from the same
-counter (ARFC 0002 section 3.13), so each value is used once, by one initiation
-or by one request, and initiation counters still only grow.
+counter (ARFC 0002 section 3.13): each value is used once, by one initiation as
+its counter or by one request, whose `request_id` is that value plus 1, and
+initiation counters still only grow.
 
 ### 3.3 Session keys
 
@@ -241,11 +242,9 @@ Erasure (`agent/eng/crypto.md` rule 3): once `send_key`, `recv_key`, `salt`,
 handshake value that it or its Noise library holds: its ephemeral private key,
 the chaining key, the handshake cipher key, `k1`, `k2`, the cipher states
 `Split()` returned, and `prk`. A handshake that fails or is abandoned must erase
-the same values when it ends. `send_key` and `recv_key` are erased when they are
-discarded (below), and `probe_send_key` and `probe_recv_key` with them: each
-probe key has the lifetime of the session key of the same direction, except that
-after a rekey 3.6 keeps the previous session's probe keys longer, never past the
-180 seconds below. A Noise library that
+the same values when it ends. `send_key`, `recv_key`, `salt`, `probe_send_key`
+and `probe_recv_key` are erased together, when the node discards the session
+(below). A Noise library that
 keeps a copy of any of these values that its caller cannot erase does not meet
 this section.
 
@@ -266,11 +265,103 @@ A session is rekeyed by a new handshake after 120 seconds of use or 2^30
 transport packets on any queue, whichever comes first. A sender never uses a
 transport counter of 2^31 or more (3.4), so every session stays below 2^31
 transport packets per queue, well below the 2^32 that the 32-bit counter on the
-wire distinguishes. Keys must be discarded 180 seconds after the handshake that
-made them. The previous session's receive key stays valid for 10 seconds after a
-rekey. Its probe keys follow 3.6. A rekey makes a new session, so state above AL
-that lasts across rekeys is kept per peer mesh key, not per session, as the
-node channel's is (ARFC 0002 section 3.13).
+wire distinguishes. A session must be discarded 180 seconds after the handshake
+that made it. Within that bound, a node keeps a session until the peer is shown
+to have moved past it, and then for 10 seconds more (below). A rekey makes a
+new session, so state above AL that lasts across rekeys is kept per peer mesh
+key, not per session, as the node channel's is (ARFC 0002 section 3.13).
+
+Following: a session `Q` **follows** a session `P` with the same peer at a node
+when `P` was already confirmed at the node (3.6) at the time the node first sent
+the handshake message that makes `Q` at the peer: its initiation if it initiated
+`Q`, its response if it responded. An initiation sent again with the same Noise
+bytes, for example with a new `mac2` after a cookie reply (3.1), counts as sent
+when its first copy was. Then both nodes made `Q` after `P`: `P` confirmed at
+the node means the peer already held `P`, and the peer makes `Q` only when a
+copy of that message reaches it. Both nodes therefore order `Q` newer than `P`
+(3.6), whatever the underlay does to the packets in between. Each node knows
+the relation only for the messages it sent, so the peer may know that `Q`
+follows `P` while the node does not.
+
+Discarding a session: a node discards a session `P` with a peer at the first of:
+
+1. 180 seconds after the handshake that made `P`;
+2. 10 seconds after it first accepts from that peer a transport packet (one
+   that authenticates and passes the replay check of 3.4) under a session that
+   follows `P`;
+3. its discard of `P` under the session limit of 3.4, or after a failed process
+   handover (3.9).
+
+To discard a session is to erase all of its keys (above), with their counters
+and windows (3.4, 3.6), and to free its blocks (3.4), all at once. A session's
+transport keys and probe keys therefore always have the same lifetime, and a
+discarded session no longer counts toward the limit of 4 sessions per peer.
+Until it discards `P` the node must accept under `P` every transport packet that
+passes the checks of 3.4 and every probe message that 3.6 accepts. From then on
+it seals nothing under `P`, and a message under `P` names no session it holds
+and is dropped before any cryptographic operation (3.4, 3.6).
+
+The packet in rule 2 is what proves the peer has moved past `P`. It shows that
+the peer held a session it orders newer than `P` and had sealed a transport
+packet under it. By the session choice of 3.4, which binds (3.4) and probe
+messages (3.6) obey as well, the peer seals no message under `P` more than 5
+seconds after it first sealed a transport packet under a session it orders
+newer than `P`, and it did that no later than it sealed the packet of rule 2.
+The 10 seconds therefore cover every message under `P` whose underlay delay
+exceeds that packet's by at most 5 seconds, so rule 2 never discards a session
+the peer still seals under. A packet under a session the node merely orders
+newer than `P` proves nothing: two nodes may order the same two sessions
+differently (3.6), and such a packet can reach the node before the peer has even
+made `P`. A peer that never seals under a session that follows `P` leaves `P` to
+rule 1 or rule 3.
+
+Crossed rekeys: two handshakes between the same two nodes **cross** when each
+node initiates one and responds to the other's initiation before it processes
+the response to its own. Each node `x` then holds both sessions, `S_x`, which it
+initiated, and the session the peer initiated. Neither session follows the
+other at either node. A node sends its response before it processes the
+response to its own initiation, so its own session is not yet made there, let
+alone confirmed. A node confirms the peer's session only on a message the peer
+seals under it, which the peer does only after it processes the response to its
+own initiation; the peer received this node's initiation before that, so this
+node first sent its initiation while the peer's session was unconfirmed at it.
+Each node seals under its newest confirmed session (3.4), which at each node can
+be the session that node initiated, so the two directions can run under
+different sessions. Each node keeps both sessions, because a packet under one
+of them never discards the other, and both directions are delivered. Probe
+messages go under the session that VNI 0 transport packets go under (3.6), so
+the same holds for them. The session `O` both used before follows neither but is
+followed by both, so each node discards `O` 10 seconds after it first accepts a
+packet under either. The nodes converge on the next handshake a node starts or
+answers once both crossed sessions are confirmed at it: that session follows
+both, so both nodes order it newest and seal under it once it is confirmed. A
+rekey that crosses again ends the same way.
+
+Arrival orders after two crossed initiations between nodes `a` and `b`, with
+`O` the session both used before. `Ra` is the response that reaches `a` and
+makes `S_a` there, `ka` the first transport packet `a` then seals under `S_a`
+(3.4), and `Rb`, `kb` the same for `b`. Each row holds for probe messages as for
+transport packets:
+
+| Order | `a` seals under | `b` seals under | Sessions kept | Outcome |
+|---|---|---|---|---|
+| `Ra` and `Rb` both arrive before `ka` and `kb` | `S_a` | `S_b` | `a` keeps `S_b` and `b` keeps `S_a` until rule 1, or rule 2 by a later session; `O` goes by rule 2 | Both directions delivered, each under the session its sender initiated |
+| `Ra`, then `ka`, then `Rb` | `S_a` | `S_a` from `ka`, `S_b` from `Rb` | `a` keeps `S_b`: `S_a` does not follow it. `b` keeps `S_a` | Both delivered. The packet under `S_a` that `b` sealed before `Rb` starts no discard of `S_b` at `a` |
+| `Rb`, then `kb`, then `Ra` | `S_b` from `kb`, `S_a` from `Ra` | `S_b` | As the row above with `a` and `b` swapped | Both delivered |
+| `ka` before `Rb` and `kb` before `Ra` | | | | Cannot happen: `ka` is sent after `Ra` and `kb` after `Rb`, so it would need `Ra` before `ka` before `Rb` before `kb` before `Ra` |
+| `Rb` is lost | `S_a` | `S_a` from `ka` | `a` holds `S_b` unconfirmed until rule 1 or rule 3; `b` never makes `S_b` | Both delivered under `S_a` |
+| Not crossed at `b`: `Rb` reaches `b` before `a`'s initiation does | `S_b` from `kb` if it comes before `Ra`, `S_a` from `Ra` | `S_b`, `S_a` once `ka` confirms it | `S_a` follows `S_b` at `b`, so `b` discards `S_b` 10 s after it first accepts a packet under `S_a`, and `a` seals nothing under `S_b` 5 s after it seals under `S_a`. `a` keeps `S_b` until rule 1, or rule 2 by a later session | Both delivered, converged on `S_a` |
+| Any order, with a packet under `O` delayed up to 5 s | | | `O` is still held | The late packet is accepted |
+
+Comparison: in WireGuard, a responder does not send under a new session until
+it has received a packet under it from the initiator, and only a session's
+initiator starts a rekey when the session reaches its rekey age
+(https://www.wireguard.com/protocol/, section "Connection-less Protocol"). The
+confirmation of 3.6 is the first of these rules. It says when a node starts
+sealing under a new session, not when the peer has stopped sealing under an
+older one, and in a crossed rekey each node is the initiator of one of the two
+sessions. The second rule makes crossed rekeys rarer but does not remove them;
+AL instead makes them safe with rule 2 and the 5 seconds of 3.4.
 
 ### 3.4 Transport (type 4)
 
@@ -359,8 +450,8 @@ most 2,047 below the highest accepted on its queue.
 Receive checks: before any cryptographic operation, a receiver must drop a
 transport packet shorter than 26 bytes (the header, the tag and a 1-byte frame),
 whose `receiver_index` is not an index of a session it holds (a value `base + q`
-of one of its blocks, with `q` below the peer's `queues`), or that fails the
-checks on `c` above.
+of one of its blocks, with `q` below the peer's `queues`; a session it has
+discarded holds no blocks, 3.3), or that fails the checks on `c` above.
 
 Inner frame, after decryption: the plaintext is one frame of at least 1 byte.
 Its **kind** is the high 4 bits of its first byte. An IP packet is recognized by
@@ -410,10 +501,12 @@ sent in the handshake. For any other VNI `v`:
   session, to the block already bound to `v` if there is one and otherwise to a
   free block, and replies with a bind carrying `v` and that block's `base`. It
   seals the bind under the session the request came under, whatever the session
-  choice below. It binds only when `v` is not 0, a VPC with VNI `v` has a port on
-  it (ARFC 0009 section 3.3), and the session already binds `v` or holds fewer
-  than 1,024 blocks with a free block to take. Otherwise it drops the request and
-  counts it. It replies to every bind request it accepts, so a lost bind is
+  choice below. It binds only when `v` is not 0, a VPC with VNI `v` has a port
+  on it (ARFC 0009 section 3.3), the session already binds `v` or holds fewer
+  than 1,024 blocks with a free block to take, and the session still qualifies
+  (session choice, below). Otherwise it drops the request and counts it; the
+  requester's next request goes under the session it then seals VNI 0 packets
+  under. It replies to every bind request it accepts, so a lost bind is
   recovered by the next request.
 - A node that accepts a bind for `v` under a session, after it sent a bind
   request for `v` under that session, keeps it as its **binding** for `v` in
@@ -422,15 +515,23 @@ sent in the handshake. For any other VNI `v`:
   on queue `q` with `receiver_index` `base + q`. A bind that repeats the binding
   it holds changes nothing. Any other bind is dropped and counted.
 
-Session choice: a node seals a transport packet for VNI `v` to a peer under the
-newest session with that peer that is confirmed at the node (3.6) and in which it
-holds a binding for `v`. For VNI 0 only, when no session with the peer is
-confirmed, it seals under the newest session it holds with the peer. A packet for
-which no session qualifies is held, up to 16 packets per VNI per peer and for at
-most 1 second, and sealed once a binding exists; a packet it cannot hold, and a
-packet held for 1 second, is dropped and counted. A node therefore goes on
-sealing a VNI's packets under the previous session after a rekey until the new
-session binds that VNI. An initiator seals a keepalive under a session as soon
+Session choice: a session `P` with a peer **qualifies** at a node until 5
+seconds have passed since the node first sealed a transport packet under a
+session with the same peer that it orders newer than `P` (3.6). A session that
+does not qualify is used for no message: no transport packet of any kind, binds
+and keepalives included, and no probe message (3.6). A node seals a transport
+packet for VNI `v` to a peer under the newest session with that peer that
+qualifies, is confirmed at the node (3.6), and in which it holds a binding for
+`v`. For VNI 0 only, when no
+session with the peer both qualifies and is confirmed, it seals under the newest
+session it holds with the peer, which always qualifies. A packet for which no
+session is chosen is held, up to 16 packets per VNI per peer and for at most 1
+second, and sealed once a binding exists; a packet it cannot hold, and a packet
+held for 1 second, is dropped and counted. A node therefore goes on sealing a
+VNI's packets under the previous session after a rekey until the new session
+binds that VNI, for at most 5 seconds, and the 10 seconds of 3.3 rule 2 cover
+the messages it seals there. After a crossed rekey (3.3) the two nodes may seal
+under different sessions. An initiator seals a keepalive under a session as soon
 as it makes it, so that the responder confirms the session at once (3.6).
 
 ### 3.5 Fragmentation
@@ -493,29 +594,20 @@ made it later: an initiator makes a session when it processes the response, a
 responder when it sends the response. Each node orders its own sessions; two
 nodes that rekey at once may order the same two sessions differently, and every
 rule of this section uses the order of the node applying it. A node seals every
-probe message to a peer, answers included, under the
-newest confirmed session whose `probe_send_key` it holds with that peer. Only
-when it holds no confirmed session with the peer does it seal under the newest
-session it holds with that peer.
+probe message to a peer, answers included, under the session it would seal a
+VNI 0 transport packet to that peer under (3.4): the newest session with the
+peer that qualifies and is confirmed at the node, or, when none does, the newest
+session it holds with the peer.
 
 At a rekey (3.3), the new session is therefore confirmed at the initiator when
 the response arrives, and the responder keeps sealing under the previous session
 until the initiator uses the new one. A lost or late response then leaves both
-nodes on the previous session, which both still hold. To keep that working:
-
-- A responder keeps the previous session's `probe_send_key` and probe send
-  counter until a newer session with the same peer is confirmed, and no longer
-  than the discard of the previous session's keys, 180 seconds after its
-  handshake (3.3).
-- A node keeps a session's `probe_recv_key` and probe window after a newer
-  session with the same peer exists, until 10 seconds after it first accepts a
-  probe message under a newer session from that peer, and no longer than that
-  same discard. The 10 seconds let a probe message sealed under the older
-  session that the underlay delivers late still be accepted. This overrides, for
-  the probe keys only, the 10 seconds that 3.3 gives the previous session's
-  receive key.
-- Once a newer session is confirmed at a node, the node seals no further probe
-  message under an older session with that peer.
+nodes on the previous session, which both still hold. A node keeps a session's
+probe keys, probe send counter and probe window exactly as long as the session,
+and discards them with it (3.3), so a probe message is accepted under a session
+for as long as a transport packet is. Once a newer session is confirmed at a
+node, the node seals no further probe message under an older session with that
+peer.
 
 Probe message (type 5), 88 bytes unless padded:
 
@@ -629,8 +721,9 @@ Diffie-Hellman operation or a synced write for it. The state is per session: two
 32-byte probe keys, an 8-byte send counter, and a window of 8 bytes plus 2,048
 bits, 336 bytes in all. A node holds it only for sessions it holds, so at most one
 per session within the limit of ARFC 0004 section 7 (default 4,096), plus the
-probe state of a previous session after each rekey, kept as the session choice
-rules above say and never past 180 seconds after that session's handshake (3.3).
+probe state of each earlier session it still holds with a peer, within the limit
+of 4 sessions per peer (3.4) and never past 180 seconds after that session's
+handshake (3.3).
 
 ### 3.7 Relay envelope (type 6)
 
@@ -665,8 +758,19 @@ passed without that state. With each session goes whether it is confirmed
 (3.6), so the successor seals probe messages under the same session the old
 process would have, and its blocks and bindings (3.4): the VNI each of its
 blocks is bound to, and the `base` of every binding the old process holds in
-it, so the successor reads every index as the old process did. With its sessions the old process passes its table of the
-highest initiation counter seen per initiator static key (3.2).
+it, so the successor reads every index as the old process did. With each
+session also goes what times and orders it (3.3, 3.4, 3.6): when the handshake
+that made it ended, for rule 1 of 3.3; its place in the node's order of its
+sessions with the peer; which of the other sessions handed over with the same
+peer follow it; when the old process first accepted a transport packet under a
+session that follows it, if it has, for rule 2 of 3.3; and when the old process
+first sealed a transport packet under a session with the same peer that it
+orders newer, if it has, for the 5 seconds of 3.4. Each of these times passes
+as an instant of a monotonic clock that both processes read, and the successor
+must run rules 1 and 2 of 3.3 and the 5 seconds of 3.4 from those instants, so
+that each ends at the same instant as it would have in the old process. With
+its sessions the old process passes its table of the highest initiation counter
+seen per initiator static key (3.2).
 
 Exclusive use: from the moment the old process passes its sessions, it seals no
 message under any key of a session it passed and accepts none, and it processes
@@ -697,9 +801,9 @@ ended, by exiting, crashing or being stopped, so no session is ever used by two
 processes at once. Before it seals or accepts any message after resuming, it
 must:
 
-1. Discard every consumed session: erase its keys, counters and windows as 3.3
-   erases discarded keys, free its blocks (3.4), and never seal or accept under
-   it again.
+1. Discard every consumed session, and every other session with the peer of a
+   consumed session, as 3.3 discards a session, and never seal or accept under
+   any of them again.
 2. For every initiator in the record, raise the highest counter it holds for that
    initiator (3.2) to the highest counter recorded for it, when that is higher.
 3. Reserve a new block of handshake counter values (3.2) and not use what was
@@ -726,7 +830,12 @@ stored, so it drops every initiation the successor accepted. The successor
 reserves handshake counter values from the same persistent counter (3.2), so the
 new block is above every value either process used. A successor that rekeyed or
 replaced a session marked it consumed first, so the old process does not keep a
-session the peer has moved off.
+session the peer has moved off. The successor may also have sealed under a
+consumed session newer than a session it did not consume. That starts the 5
+seconds of 3.4 for the older session, and, where the consumed session follows it
+at the peer, rule 2 of 3.3 there. The old process does not know those times, so
+step 1 discards every session with that peer rather than seal under one the
+peer may have discarded.
 
 ## 6. Failure behavior
 

@@ -2,8 +2,11 @@
 //!
 //! This release of `alloyd` starts the operating system runtime of `alloy-rt`
 //! ([`OsHost`]), reports the release it is and the data directory it uses
-//! (ARFC 0002 sections 3.3 and 3.12), reads the node's local join state from
-//! the host file there (ARFC 0017 section 4.2), and runs until it is told to
+//! (ARFC 0002 sections 3.3 and 3.12), checks that the data directory is an
+//! Alloy data directory before it reads anything in it, logging why not every
+//! 60 seconds when it is not (section 3.12), reads the node's local join
+//! state from the host file of an Alloy data directory (ARFC 0017 section
+//! 4.2), and runs until it is told to
 //! stop: by SIGTERM or SIGINT on Linux, and by the Windows service control
 //! manager on Windows. It then shuts the runtime down within
 //! [`SHUTDOWN_GRACE`], well inside the 30 seconds an uninstall waits for it
@@ -12,10 +15,14 @@
 //! [`run`] is the run loop. The binary calls it with the stop signals of its
 //! process ([`os_signals`]) or, on Windows, of the service control manager
 //! (the `service` module); tests call it with a [`Stop`] of their own.
+//!
+//! [`channel`] holds the sans-I/O parts of the node channel (ARFC 0002
+//! section 3.13), which the node's `init`, `join`, and heartbeats run on.
 
 #![forbid(unsafe_code)]
 
 mod args;
+pub mod channel;
 mod data_dir;
 mod log;
 #[cfg(windows)]
@@ -23,8 +30,10 @@ pub mod service;
 mod signals;
 mod stop;
 
-use std::future::Future;
+use std::future::{Future, poll_fn};
 use std::path::PathBuf;
+use std::pin::pin;
+use std::task::Poll;
 use std::time::Duration;
 
 use alloy_rt::{OsHost, Runtime, RuntimeConfig, register_os};
@@ -32,6 +41,7 @@ use alloy_seam::{Binding, BuildError, ConfigValue, Detail, ImplName, RegistryBui
 use tracing::{error, info, warn};
 
 pub use args::{Command, HELP, USAGE, UsageError, parse_args};
+use data_dir::StartCheck;
 pub use data_dir::{
     DataDirError, HOST_FILE, HostFileError, JoinState, LINUX_DATA_DIR, WINDOWS_DATA_DIR_NAME,
     default_data_dir, parse_host_file,
@@ -49,6 +59,10 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// termination request (ARFC 0017 clause 3.16 step 5); this leaves 10 of them
 /// for the process to exit.
 pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(20);
+
+/// How often `alloyd` logs again why its data directory is not an Alloy data
+/// directory, while it runs (ARFC 0002 section 3.12).
+pub const NOT_ALLOY_LOG_INTERVAL: Duration = Duration::from_secs(60);
 
 /// What [`run`] needs to know.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -143,20 +157,64 @@ where
         data_dir = %options.data_dir.display(),
         "alloyd started"
     );
-    report_join_state(&runtime, location).await;
+    let check = data_dir::check_at_start(runtime.disk_io().as_ref(), location).await;
+    match &check {
+        StartCheck::Alloy => report_join_state(&runtime, location).await,
+        StartCheck::Missing => log_not_initialized(),
+        StartCheck::NotAlloy(reason) => log_not_alloy(reason),
+    }
     let stop = stop_when()?;
-    let cause = stop.await;
+    let cause = match check {
+        StartCheck::NotAlloy(reason) => wait_logging(&runtime, stop, &reason).await,
+        StartCheck::Alloy | StartCheck::Missing => stop.await,
+    };
     info!(cause = %cause, "alloyd stopping");
     Ok(cause)
 }
 
-/// Logs the local join state that the host file holds.
+/// Waits for `stop`, logging `reason` again every [`NOT_ALLOY_LOG_INTERVAL`]
+/// (ARFC 0002 section 3.12).
+async fn wait_logging<W: Future<Output = StopCause>>(
+    runtime: &Runtime,
+    stop: W,
+    reason: &str,
+) -> StopCause {
+    let mut stop = pin!(stop);
+    loop {
+        let mut sleep = runtime.sleep(NOT_ALLOY_LOG_INTERVAL);
+        let woke = poll_fn(|cx| {
+            if let Poll::Ready(cause) = stop.as_mut().poll(cx) {
+                return Poll::Ready(Some(cause));
+            }
+            sleep.as_mut().poll(cx).map(|()| None)
+        })
+        .await;
+        match woke {
+            Some(cause) => return cause,
+            None => log_not_alloy(reason),
+        }
+    }
+}
+
+fn log_not_alloy(reason: &str) {
+    warn!(
+        reason = %reason,
+        "the data directory is not an Alloy data directory, so alloyd reads no secret and serves nothing"
+    );
+}
+
+fn log_not_initialized() {
+    info!(
+        "this node is not initialized: run alloy init to create a cluster on it, \
+         or alloy join with a join token to join a cluster"
+    );
+}
+
+/// Logs the local join state that the host file of an Alloy data directory
+/// holds.
 async fn report_join_state(runtime: &Runtime, location: &data_dir::Location) {
     match data_dir::read_join_state(runtime.disk_io().as_ref(), location).await {
-        Ok(JoinState::Unjoined) => info!(
-            "this node is not initialized: run alloy init to create a cluster on it, \
-             or alloy join with a join token to join a cluster"
-        ),
+        Ok(JoinState::Unjoined) => log_not_initialized(),
         Ok(state) => info!(join_state = %state, "local join state"),
         Err(e) => warn!(
             host_file = %location.host_file_display(),
@@ -294,6 +352,71 @@ mod tests {
             "{log}"
         );
         assert!(log.ends_with("INFO alloyd stopped\n"), "{log}");
+    }
+
+    /// Runs `body` on the `os` `disk-io` seam of a fresh host, rooted as
+    /// `alloyd` roots it for the data directory `dir`.
+    fn on_disk(
+        dir: &std::path::Path,
+        body: impl for<'a> FnOnce(
+            &'a dyn alloy_rt::DiskIo,
+            &'a data_dir::Location,
+        ) -> std::pin::Pin<Box<dyn Future<Output = ()> + 'a>>,
+    ) {
+        let location = data_dir::Location::of(dir).unwrap();
+        let host = OsHost::start(0).unwrap();
+        let runtime = os_runtime(&host, &location).unwrap();
+        host.block_on(body(runtime.disk_io().as_ref(), &location));
+        host.shutdown(SHUTDOWN_GRACE);
+    }
+
+    /// T-0091 review F1: a host file planted in a directory that a user
+    /// created gives no join state, and `alloyd` says why.
+    #[test]
+    fn a_host_file_outside_an_alloy_data_directory_is_not_read() {
+        let dir = std::env::temp_dir().join("alloyd-test-planted-host-file");
+        on_disk(&dir, |disk, location| {
+            Box::pin(async move {
+                match disk.create_dir(location.dir()).await {
+                    Ok(()) | Err(alloy_rt::DiskError::AlreadyExists) => {}
+                    Err(e) => panic!("{e}"),
+                }
+                let options = alloy_rt::OpenOptions {
+                    access: alloy_rt::Access::ReadWrite,
+                    create: alloy_rt::Create::IfMissing,
+                    direct: false,
+                    exclusive: false,
+                };
+                let file = disk.open(location.host_file(), options).await.unwrap();
+                let buf = alloy_rt::IoBuf::from_slice(b"alloy-host 1\njoin joined\n").unwrap();
+                let done = file
+                    .write_at(vec![alloy_rt::WriteOp { offset: 0, buf }])
+                    .await;
+                assert!(done.iter().all(|d| d.result.is_ok()));
+            })
+        });
+        let stop = Stop::new();
+        stop.trigger(StopCause::Terminate);
+        let options = RunOptions {
+            data_dir: dir.clone(),
+        };
+        let (cause, log) = logged(|| run(&options, || Ok(stop.wait())));
+        on_disk(&dir, |disk, location| {
+            Box::pin(async move {
+                disk.remove(location.host_file()).await.unwrap();
+                disk.remove(location.dir()).await.unwrap();
+            })
+        });
+        assert_eq!(cause.unwrap(), StopCause::Terminate);
+        assert!(!log.contains("join_state"), "{log}");
+        let lines: Vec<&str> = log.lines().collect();
+        assert!(
+            lines[1].starts_with(
+                "WARN the data directory is not an Alloy data directory, \
+                 so alloyd reads no secret and serves nothing reason="
+            ),
+            "{log}"
+        );
     }
 
     #[test]

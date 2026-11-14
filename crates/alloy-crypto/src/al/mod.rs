@@ -85,6 +85,15 @@
 //! erases the same values. The primitive crates are built with their
 //! `zeroize` features, so the states they hold are erased too.
 //!
+//! The limit: erasure covers a value where it finally rests, not the bitwise
+//! copies the compiler makes on the way there. A key built on the stack and
+//! then moved into its `Box`, as a [`SendKey`] or [`RecvKey`] is, and an
+//! [`EphemeralSecret`] passed by value into a handshake, may leave a copy in
+//! a stack slot that nothing erases until later calls overwrite it. Rust
+//! offers no way to erase such a copy, and the copies sit only in the stack
+//! of the thread that made the key. Bytes the caller passes to a
+//! `from_bytes` are the caller's to erase.
+//!
 //! The consumption is checked by the compiler. A handshake cannot be used
 //! after it produced session keys:
 //!

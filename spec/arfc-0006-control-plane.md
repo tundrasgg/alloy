@@ -3,7 +3,7 @@
 - Status: accepted
 - Depends on: 0001, 0002, 0004, 0005, 0007, 0008, 0017, 0018
 - Crates: alloy-state, alloy-ctl
-- Decisions: 0019, 0031, 0064
+- Decisions: 0019, 0031, 0064, 0065, 0068
 
 ## 1. Purpose
 
@@ -15,7 +15,7 @@ and drives the world toward the desired state.
 ### 2.1 Resources
 
 All state is **resources**. A resource has `kind`, `uid` (128-bit, random),
-`name`, `scope` (cluster, or org and project), `generation`, `spec` (what is
+`name`, `scope` (cluster, an org, or an org and a project), `generation`, `spec` (what is
 wanted), `status` (what is), `labels`, and `deleting`. Kinds and their schemas are
 Protocol Buffers messages (ARFC 0008).
 
@@ -23,7 +23,7 @@ Protocol Buffers messages (ARFC 0008).
 
 | Group | Holds | One per |
 |---|---|---|
-| global | Orgs, projects, principals, policies, regions, cluster settings, node records | cluster |
+| global | Orgs, projects, principals, policies, access keys, login codes, regions, cluster settings, node records, join tokens | cluster |
 | regional | Everything else | region |
 
 Each group is a Raft consensus group among the control nodes of its scope. A
@@ -94,7 +94,8 @@ it inherits from the data directory (ARFC 0002 section 3.12). Simulated hosts bi
 M11 rung 2 builds this much of this ARFC:
 
 - Sections 2.1, 2.2 with the one region `default`, 2.3 for heartbeats, 2.4 for
-  the node lifecycle controller of clause 3.16, 2.6, and 2.7.
+  the node lifecycle controller of clause 3.16, 2.6, 2.7, and 2.9, and in the
+  global group the identity kinds that ARFC 0007 section 3.11 names.
 - Clauses 3.1 without stale reads, 3.2 with one control node and one voter, 3.5,
   3.6 for nodes, 3.10 without backups, and 3.12 to 3.16.
 - Sections 4 and 5, section 6 for one voter, section 7 except the 6 GiB warning
@@ -106,6 +107,30 @@ learners, more than one voter, and membership changes (3.2, 3.3), forwarding
 there is no follower to forward from. Until views exist, a node takes its homes
 and the control nodes of clause 3.13 from the bootstrap view of its join (ARFC
 0002 section 3.13).
+
+### 2.9 Join tokens
+
+Join tokens (ARFC 0002 section 3.2) are resources of kind `JoinToken` in
+service `cluster`, with cluster scope, held by the global group. A token's
+`name` is `token-` followed by the 16 lower case hexadecimal digits of its
+`token_id`. Besides the fields of section 2.1, a `JoinToken` has these:
+
+| Field | Part | Value |
+|---|---|---|
+| `token_id` | spec | The token's 8-byte public lookup id |
+| `token_pub` | spec | The token key's public key, 32 bytes (ARFC 0002 section 3.2) |
+| `cluster_key_fp` | spec | The 16 bytes the token carries |
+| `expire_time` | spec | The wall time at which its time limit ends |
+| `use_limit` | spec | Its use limit, 0 for unlimited |
+| `preset_roles` | spec | Its preset roles, each one of `anchor`, `control`, `compute`, `storage`. Empty for none |
+| `preset_zone` | spec | Its preset zone. Empty for none |
+| `revoked` | spec | Whether it is revoked |
+| `uses` | status | The uses counted so far (ARFC 0002 section 3.3). Committed state |
+
+These are exactly what ARFC 0002 section 3.14 has the control plane keep of a
+token. A `JoinToken` holds no secret. Until a method serves the kind, its
+Protocol Buffers field numbers are the developer's choice (ARFC 0008 clause
+3.1).
 
 ## 3. Behavior
 
@@ -200,7 +225,13 @@ not expired by its own clock:
   started. After any other result, or no reply, the next starts 1 second after
   the failed one ended, the delay doubling with each further failure in a row
   up to 4 seconds. After `REFUSED` or `RELEASE_REFUSED` the next starts 60
-  seconds after the failed one ended.
+  seconds after the failed one ended. A node has one request outstanding at a
+  time and none ends another (ARFC 0002 section 3.13), so a heartbeat that
+  falls due while a `renew` or `leave` of the node is outstanding starts when
+  that request ends, before any other request. A `renew` or `leave` that falls
+  due while a heartbeat is outstanding waits for it, at most 4 seconds. The
+  outcome of a `renew` or `leave` is neither a success nor a failure of a
+  heartbeat.
 - Running release. While the node has to write its running release, every
   heartbeat carries `release`. A reply `OK` tells the node the write is applied,
   and `RELEASE_REFUSED` that it is refused, with the finalized release that ARFC
@@ -224,10 +255,13 @@ not expired by its own clock:
 With 4 control nodes or fewer, a node has a heartbeat accepted less than 30
 seconds after the one before, and so shows `active` (3.15), while some control
 node that it can reach answers within these limits and either is the leader or
-reaches it. After an accepted heartbeat, the next starts 5 seconds after it,
+reaches it, and no `renew` or `leave` of the node runs in between. After an
+accepted heartbeat, the next starts 5 seconds after it,
 and three that then fail in a row, each on another control node, put the start
 of the fourth 24 seconds after the accepted one's start and its acceptance
-within 28.
+within 28. A `renew` in between, at most one in any 60 seconds (ARFC 0002
+section 3.5), delays every later start by at most its time limit of 10
+seconds, so the acceptance then comes within 38 seconds.
 
 3.14 Accepting a heartbeat. A control node that is not the leader of the global
 group passes a heartbeat to the leader, as 3.4 passes writes, and replies with

@@ -33,13 +33,14 @@ or supersede it.
 
 | ADR | Decision |
 |---|---|
-| [0008](0008-deterministic-simulation-comes-first-and-all-i-o-goes-throug.md) | Deterministic simulation comes first and all I/O goes through alloy-rt |
+| [0008](0008-deterministic-simulation-comes-first-and-all-i-o-goes-throug.md) | Deterministic simulation comes first and all I/O goes through alloy-rt (superseded by 0067) |
 | [0009](0009-every-subsystem-boundary-is-a-runtime-swappable-seam-from-da.md) | Every subsystem boundary is a runtime-swappable seam from day zero |
 | [0036](0036-alloy-sim-is-written-in-house-on-the-alloy-rt-seams.md) | alloy-sim is written in-house on the alloy-rt seams |
 | [0035](0035-dependencies-must-be-permissively-licensed.md) | Dependencies must be permissively licensed |
 | [0054](0054-simulated-worlds-are-network-trees-driven-by-a-control-task.md) | Simulated worlds are network trees driven by a control task |
 | [0060](0060-libfuzzer-sys-alone-may-use-ncsa-in-fuzz-targets-only.md) | libfuzzer-sys alone may use NCSA, in fuzz targets only |
 | [0062](0062-the-windows-client-may-ship-the-signed-wintun-dll-unmodified.md) | The Windows client may ship the signed Wintun DLL unmodified |
+| [0067](0067-all-i-o-goes-through-alloy-rt-and-the-simulator-gates-work-a.md) | All I/O goes through alloy-rt, and the simulator gates work after M11 |
 
 ## Architecture
 
@@ -92,9 +93,10 @@ or supersede it.
 | ADR | Decision |
 |---|---|
 | [0026](0026-the-native-api-is-the-source-of-truth-ec2-and-s3-are-compati.md) | The native API is the source of truth, EC2 and S3 are compatibility surfaces |
-| [0042](0042-nodes-talk-to-the-control-plane-over-al-clients-to-the-api-o.md) | Nodes talk to the control plane over AL, clients to the API over gRPC |
+| [0042](0042-nodes-talk-to-the-control-plane-over-al-clients-to-the-api-o.md) | Nodes talk to the control plane over AL, clients to the API over gRPC (superseded by 0065, which keeps every bullet but the node channel; 0068 replaces its rung 2 reflection consequence) |
 | [0048](0048-the-api-ca-and-api-server-certificates-use-ecdsa-p-256.md) | The API CA and API server certificates use ECDSA P-256 |
 | [0053](0053-p-256-signs-through-rustcrypto-and-rustls-uses-aws-lc-rs.md) | P-256 signs through RustCrypto, and rustls uses aws-lc-rs |
+| [0065](0065-node-requests-are-keyed-by-mesh-key-and-act-only-on-the-requ.md) | Node requests are keyed by mesh key and act only on the requester's proof |
 
 ## Network
 
@@ -127,3 +129,4 @@ or supersede it.
 | [0040](0040-init-and-join-need-no-flags-and-a-one-use-login-code-carries.md) | Init and join need no flags, and a one-use login code carries the first credential |
 | [0056](0056-finalizing-an-upgrade-rewrites-stored-seam-bindings.md) | Finalizing an upgrade rewrites stored seam bindings |
 | [0059](0059-finalization-covers-new-groups-running-releases-and-re-encoding.md) | Finalization covers new groups, running releases, and re-encoding |
+| [0068](0068-m11-rung-2-builds-join-and-login-and-defers-pools-and-reflec.md) | M11 rung 2 builds join and login, and defers pools and reflection |

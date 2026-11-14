@@ -1,0 +1,28 @@
+[package]
+name = "alloy-state"
+version = "0.0.0"
+description = "Cluster state: the log-store and state-store seams, one openraft group, and resources (ARFC 0006)."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+alloy-crypto = { path = "../alloy-crypto" }
+alloy-proto = { path = "../alloy-proto" }
+alloy-rt = { path = "../alloy-rt" }
+alloy-seam = { path = "../alloy-seam" }
+futures-util.workspace = true
+openraft.workspace = true
+prost.workspace = true
+prost-types.workspace = true
+rand_core.workspace = true
+redb.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+alloy-sim = { path = "../alloy-sim" }
+
+[lints]
+workspace = true

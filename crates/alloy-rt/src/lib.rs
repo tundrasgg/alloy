@@ -37,8 +37,9 @@ mod task;
 mod time;
 
 pub use disk::{
-    Access, Create, DirEntry, DiskError, DiskFile, DiskIo, EntryKind, FileInfo, IoBuf,
-    MAX_DISK_BATCH, Metadata, OpenOptions, ReadDone, ReadOp, RtPath, SyncKind, WriteDone, WriteOp,
+    Access, Ace, Create, DirEntry, DiskError, DiskFile, DiskIo, EntryKind, FileInfo, IoBuf,
+    MAX_DISK_BATCH, Metadata, OpenOptions, Protection, ReadDone, ReadOp, RtPath, Security, Sid,
+    SyncKind, WriteDone, WriteOp,
 };
 pub use net::{
     Datagram, Interface, InterfaceAddr, InterfaceList, ListenOptions, Listener, MAX_NET_BATCH, Net,

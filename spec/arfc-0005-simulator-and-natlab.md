@@ -3,7 +3,7 @@
 - Status: accepted
 - Depends on: 0001
 - Crates: alloy-rt, alloy-sim, alloy-natlab
-- Decisions: 0008, 0036, 0039, 0045, 0054
+- Decisions: 0008, 0036, 0039, 0045, 0054, 0068
 
 ## 1. Purpose
 
@@ -19,8 +19,8 @@ before anything else.
 | Seam | Trait | Gives |
 |---|---|---|
 | `clock` | `Clock` | Monotonic now, wall now, sleep until, timers |
-| `net` | `Net` | Datagram and stream sockets, interface list, batch send and receive |
-| `disk-io` | `DiskIo` | Open, read at, write at, sync, truncate, list, direct block access |
+| `net` | `Net` | Datagram and stream sockets, interface list, batch send and receive, the user id of a Unix socket's peer |
+| `disk-io` | `DiskIo` | Open, read at, write at, sync, truncate, list, direct block access, owner and permissions, durable replace |
 | `rng` | `Rng` | Random bytes |
 | `spawn` | `Spawn` | Start a task, join it, cancel it |
 
@@ -330,6 +330,9 @@ pub trait Stream: Send + Sync + fmt::Debug {
     /// Writes from `bufs` in order. Returns the bytes written.
     fn write<'a>(&'a self, bufs: &'a [&'a [u8]]) -> BoxFuture<'a, Result<usize, NetError>>;
     fn shutdown_write(&self) -> BoxFuture<'_, Result<(), NetError>>;
+    /// The effective user id that the kernel recorded for the process at
+    /// the other end of a Unix stream socket (clause 3.1.9.2).
+    fn peer_uid(&self) -> Result<u32, NetError>;
 }
 
 pub trait Listener: Send + Sync + fmt::Debug {
@@ -414,7 +417,101 @@ pub trait DiskIo: Send + Sync + fmt::Debug + 'static {
     fn remove<'a>(&'a self, path: &'a RtPath) -> BoxFuture<'a, Result<(), DiskError>>;
     fn rename<'a>(&'a self, from: &'a RtPath, to: &'a RtPath)
         -> BoxFuture<'a, Result<(), DiskError>>;
+    /// `rename` of a file over another in one directory, durable when it
+    /// returns (clause 3.1.16).
+    fn replace<'a>(&'a self, from: &'a RtPath, to: &'a RtPath)
+        -> BoxFuture<'a, Result<(), DiskError>>;
     fn sync_dir<'a>(&'a self, dir: &'a RtPath) -> BoxFuture<'a, Result<(), DiskError>>;
+    /// Creates a file that does not exist, protected as `protection` says,
+    /// and returns it open with `Access::ReadWrite` (clause 3.1.15).
+    fn create_file<'a>(&'a self, path: &'a RtPath, protection: Protection)
+        -> BoxFuture<'a, Result<Box<dyn DiskFile>, DiskError>>;
+    /// `create_dir`, protected as `protection` says (clause 3.1.15).
+    fn create_dir_protected<'a>(&'a self, path: &'a RtPath, protection: Protection)
+        -> BoxFuture<'a, Result<(), DiskError>>;
+    /// The owner and permissions of the entry at `path`. A symbolic link or
+    /// reparse point at the last component is not followed (clause 3.1.15).
+    fn security<'a>(&'a self, path: &'a RtPath)
+        -> BoxFuture<'a, Result<Security, DiskError>>;
+    /// Sets the permission bits, `chmod`. `Unsupported` on Windows
+    /// (clause 3.1.15).
+    fn set_mode<'a>(&'a self, path: &'a RtPath, mode: u32)
+        -> BoxFuture<'a, Result<(), DiskError>>;
+    /// The path that names the absolute native path `native` in this
+    /// instance. `Unsupported` under `mem` (clause 3.1.15).
+    fn rt_path(&self, native: &str) -> Result<RtPath, DiskError>;
+}
+
+/// How `create_file` and `create_dir_protected` protect what they create
+/// (clause 3.1.15).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Protection {
+    /// As `open` and `create_dir` create.
+    Default,
+    /// Linux and macOS: mode `0o600` for a file, `0o700` for a directory.
+    /// Windows: owner `Administrators` and no list of its own, so its list
+    /// is what the parent passes on.
+    Private,
+    /// Linux and macOS: as `Private`. Windows: owner `Administrators`, and a
+    /// list protected from inheritance that grants full control to `SYSTEM`
+    /// and `Administrators` only.
+    PrivateRoot,
+}
+
+/// What `security` reports for one entry (clause 3.1.15).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Security {
+    /// Linux, macOS, and `mem`: what `lstat` reports.
+    Unix {
+        /// `Other` for a symbolic link.
+        kind: EntryKind,
+        symlink: bool,
+        /// The owner's user id.
+        uid: u32,
+        /// `st_mode & 0o7777`.
+        mode: u32,
+    },
+    /// Windows.
+    Windows {
+        /// `Dir` when the entry has the directory attribute, else `File`.
+        kind: EntryKind,
+        /// `FILE_ATTRIBUTE_REPARSE_POINT`: a symbolic link, junction, or
+        /// mounted folder.
+        reparse_point: bool,
+        owner: Sid,
+        /// `SE_DACL_PROTECTED`: the list does not inherit from the parent.
+        dacl_protected: bool,
+        /// The discretionary access control list in its order. `None` for a
+        /// null list, which grants everyone everything.
+        dacl: Option<Vec<Ace>>,
+    },
+}
+
+/// A Windows security identifier.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Sid {
+    /// String form, such as `S-1-5-18`.
+    pub sid: String,
+    /// `DOMAIN\name` as `LookupAccountSidW` gives it, for messages. Empty
+    /// when it gives none.
+    pub name: String,
+}
+
+/// One access control entry of a discretionary list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ace {
+    /// `false` for an access-denied type, `true` for every other type.
+    pub allow: bool,
+    pub trustee: Sid,
+    pub mask: u32,
+    /// `INHERIT_ONLY_ACE`: applies only to what the entry holds.
+    pub inherit_only: bool,
+    /// `INHERITED_ACE`: came from the parent.
+    pub inherited: bool,
+    /// `OBJECT_INHERIT_ACE`: files created in the entry inherit it.
+    pub object_inherit: bool,
+    /// `CONTAINER_INHERIT_ACE`: directories created in the entry inherit it.
+    pub container_inherit: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1393,6 +1490,32 @@ read.
 - After the peer's end of stream arrives, `read` returns every byte before it and
   then 0, and `write` still succeeds until a reset arrives.
 
+3.1.9.2 Peer credentials. `peer_uid` tells the local admin socket of ARFC 0007
+clause 3.10.2 who is calling. It reads and writes nothing on the stream and
+writes no trace record.
+
+- Under `os` on Linux, on a stream to or from a `Unix` address, it returns the
+  `uid` field of the `struct ucred` that `getsockopt` with `SOL_SOCKET` and
+  `SO_PEERCRED` gives for the stream's socket. That is the effective user id
+  the peer process had when it called `connect`, for a stream that `accept`
+  returned, or `listen`, for a stream that `connect` returned
+  (<https://man7.org/linux/man-pages/man7/unix.7.html>, `SO_PEERCRED`). It is
+  fixed when the connection is made: the peer changing its user id later, or
+  passing the descriptor to another process, does not change it. A failing
+  `getsockopt` returns `Os` with its error number.
+- On a TCP stream, under every implementation, it returns `InvalidInput`.
+- Under `os` on every other platform it returns `Unsupported`. None needs it: a
+  local admin exists only on a node that holds `control` (ARFC 0007 clause
+  3.10.3), every Windows node is a client node with no roles (ARFC 0002 section
+  3.3), so a Windows `alloyd` never serves a local admin socket, and macOS runs
+  no `alloyd` (ARFC 0019 section 2).
+- Under `mem` it returns 0 on both ends of every Unix stream, the user id that
+  owns every `mem` entry (clause 3.1.15). A scenario cannot make a peer of
+  another user, so a refusal of a user id other than 0 is tested under `os`.
+- The `os` suite on Linux opens a `Unix` listener, connects to it, and checks
+  that `peer_uid` on both ends equals the effective user id of the test
+  process, and that a TCP stream returns `InvalidInput`.
+
 3.1.10 Disk paths and the namespace.
 
 - `RtPath::new` accepts exactly the strings that start with `/`, are `/` alone or
@@ -1498,6 +1621,176 @@ multiple of 4,096. `zeroed` and `from_slice` return `InvalidInput` above
 - `register_os` registers `os` under the five kinds and fails as
   `RegistryBuilder::register` does. Each `os` factory accepts the configuration of
   section 4.2.
+
+3.1.15 Disk ownership and permissions. These operations give ARFC 0002 section
+3.12 and ARFC 0006 clause 5.2 what they need: creating an entry already
+protected, reading an entry's owner and permissions, setting a mode, and
+naming a native path.
+
+- `create_file(path, p)` is `open` with `Access::ReadWrite`, `Create::New`, and
+  `direct` and `exclusive` false, and `create_dir_protected(path, p)` is
+  `create_dir`, with the same results and errors, except for the protection
+  they give the new entry. With `Protection::Default` they are exactly those
+  calls. With `Private` or `PrivateRoot`, the operating system call that
+  creates the entry carries its protection, so the entry never exists with
+  more access than this clause gives it. A call that cannot give the
+  protection returns the error and leaves nothing at `path`.
+- Linux and macOS, under `os`. `Private` and `PrivateRoot` give a file
+  `st_mode & 0o7777` of exactly `0o600`, and a directory exactly `0o700`, when
+  the call returns, whatever bits the umask removes or the parent adds, such as
+  the set-group-ID bit that Linux `mkdir` copies from a set-group-ID parent
+  (<https://man7.org/linux/man-pages/man2/mkdir.2.html>, NOTES). `os` passes
+  that mode to the call that creates the entry, so the entry never has more
+  access bits than it, then opens the new entry (a directory with
+  `O_DIRECTORY` and `O_NOFOLLOW`), reads its mode through that descriptor, and
+  sets the mode through the same descriptor when it differs. When that fails,
+  `os` removes the entry and returns the error. The owner is the process's
+  effective user id. `Default` gives what `open` and `create_dir` give, mode
+  `0o666` or `0o777` less the umask. The conformance suite covers a parent
+  with the set-group-ID bit and a umask of `0o077` and of `0o000`.
+- Windows, under `os`. `Private` and `PrivateRoot` name the owner
+  `Administrators` (`S-1-5-32-544`) in the security descriptor passed to the
+  creating call. A process may name as owner a group its token holds with
+  `SE_GROUP_OWNER`
+  (<https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-token_groups>);
+  when its token does not, the call returns `PermissionDenied` and leaves
+  nothing at `path`. `alloy` and `alloyd` run from an elevated administrator
+  or as `LocalSystem` (ARFC 0002 section 3.8, ARFC 0017 clause 3.15).
+  - `Private`: the descriptor names the owner and holds no list
+    (`SE_DACL_PRESENT` clear). So the entry's list is exactly the entries the
+    parent passes on to an entry of its kind, in the parent's order, each
+    `inherited`, and `dacl_protected` is false. An entry with
+    `object_inherit` and `container_inherit` passes itself on again from a
+    `Private` directory, so every `Private` entry at any depth below a
+    `PrivateRoot` directory holds that directory's two entries. In a parent
+    that passes on nothing, the list is the creating token's default list;
+    ARFC 0002 section 3.12 creates no `Private` entry in such a parent. A
+    descriptor that holds an empty list must not be used: Windows stores it as
+    an empty, protected list, which grants no one any access. Source:
+    `CreateFileW` and `CreateDirectoryW` on NTFS, Windows 10.0.26300, with
+    descriptors from `ConvertStringSecurityDescriptorToSecurityDescriptorW`.
+    In a parent `D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;U)`, the
+    descriptor `O:U` gives a file `D:(A;ID;FA;;;SY)(A;ID;FA;;;BA)(A;ID;FA;;;U)`
+    and a directory the same entries with `OICIID`, a file in that directory
+    the same as the first, and `O:UD:` gives `D:P`. In a parent whose entries
+    pass on nothing, `O:U` gives the token's default list. The `os`
+    conformance suite repeats these cases on the Windows CI host.
+  - `PrivateRoot`: the descriptor sets `SE_DACL_PROTECTED` and holds exactly
+    two entries, in this order: allow `SYSTEM` (`S-1-5-18`) and allow
+    `Administrators`, each with mask `0x001F01FF` (`FILE_ALL_ACCESS`), neither
+    `inherited` nor `inherit_only`, and on a directory each with
+    `object_inherit` and `container_inherit`, on a file with neither. So
+    `icacls` lists only `SYSTEM` and `Administrators`, each with full control
+    and neither inherited, and a `Private` entry created in that directory
+    holds both, inherited.
+  - `Default` passes no descriptor, as `open` and `create_dir` do.
+- `security(path)` under `os` on Linux and macOS is `Security::Unix`, from
+  `lstat` of the path: for a symbolic link at the last component, `symlink`
+  true, `kind` `Other`, and the link's own `uid` and `mode`; otherwise
+  `symlink` false and `kind` as `metadata` gives it. Components above the last
+  are followed (clause 3.1.10).
+- `security(path)` under `os` on Windows is `Security::Windows`, read from the
+  entry opened without following a reparse point at the last component. An
+  entry's `allow` is false for the types `ACCESS_DENIED_ACE_TYPE`,
+  `ACCESS_DENIED_OBJECT_ACE_TYPE`, `ACCESS_DENIED_CALLBACK_ACE_TYPE`, and
+  `ACCESS_DENIED_CALLBACK_OBJECT_ACE_TYPE`, and true for every other type, so
+  a type the reader does not know counts as a grant. `mask` is as stored, with
+  no generic right mapped. The four flags are the `ACE_HEADER` flags of the
+  same names
+  (<https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-ace_header>).
+  When the process may not read the entry's security descriptor, `security`
+  returns `PermissionDenied`.
+- `security` returns `NotFound` for a missing entry, and `InvalidInput` for a
+  list of more than 4,096 entries.
+- `set_mode(path, mode)` on Linux and macOS sets the permission bits of the
+  entry at `path` to `mode`, following a symbolic link, and leaves its owner.
+  A `mode` above `0o7777` returns `InvalidInput`. On Windows it returns
+  `Unsupported`, since ARFC 0002 section 3.12 adopts no existing directory
+  there.
+- Durability of a mode. After a crash, a `set_mode` on a file is kept only
+  when a `sync(All)` on a handle of that file completed after `set_mode`
+  returned, and a `set_mode` on a directory only when a `sync_dir` of that
+  directory itself completed after it. Nothing else makes it durable: not
+  `sync(Data)`, and not a `sync_dir` of the parent. Under `os`, `sync_dir(d)`
+  is `fsync` of a descriptor of `d`, which flushes `d`'s own metadata, its
+  mode included (<https://man7.org/linux/man-pages/man2/fsync.2.html>), and
+  durability rests on the platform as clause 3.1.12 says. The mode that
+  `create_file` and `create_dir_protected` give is part of the create, which
+  clause 3.1.12 makes durable by a `sync_dir` of the parent.
+- `mem` follows the Linux rules above, with these values. Every entry is owned
+  by user id 0 and none is a symbolic link. The root and every directory that
+  `create_dir` creates have mode `0o755`, a file that `open` creates `0o644`,
+  and a block device the scenario attaches `0o660`. `mem` refuses no
+  operation because of a mode, as the operating system does not for user
+  id 0. An entry's mode at creation is kept or undone by a crash with the
+  create itself. A `set_mode` is kept or undone by a crash as clause 3.3.4
+  says.
+- `rt_path(native)` under `os` returns the `RtPath` that names the entry at
+  the native path `native`: `/` followed by the components of `native` that
+  come after the components of the configured `root` (section 4.2), joined by
+  `/`, or `/` alone when none come after. Components are separated by `/` on
+  Linux and macOS, and by `\` or `/` on Windows, and empty components are
+  skipped. On Linux and macOS, `native` must start with `/`, and components
+  are compared with `root`'s byte for byte. On Windows, `native` must start
+  with a drive letter, `:`, and a separator, the drive is its first
+  component, and components are compared with `root`'s ignoring ASCII case.
+  It returns `InvalidPath` when `native` breaks these rules, holds a component
+  `.` or `..`, does not begin with every component of `root`, or gives a
+  path that `RtPath::new` refuses. It reads nothing from the disk and writes
+  no trace record. Under `mem`, which has no native paths, it returns
+  `Unsupported`.
+- A library that creates and opens its own files outside `disk-io`, as the
+  `native` stores open theirs through `redb` (ADR 0064, ARFC 0006 clause 5.2),
+  gets the same protection this way. The caller uses the `disk-io` instance
+  of the `Runtime` it is built with, which for a `native` store is its build
+  context (ARFC 0006 section 5), and names the file `rt_path(dir)` joined
+  with the file's name, where `dir` is the native path it was given. It calls
+  `create_file` with `Protection::Private`. On `Ok` it completes `sync(All)`
+  on the handle and `sync_dir` of the file's directory, then drops the
+  handle. `AlreadyExists` means the file is there, and the caller goes on.
+  Any other error is the caller's failure, and the library is not called.
+  Only then does it let the library open the file. The library must open the
+  existing file without truncating, replacing, or recreating it. `redb` 4.5.0
+  `Database::create` qualifies: it opens with `create(true)` and
+  `truncate(false)`, and initializes a database in an empty file
+  (`redb-4.5.0/src/db.rs`, lines 2353 to 2361). The directory that holds the
+  file is itself created `Private` (for the `native` stores of `alloyd`, by
+  ARFC 0002 section 3.12), so on Linux and macOS a file that the library
+  creates by itself is out of reach of other users whatever its mode, since
+  its directory cannot be entered by them.
+
+3.1.16 Durable replace. `replace(from, to)` writes a whole file durably for
+ARFC 0002 section 3.14: the caller writes and syncs a new file, then replaces
+the old one with it in one call that returns once the replacement is durable.
+
+- It is `rename(from, to)`, with the same results and errors, except: `from`
+  and `to` must be entries of the same directory, else it returns
+  `InvalidInput` and changes nothing; `from` must be a regular file, and a
+  directory there returns `IsDirectory` and any other kind `InvalidInput`; a
+  directory at `to` returns `IsDirectory`. A file at `to` is replaced
+  atomically.
+- When it returns `Ok`, the rename is durable: after any later crash and
+  restart, `to` names the file that `from` named and `from` names nothing.
+  When it returns an error, a crash leaves either the state before the call or
+  the renamed one, and a rename is never half done (clause 3.1.12).
+- It makes no write to the file durable. A caller that needs the content
+  durable completes a `sync` on a handle of `from` first.
+- Under `os` on Linux and macOS it is `rename(2)` followed by `fsync` of a
+  descriptor of the directory, as `sync_dir` does, and returns once both
+  complete. When the rename succeeds and the `fsync` fails, it returns the
+  `fsync` error, and the rename may or may not be durable.
+- Under `os` on Windows it is one `MoveFileExW` call with the flags
+  `MOVEFILE_REPLACE_EXISTING` and `MOVEFILE_WRITE_THROUGH`, which returns only
+  once the file is moved on the disk
+  (<https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw>).
+- Under `mem` it is the rename and its durability as one operation that
+  completes at one instant. At a crash after it completed, whatever the crash
+  fault's `unsynced` mode (clause 3.3.4), the rename is in the durable state,
+  together with the create of the file at `from` when that create was not, and
+  no other operation is made durable by it: no write, and no other create,
+  remove, or rename in the directory. A crash before it completed leaves the
+  directory as if it had not been called.
+- Its trace record is `disk-op` with operation 17 and handle 0 (section 4.1).
 
 ### 3.2 Determinism
 
@@ -1750,13 +2043,18 @@ disjoint sets of existing hosts, and `id` must not be in force: otherwise
 - At a crash, the durable state of each file is every operation that completed
   before the call of the last completed `sync` on any handle of it, and of each
   directory every create, remove, and rename in it that completed before the call
-  of the last completed `sync_dir` of it (both parents for a rename). The rest is
-  unsynced, and `unsynced` sets its fate:
+  of the last completed `sync_dir` of it (both parents for a rename). A
+  `set_mode` is in the durable state when it completed before the call of the
+  last completed `sync(All)` on a handle of its file, or of the last completed
+  `sync_dir` of its directory itself (clause 3.1.15); `sync(Data)` and a
+  `sync_dir` of the parent do not count. A completed `replace` is in the
+  durable state as clause 3.1.16 says. The rest is unsynced, and `unsynced`
+  sets its fate:
   - `Lost`: every unsynced operation is undone.
   - `Seeded`: the unsynced operations are replayed on the durable state in
     completion order, each kept or dropped by a draw. An operation that depends
-    on a dropped one (a write to, or a rename of, a file whose create is
-    dropped) is dropped too. A rename is kept or dropped whole.
+    on a dropped one (a write to, a rename of, or a `set_mode` on an entry
+    whose create is dropped) is dropped too. A rename is kept or dropped whole.
   - `Torn`: as `Seeded`, but each unsynced write is split into its `block_size`
     units, each kept or dropped by its own draw.
   Block devices follow the same rules for their writes.
@@ -2001,7 +2299,8 @@ queue full, 5 no socket bound at the destination, 6 receive queue full, 7
 filtered by a NAT device, 8 no route.
 
 Disk operations: 1 open, 2 read, 3 write, 4 sync, 5 truncate, 6 metadata, 7 list,
-8 create-dir, 9 remove, 10 rename, 11 sync-dir, 12 info. `result` is 0 for success
+8 create-dir, 9 remove, 10 rename, 11 sync-dir, 12 info, 13 create-file, 14
+create-dir-protected, 15 security, 16 set-mode, 17 replace. `result` is 0 for success
 and otherwise the `DiskError` number of section 2.4.
 
 Which event writes each record, and its field values:
@@ -2056,12 +2355,16 @@ Which event writes each record, and its field values:
   for a dropped `read_at` or `write_at` future. A batch's records are written
   together, in batch order, when its last operation completes. A batch that fails
   whole (clause 3.1.11) writes one record per operation, each with the error.
-- `disk-op` `handle`: for `open`, the number of the new handle, or 0 when `open`
-  fails; for read, write, sync, truncate, and info, the handle's number; 0 for the
-  path operations metadata, list, create-dir, remove, rename, and sync-dir.
+- `disk-op` `handle`: for `open` and `create_file`, the number of the new
+  handle, or 0 when the call fails; for read, write, sync, truncate, and info,
+  the handle's number; 0 for the path operations metadata, list, create-dir,
+  remove, rename, sync-dir, create-dir-protected, security, set-mode, and
+  replace.
 - `disk-op` `offset` and `length`: for a read or a write, the operation's offset
   and `buf.len()`, which is the requested length also when a read returns fewer
-  bytes or fails; for truncate, 0 and the new length; 0 and 0 for every other
+  bytes or fails; for truncate, 0 and the new length; for create-file and
+  create-dir-protected, 0 and the protection, 0 `Default`, 1 `Private`, 2
+  `PrivateRoot`; for set-mode, 0 and the mode; 0 and 0 for every other
   operation.
 - `disk-op` `digest`: for a successful write, of the bytes written; for a
   successful read, of the bytes it returned, which may be fewer than `length` or
@@ -2156,6 +2459,8 @@ streamed to disk and capped at 1 GiB unless a scenario raises the cap.
 | `IoBuf` length | 67,108,864 bytes | `InvalidInput` |
 | Open disk handles per `disk-io` instance | 65,536 | `TooManyOpen` |
 | Directory entries per `list` | 1,048,576 | `TooManyEntries` |
+| Access control entries per `security` result | 4,096 | `InvalidInput` |
+| `set_mode` mode | `0o7777` | `InvalidInput` |
 | `RtPath` | 4,096 bytes, 255 per component | `InvalidPath` |
 | Live tasks per `spawn` instance | 1,048,576 | `SpawnError::Limit` |
 | `TaskName` | 64 bytes | `SpawnError::InvalidName` |

@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use alloy_rt::{
-    Access, BoxFuture, Create, DiskError, DiskFile, DiskIo, EntryKind, IoBuf, OpenOptions, ReadOp,
-    RtPath, Runtime, SyncKind, WriteOp,
+    Access, BoxFuture, Create, DiskError, DiskFile, DiskIo, EntryKind, IoBuf, OpenOptions,
+    Protection, ReadOp, RtPath, Runtime, SyncKind, WriteOp,
 };
 use alloy_seam::Detail;
 use alloy_sim::{
@@ -523,5 +523,93 @@ fn disk_ops_write_their_records_and_dead_handles_fail_with_io() {
         (Some(0), op_body(2, 1, (0, 0), 0, None), vec![]),
         (Some(0), op_body(2, 2, (0, 4), 0, Some(b"")), vec![]),
     ];
+    assert_eq!(records, expected);
+}
+
+#[test]
+fn protection_ops_write_their_records_and_keep_synced_modes() {
+    let first = phase(|rt, _| async move {
+        let disk = rt.disk_io().as_ref();
+        let key = disk
+            .create_file(&path("/k"), Protection::Private)
+            .await
+            .expect("create_file");
+        let again = disk.create_file(&path("/k"), Protection::Default).await;
+        disk.create_dir_protected(&path("/d"), Protection::PrivateRoot)
+            .await
+            .expect("create_dir_protected");
+        let dir_again = disk
+            .create_dir_protected(&path("/d"), Protection::Default)
+            .await;
+        let created = disk.security(&path("/k")).await;
+        let missing = disk.security(&path("/none")).await;
+        disk.set_mode(&path("/k"), 0o640).await.expect("set_mode");
+        let too_wide = disk.set_mode(&path("/k"), 0o10_000).await;
+        let native = disk.rt_path("/var/lib/alloy");
+        key.sync(SyncKind::All).await.expect("sync");
+        disk.sync_dir(&path("/")).await.expect("sync_dir");
+        vec![
+            format!("{:?}", again.map(|_| ())),
+            format!("{dir_again:?}"),
+            format!("{created:?}"),
+            format!("{missing:?}"),
+            format!("{too_wide:?}"),
+            format!("{native:?}"),
+        ]
+    });
+    let second = phase(|rt, _| async move {
+        let disk = rt.disk_io().as_ref();
+        vec![
+            format!("{:?}", disk.security(&path("/k")).await),
+            format!("{:?}", disk.security(&path("/d")).await),
+        ]
+    });
+    let ops = DiskOps::default();
+    let seen = ops.clone();
+    let observing = phase(move |rt, world| {
+        let (first, seen) = (Arc::clone(&first), seen.clone());
+        async move {
+            world.observe(Box::new(seen)).expect("room");
+            first(rt, world).await
+        }
+    });
+    let (outs, _) = starts(7, |_| {}, Unsynced::Lost, observing, Some(second));
+    let unix = |kind: EntryKind, mode: u32| {
+        format!("Ok(Unix {{ kind: {kind:?}, symlink: false, uid: 0, mode: {mode} }})")
+    };
+    assert_eq!(
+        outs[0],
+        [
+            "Err(AlreadyExists)".to_owned(),
+            "Err(AlreadyExists)".to_owned(),
+            unix(EntryKind::File, 0o600),
+            "Err(NotFound)".to_owned(),
+            r#"Err(InvalidInput(Detail("a mode is at most 0o7777")))"#.to_owned(),
+            "Err(Unsupported)".to_owned(),
+        ]
+    );
+    // The mode `sync(All)` covers and the create `sync_dir` covers survive.
+    assert_eq!(
+        outs[1],
+        [unix(EntryKind::File, 0o640), unix(EntryKind::Dir, 0o700)]
+    );
+    let records = ops.0.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    let expected: Vec<Seen> = [
+        op_body(1, 13, (0, 1), 0, None),
+        op_body(0, 13, (0, 0), 2, None),
+        op_body(0, 14, (0, 2), 0, None),
+        op_body(0, 14, (0, 0), 2, None),
+        op_body(0, 15, (0, 0), 0, None),
+        op_body(0, 15, (0, 0), 1, None),
+        op_body(0, 16, (0, 0o640), 0, None),
+        op_body(0, 16, (0, 0o10_000), 8, None),
+        op_body(1, 4, (0, 0), 0, None),
+        op_body(0, 11, (0, 0), 0, None),
+        op_body(0, 15, (0, 0), 0, None),
+        op_body(0, 15, (0, 0), 0, None),
+    ]
+    .into_iter()
+    .map(|body| (Some(0), body, vec![]))
+    .collect();
     assert_eq!(records, expected);
 }

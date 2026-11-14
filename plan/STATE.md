@@ -12,135 +12,34 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0114 |
-| Decision `D-` | D-0051 |
-| ADR | 0066 |
+| Task `T-` | T-0135 |
+| Decision `D-` | D-0064 |
+| ADR | 0069 |
 | Research `R-` | R-0009 |
-| Brief `PB-` | PB-0002 |
+| Brief `PB-` | PB-0003 |
 
-ADR 0036, ADR 0042, ADR 0046 to ADR 0049, ADR 0051 to ADR 0061, R-0001 to R-0008, and PB-0001 are allocated to the tasks below.
 
 ## Board
 
+Only tasks that are not done or cancelled. A finished task leaves the board in the commit that finishes it; its file stays in `plan/tasks/` and git keeps its history (D-0059).
+
 | Task | Type | Role | Status | Waits on | Title |
 |---|---|---|---|---|---|
-| T-0001 | build | developer | done | none | Bootstrap the Cargo workspace and the CI gate |
-| T-0002 | build | developer | done | none | Implement repository policy lints in check-repo |
-| T-0003 | research | researcher | done | none | Research deterministic simulation options in Rust |
-| T-0004 | research | researcher | done | none | Research Cloud Hypervisor against ARFC 0011 |
-| T-0005 | research | researcher | done | none | Research NAT behaviors and define lab presets |
-| T-0006 | spec | architect | done | none | Specify the alloy-rt and alloy-seam interfaces |
-| T-0007 | interface | developer | done | none | Define the alloy-rt and alloy-seam interface crates |
-| T-0008 | verify | verifier | done | none | Write conformance suites for the runtime seams |
-| T-0009 | build | developer | cancelled | none | Build the alloy-sim deterministic simulator |
 | T-0010 | verify | verifier | blocked | T-0077 | Write determinism and fault tests for the simulator |
-| T-0011 | build | developer | cancelled | none | Build the NAT models in alloy-natlab |
-| T-0012 | verify | verifier | cancelled | none | Write NAT model tests and the matrix file |
-| T-0013 | product | product | done | none | Write the brief for init, join, and first login |
-| T-0014 | research | researcher | done | none | Research crates for consensus, storage, and crypto |
-| T-0015 | spec | architect | done | none | Record repository hosting and CI runners in ADR 0037 |
-| T-0016 | build | developer | done | none | Run cargo xtask ci in GitHub Actions |
-| T-0017 | process | architect | done | none | Adopt Conventional Commits for commits on main |
-| T-0018 | build | developer | done | none | Check commit messages on main in xtask |
-| T-0019 | research | researcher | done | none | Research licenses inside the Cloud Hypervisor UEFI images |
-| T-0020 | spec | architect | done | none | Resolve the per-guest seccomp clause in ARFC 0011 |
-| T-0021 | spec | architect | done | none | Resolve NAT spec issues found by R-0003 |
-| T-0022 | spec | architect | done | none | Apply PB-0001 to ARFC 0002 and ARFC 0019 |
-| T-0023 | spec | architect | done | none | Specify user access keys and the local admin path |
-| T-0024 | spec | architect | cancelled | none | Fix the default mesh port and TCP 443 sharing |
-| T-0025 | process | architect | done | none | Let parallel tasks share append-only index files |
-| T-0026 | spec | architect | done | none | Make the ARFC 0003 handshake implementable on Noise libraries |
-| T-0027 | process | architect | done | none | Align core delegation and the lead role with shared index files |
-| T-0028 | spec | architect | done | none | Fix the Landlock clauses in ARFC 0011 section 2 |
-| T-0029 | spec | architect | done | none | Record the install script location in ADR 0044 |
-| T-0030 | spec | architect | done | none | Fix the DH rate limit and cookie lifetime in ARFC 0003 |
-| T-0031 | spec | architect | done | none | Fix the review findings on the T-0021 NAT spec changes |
-| T-0032 | process | architect | done | none | Define the inputs of a second round for every role |
-| T-0033 | build | developer | done | none | Never cancel CI runs on main |
-| T-0034 | research | researcher | done | none | Research browser support for Ed25519 TLS certificates |
-| T-0035 | research | researcher | done | none | Research generating the console's TypeScript API client |
-| T-0036 | build | developer | done | none | Keep check-repo green on main with plan files in flight |
-| T-0037 | build | developer | done | none | Run the check-repo path lock in CI |
-| T-0038 | spec | architect | done | none | Specify probe bytes and probe replay protection in ARFC 0003 |
-| T-0039 | spec | architect | cancelled | none | Bound probe sets and return path moves in ARFC 0004 |
-| T-0040 | spec | architect | done | none | Bound lineage state and close gaps in ARFC 0007 section 3.9 |
-| T-0041 | spec | architect | done | none | Use a browser-compatible key type for the API CA |
-| T-0042 | build | developer | done | none | Close the check-repo gaps found in review |
-| T-0043 | spec | architect | done | none | Settle the path class rule and bound return path moves |
-| T-0044 | spec | architect | done | none | Make access key recovery and deleted-key requests well defined |
 | T-0045 | spec | architect | queued | D-0028 | Close join, local admin, and API CA gaps in ARFC 0002 and 0019 |
-| T-0046 | build | developer | done | none | Enforce direct-io with Clippy on resolved paths |
-| T-0047 | spec | architect | cancelled | none | Protect the last cloud-admin and mark ADR 0041 superseded |
-| T-0048 | research | researcher | done | none | Research the rustls provider and a P-256 signing source |
-| T-0049 | process | architect | done | none | Fix the P-256 rules in the crypto engineering file |
-| T-0050 | spec | architect | done | none | Specify the alloy-sim world and scenario interface |
-| T-0051 | build | developer | cancelled | none | Run the commit message check in CI |
-| T-0052 | spec | architect | done | none | Make the local admin a full break-glass administrator |
-| T-0053 | build | developer | done | none | Parse commit trailers only from the last paragraph |
-| T-0054 | build | developer | done | none | Build alloy-wire for AL handshake and transport messages |
-| T-0055 | verify | verifier | done | none | Write conformance vectors for AL handshake and transport bytes |
-| T-0056 | process | architect | done | none | Let parallel tasks add crates to the shared workspace files |
-| T-0057 | spec | architect | done | none | Keep stored seam configuration readable across releases |
-| T-0058 | process | architect | done | none | Align core and lead rules with shared workspace files |
-| T-0059 | spec | architect | done | none | Discard sessions a failed handover's successor touched |
-| T-0060 | spec | architect | cancelled | none | Settle the open fragment and queue details in ARFC 0003 |
-| T-0061 | build | developer | done | none | Add fuzz targets for every alloy-wire decoder |
-| T-0062 | build | developer | done | none | Allow thiserror and proptest in the dependency allowlist |
-| T-0063 | spec | architect | done | none | Shrink the AL transport header to 25 bytes of overhead |
-| T-0064 | build | developer | done | none | Rework alloy-wire for the compact transport header |
-| T-0065 | spec | architect | done | none | State break-glass reach into tenant data accurately |
-| T-0066 | spec | architect | done | none | Close the open stored-binding and interface gaps in ARFC 0001 |
-| T-0067 | spec | architect | done | none | Settle timeout start and path joining in ARFC 0005 |
-| T-0068 | build | developer | done | none | Close the direct-io gaps and vet the Clippy fixture's crates |
-| T-0069 | build | developer | done | none | Property-test the seam config codec and tidy the crates |
-| T-0070 | spec | architect | done | none | State plainly that root on a control node reads all tenant data |
-| T-0071 | process | architect | done | none | Record the NCSA exception for libfuzzer-sys in ADR 0060 |
-| T-0072 | build | developer | cancelled | none | Run the commit message check in CI from the current cut |
-| T-0073 | process | architect | done | none | Adopt lean task sizing and review rules |
-| T-0074 | build | developer | done | none | Create alloy-crypto with BLAKE3 content hashing |
-| T-0075 | build | developer | done | none | Build the alloy-sim executor, runs, and trace |
-| T-0076 | build | developer | done | none | Build alloy-sim hosts, mem runtime, and faults |
 | T-0077 | build | developer | paused | D-0044 | Build alloy-sim networks, UDP, and the echo scenario |
 | T-0078 | build | developer | paused | D-0044 | Build alloy-sim mem streams |
-| T-0079 | build | developer | done | none | Run the commit check inside cargo xtask ci |
-| T-0080 | spec | architect | done | none | Replace path-move heuristics with verify-before-move |
-| T-0081 | build | developer | done | none | Update the alloy-wire fuzz targets to the compact layout |
-| T-0082 | build | developer | done | none | Make xtask output parsing independent of terminal color |
-| T-0083 | build | developer | done | none | Build the os implementations of the runtime seams |
 | T-0084 | verify | verifier | paused | D-0044 | Run the runtime conformance suites against os |
-| T-0085 | build | developer | done | none | Build the AL handshake and transport crypto in alloy-crypto |
-| T-0086 | verify | verifier | done | none | Write fixed IKpsk2 handshake vectors for ARFC 0003 |
-| T-0087 | product | product | done | none | Set the design standard for the CLI, console, and APIs |
-| T-0088 | spec | architect | done | none | Specify install, uninstall, and the Windows client node |
-| T-0089 | build | developer | done | none | Let binary crates set their exit code |
-| T-0090 | spec | architect | done | none | Keep path checks apart from probe-set challenges |
-| T-0091 | build | developer | done | none | Create the alloy and alloyd binaries |
-| T-0092 | build | developer | done | none | Build the release workflow and the install scripts |
-| T-0093 | verify | verifier | done | none | Write the M11 rung 1 install and uninstall check |
-| T-0094 | build | developer | done | none | Build the alloy-sim mem disk-io model |
-| T-0095 | build | developer | done | none | Fix the os direct read across end of file on Linux |
-| T-0096 | process | architect | done | none | Cut process overhead in reports, reads, and research |
-| T-0097 | verify | verifier | cancelled | none | Run the rung 1 driver's remote scripts over SSH stdin |
-| T-0098 | build | developer | done | none | Fix the Windows uninstall's empty path failure |
-| T-0099 | verify | verifier | done | none | Run the rung 1 driver's remote scripts over SSH stdin |
-| T-0100 | verify | verifier | done | none | Drop Proxmox status timestamps from the host snapshot |
-| T-0101 | verify | verifier | done | none | Drop live link counters from the host snapshot |
-| T-0102 | spec | architect | done | none | Specify rung 2 identity, join, API transport, and ports |
-| T-0103 | spec | architect | done | none | Specify the rung 2 control plane, heartbeats, and node list |
-| T-0104 | build | developer | active | none | Build alloy-link handshake and session state machines |
-| T-0105 | spec | architect | done | none | Close the rung 2 node channel and heartbeat findings |
-| T-0106 | build | developer | active | none | Build alloy-id keys, records, tokens, and stored data |
-| T-0107 | build | developer | active | none | Build alloy-state stores on openraft and redb |
-| T-0108 | verify | verifier | review | T-0107 | Write the log-store and state-store conformance suites |
-| T-0109 | build | developer | review | none | Build alloy-proto and the alloy-api server for nodes |
-| T-0110 | spec | architect | active | none | Bound what an anchor can do with forwarded join requests |
-| T-0111 | build | developer | queued | T-0104, T-0106, T-0107, T-0109 | Wire alloyd init, join, node channel, and heartbeats |
-| T-0112 | build | developer | queued | T-0109, T-0111 | Add alloy init, join, login, and node list to the CLI |
-| T-0113 | verify | verifier | active | none | Write the M11 rung 2 join and node list check |
-
-## First dispatch
-
-Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
+| T-0112 | build | developer | queued | T-0131, T-0132, T-0133 | Add alloy init, join, login, and node list to the CLI |
+| T-0113 | verify | verifier | review | T-0134 | Write the M11 rung 2 join and node list check |
+| T-0119 | spec | architect | queued | before rung 5 | Keep VNI binds alive across crossed rekeys, record the ADR |
+| T-0127 | build | developer | active | none | Let alloy-link accept unknown initiators and draw counters |
+| T-0129 | build | developer | active | none | Build peer_uid and the durable replace in alloy-rt |
+| T-0130 | build | developer | active | none | Add JoinToken, Organization, User, and login codes to alloy-state |
+| T-0131 | build | developer | queued | T-0129, T-0130 | Serve login codes and node list on the API and local admin |
+| T-0132 | build | developer | queued | T-0129, T-0130, T-0131 | Build alloyd init with its listeners |
+| T-0133 | build | developer | queued | T-0132, T-0127 | Build alloyd join, heartbeats, and the node lifecycle |
+| T-0134 | verify | verifier | active | none | Update the rung 2 check for the login flow |
 
 ## Still to cut for M0
 
@@ -208,6 +107,20 @@ Dispatched: T-0001, T-0003, T-0004, T-0005, T-0013, T-0014, T-0015, T-0017.
 - Spec: ARFC 0004 section 8 states the probe reflection bound from section 3.2 (T-0021 follow-up).
 
 ## M11 notes
+
+- From T-0111 review (fold into the `alloyd init` and `alloyd join` builds): F1, `decode` drops messages ARFC 0006 section 4.3 says must be answered or accepted; F2, `Requester::receive` takes a reply after its time limit; F3 to F5 (notes), O(N) expiry per request, a missing data directory logged once instead of every 60 s, and the rest in `plan/reports/T-0111.reviewer.1.md`.
+
+- From T-0111 (D-0061): `alloy_id::proto::JoinRequest` still has the old `secret` field and body layout; the `alloyd join` build fixes it with `crates/alloy-id/**` in its touches. T-0112 folds T-0091 F2 and F3.
+
+- D-0060: the next `alloy-api` task closes the evicted-connection hold (T-0118 re-review F1). The log-store kill check (ARFC 0006 section 5.5) needs a way to start a process from a test (T-0108).
+
+- Console (PB-0002): cut a spec task from its `spec-issue` entries (browser auth, wire form, serving and pinning, watches) and then the console build; off the rung path.
+
+- After rung 2: split ARFC 0005 into the runtime seams and the simulator and NAT lab, so runtime readers never load simulator text (pilot, spec size).
+
+- D-0056: before any deployment with an anchor that lacks `control`, close the replayed carried `join_request` (T-0110 re-review F1, with F2 and F3).
+- T-0106 review F3 and F4 (owner and mode at creation, Windows write-through rename) and T-0107 review F4 (`redb` files at `0600`) go into the build that implements T-0117's `disk-io` protection operations. T-0107 re-review F1 goes into T-0114.
+
 
 - `check-repo` validates each `reads` entry as a plain path, so the `path#section` form that T-0096 introduced turns main red. Until an `xtask` task strips the `#section` part before the check, task files list whole paths and name sections in Scope.
 
