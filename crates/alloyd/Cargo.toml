@@ -8,8 +8,11 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+alloy-crypto = { path = "../alloy-crypto" }
+alloy-id = { path = "../alloy-id" }
 alloy-rt = { path = "../alloy-rt" }
 alloy-seam = { path = "../alloy-seam" }
+prost.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["signal"] }
 tracing.workspace = true
