@@ -421,6 +421,7 @@ fn disk_io_config(root: &str) -> Result<ConfigValue, DaemonError> {
 }
 
 #[cfg(test)]
+#[path = "tests/node.rs"]
 mod node_tests;
 
 #[cfg(test)]
