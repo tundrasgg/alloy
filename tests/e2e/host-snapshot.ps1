@@ -18,6 +18,17 @@
 #   trigger-start services on its own, so it changes with no cause on the
 #   machine. The start type is compared, which is what an install changes, as
 #   `systemctl list-unit-files` is on Linux.
+# - Get-NetFirewallRule: every prompt rule is left out, whatever its action and
+#   whether it is enabled. Windows Firewall creates prompt rules from the
+#   user's answer when a program listens and no rule allows it, so they follow
+#   what the user answers for other programs. A rule is a prompt rule when its
+#   Name is `TCP Query User` or `UDP Query User`, a GUID in braces, then a path
+#   equal, ignoring case, to the Program that Get-NetFirewallApplicationFilter
+#   reports for it; that program is a full long path (a drive letter, `:\`,
+#   then names separated by `\`, none `.` or `..`, no `%`, `~`, or `/`); and it
+#   is not under `%ProgramFiles%\Alloy\`, with the 64-bit `%ProgramFiles%`,
+#   compared ignoring case. Every other rule stays, a prompt rule for a program
+#   of Alloy's included.
 
 [CmdletBinding()]
 param()
@@ -93,8 +104,84 @@ Write-Section 'Get-NetRoute' {
         'RouteMetric', 'Protocol', 'TypeOfRoute', 'Publish', 'Store')
 }
 
+# The install directory of clause 3.15 step 6, with a trailing `\`, as the
+# install script finds it: the folder Windows reports to a 64-bit process.
+function Get-AlloyInstallDirectory {
+    $pf = $env:ProgramW6432
+    if (-not $pf) { $pf = [Environment]::GetFolderPath('ProgramFiles') }
+    if (-not $pf) { throw 'cannot find the Program Files folder' }
+    return $pf.TrimEnd('\') + '\Alloy\'
+}
+
+# True when $Program is a full long path: a drive letter, `:\`, then names
+# separated by `\`, none of them `.` or `..`, and no character `%`, `~`, or `/`.
+function Test-FullLongPath {
+    param([string]$Program)
+    # [regex]::IsMatch with no options matches case-sensitively, so only the
+    # ASCII letters count as a drive letter: under -match, which ignores case,
+    # [A-Za-z] also takes U+212A KELVIN SIGN. \z is the very end of the string,
+    # where $ also matches before a final newline.
+    if (-not [regex]::IsMatch($Program, '\A[A-Za-z]:\\[^\\]+(?:\\[^\\]+)*\z')) {
+        return $false
+    }
+    if ($Program.IndexOfAny([char[]]@('%', '~', '/')) -ge 0) {
+        return $false
+    }
+    foreach ($name in $Program.Substring(3).Split('\')) {
+        if ($name -eq '.' -or $name -eq '..') {
+            return $false
+        }
+    }
+    return $true
+}
+
+# True when $Rule is a prompt rule of clause 3.17.6, which the snapshot leaves
+# out. Any rule in another form stays, so a doubtful rule is a difference.
+function Test-PromptRule {
+    param($Rule, $Programs, [string]$InstallDirectory)
+    # Case-sensitive, and the path is the whole rest of Name: Singleline lets .
+    # take a newline and \z is the very end, so a Name whose path differs from
+    # Program only by a final newline does not match.
+    $match = [regex]::Match([string]$Rule.Name,
+        '\A(?:TCP|UDP) Query User\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}(.+)\z',
+        [System.Text.RegularExpressions.RegexOptions]::Singleline)
+    if (-not $match.Success) {
+        return $false
+    }
+    $program = $null
+    if (-not $Programs.TryGetValue([string]$Rule.InstanceID, [ref]$program) -or $null -eq $program) {
+        return $false
+    }
+    if (-not [string]::Equals($match.Groups[1].Value, $program, [StringComparison]::OrdinalIgnoreCase)) {
+        return $false
+    }
+    if (-not (Test-FullLongPath $program)) {
+        return $false
+    }
+    return -not $program.StartsWith($InstallDirectory, [StringComparison]::OrdinalIgnoreCase)
+}
+
+# The Program of each rule's application filter, by the rule's InstanceID, read
+# in one call: asking for one rule's filter takes as long as asking for all.
+# An InstanceID with more than one filter maps to $null, so its rule stays.
+function Get-RulePrograms {
+    $programs = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
+    foreach ($filter in @(Get-NetFirewallApplicationFilter)) {
+        $id = [string]$filter.InstanceID
+        if ($programs.ContainsKey($id)) {
+            $programs[$id] = $null
+        } else {
+            $programs[$id] = [string]$filter.Program
+        }
+    }
+    return ,$programs
+}
+
 Write-Section 'Get-NetFirewallRule' {
-    Format-Objects @(Get-NetFirewallRule) @(
+    $installDirectory = Get-AlloyInstallDirectory
+    $programs = Get-RulePrograms
+    $rules = @(Get-NetFirewallRule | Where-Object { -not (Test-PromptRule $_ $programs $installDirectory) })
+    Format-Objects $rules @(
         'Name', 'DisplayName', 'Group', 'Enabled', 'Profile', 'Direction', 'Action',
         'EdgeTraversalPolicy', 'Owner', 'PolicyStoreSourceType')
 }

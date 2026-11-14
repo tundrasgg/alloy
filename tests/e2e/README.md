@@ -223,6 +223,7 @@ else the commands of the clause print is compared.
 | Every `timestamp` field, and the order of keys | The HA status files under `/etc/pve` (below) | A timestamp; Proxmox VE writes the keys in a different order each time |
 | Every property not named in `host-snapshot.ps1`, among them adapter link speeds and address and route lifetimes | Every Windows section | Measured rates and countdowns. The named properties are the ones an install or a configuration change sets |
 | Service `Status` (the start type is kept) | `Get-Service` | Windows starts and stops demand-start and trigger-start services on its own |
+| Every prompt rule of clause 3.17.6, whatever its action and whether it is enabled: `Name` is `TCP Query User` or `UDP Query User`, a GUID in braces, then a path equal, ignoring case, to the rule's `Program`, a full long path not under `%ProgramFiles%\Alloy\`. A prompt rule for a program of Alloy's is kept | `Get-NetFirewallRule` | Windows Firewall creates these rules from the user's answer when a program listens and no rule allows it, so they follow what the user answers for other programs |
 
 For `ip -d link show` the value is removed and the attribute's name is kept, so
 an attribute that appears or disappears still shows. Every other attribute
