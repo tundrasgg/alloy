@@ -501,12 +501,17 @@ struct Heard {
 /// The soft state of the leader's tenure (section 2.3): when it began
 /// serving, and the latest accepted heartbeat of each node, by `uid`, so a
 /// node created again under the same name starts with none. It holds at
-/// most one entry per node the group holds: entries of nodes no longer
-/// held are dropped at each read of every node.
+/// most one entry per node the group holds: removing a node drops its entry
+/// ([`Soft::forget`]), and a heartbeat that a removal overtook drops the
+/// entry it recorded once it finds its node gone (`Group::accept_heartbeat`).
+/// Each read of every node also drops the entries of nodes no longer held.
 #[derive(Debug, Default)]
 pub(crate) struct Soft {
     serving_since: Option<Instant>,
     heard: BTreeMap<Uid, Heard>,
+    /// How many nodes [`Soft::forget`] was called for, so that a heartbeat
+    /// can tell whether a removal ran while it was being accepted.
+    forgotten: u64,
 }
 
 impl Soft {
@@ -536,6 +541,29 @@ impl Soft {
     /// Drops the soft state of every node but those in `held`.
     pub(crate) fn retain(&mut self, held: &BTreeSet<Uid>) {
         self.heard.retain(|uid, _| held.contains(uid));
+    }
+
+    /// Drops the soft state of the removed node `uid`.
+    pub(crate) fn forget(&mut self, uid: Uid) {
+        self.heard.remove(&uid);
+        self.forgotten = self.forgotten.wrapping_add(1);
+    }
+
+    /// The count of [`Soft::forget`] calls: a change between two reads
+    /// means a node was removed in between.
+    pub(crate) fn forgotten(&self) -> u64 {
+        self.forgotten
+    }
+
+    /// Drops the soft state of `uid` without counting it as a removal.
+    pub(crate) fn drop_entry(&mut self, uid: Uid) {
+        self.heard.remove(&uid);
+    }
+
+    /// The `uid`s it holds a heartbeat for.
+    #[cfg(test)]
+    pub(crate) fn heard(&self) -> BTreeSet<Uid> {
+        self.heard.keys().copied().collect()
     }
 
     /// `node` as a read at `now` returns it.

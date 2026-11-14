@@ -7,14 +7,19 @@
 //! crash each file holds its last durable content or the content before that
 //! write, and writes reach the disk in the order they were made. Readers
 //! ignore `.new` files.
+//!
+//! [`DataDir::create`] creates the data directory with
+//! `Protection::PrivateRoot`, and every file is created with
+//! `Protection::Private` (section 3.12, ARFC 0005 clause 3.1.15), so no
+//! file ever exists with more access than the data directory's own.
 
 use std::sync::Arc;
 
 use alloy_crypto::Zeroizing;
 use alloy_crypto::aead::{self, NONCE_LEN, TAG_LEN};
 use alloy_rt::{
-    Access, Create, DiskError, DiskIo, EntryKind, IoBuf, OpenOptions, ReadOp, Rng, RngError,
-    RtPath, SyncKind, WriteOp,
+    Access, Create, DiskError, DiskIo, EntryKind, IoBuf, OpenOptions, Protection, ReadOp, Rng,
+    RngError, RtPath, SyncKind, WriteOp,
 };
 use prost::Message as _;
 
@@ -99,12 +104,54 @@ impl DataDir {
         Self { disk, dir }
     }
 
+    /// Creates the missing data directory at `dir` with
+    /// [`Protection::PrivateRoot`], so it has its owner and its mode or
+    /// access control list from the call that creates it, and makes the
+    /// create durable by syncing its parent, as `init` and `join` do
+    /// (section 3.12). The caller writes the host file in it next, before
+    /// anything else.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Disk`]: [`DiskError::AlreadyExists`] when something is
+    /// at `dir`, [`DiskError::InvalidPath`] for the root, and on Windows
+    /// [`DiskError::PermissionDenied`] for a process that may not name
+    /// `Administrators` as owner. Nothing is left at `dir` when the protection
+    /// cannot be given.
+    pub async fn create(disk: Arc<dyn DiskIo>, dir: RtPath) -> Result<Self, StoreError> {
+        let parent = dir.parent().ok_or(DiskError::InvalidPath)?;
+        disk.create_dir_protected(&dir, Protection::PrivateRoot)
+            .await?;
+        disk.sync_dir(&parent).await?;
+        Ok(Self { disk, dir })
+    }
+
+    /// Adopts an empty directory at `dir` on Linux, such as a mount point,
+    /// whose checks passed with [`InitAction::Adopt`](crate::InitAction):
+    /// sets its mode to `0700` and makes that durable by syncing the
+    /// directory itself, before anything is written in it (section 3.12).
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Disk`]; [`DiskError::Unsupported`] on Windows, which
+    /// adopts no directory.
+    pub async fn adopt(disk: Arc<dyn DiskIo>, dir: RtPath) -> Result<Self, StoreError> {
+        disk.set_mode(&dir, 0o700).await?;
+        disk.sync_dir(&dir).await?;
+        Ok(Self { disk, dir })
+    }
+
     /// Writes the file `name` whole, as the module documentation says.
     ///
-    /// Two rules of sections 3.12 and 3.14 are the `disk-io` seam's, which
-    /// does not yet meet them (T-0117): on Linux the file is created with
-    /// the umask's mode, not `0600`, and on Windows the rename is not
-    /// `MoveFileExW` with `MOVEFILE_WRITE_THROUGH`.
+    /// `<name>.new` is created with [`Protection::Private`], after a
+    /// `<name>.new` that an interrupted write left is removed, so the file
+    /// never has more access than section 3.12 allows: mode `0600` on Linux,
+    /// and on Windows owner `Administrators` and the list it inherits from
+    /// the data directory. The rename carries that protection to `<name>`.
+    ///
+    /// On Windows section 3.14 makes the rename durable by `MoveFileExW` with
+    /// `MOVEFILE_WRITE_THROUGH`, which the `disk-io` seam does not offer; the
+    /// rename is made durable by its `sync_dir`, as on Linux.
     ///
     /// # Errors
     ///
@@ -112,14 +159,11 @@ impl DataDir {
     pub async fn write(&self, name: &str, bytes: &[u8]) -> Result<(), StoreError> {
         let path = self.dir.join(name)?;
         let temp = self.dir.join(&format!("{name}.new"))?;
-        let options = OpenOptions {
-            access: Access::ReadWrite,
-            create: Create::IfMissing,
-            direct: false,
-            exclusive: false,
-        };
-        let file = self.disk.open(&temp, options).await?;
-        file.truncate(0).await?;
+        match self.disk.remove(&temp).await {
+            Ok(()) | Err(DiskError::NotFound) => {}
+            Err(e) => return Err(e.into()),
+        }
+        let file = self.disk.create_file(&temp, Protection::Private).await?;
         let buf = IoBuf::from_slice(bytes)?;
         for mut done in file.write_at(vec![WriteOp { offset: 0, buf }]).await {
             // The buffer may hold a key; erase it before it is freed.

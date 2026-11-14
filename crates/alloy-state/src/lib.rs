@@ -64,8 +64,8 @@ fn impl_name(name: &str) -> ImplName {
 /// What [`RegistryBuilder::register`] returns, for example
 /// [`RegistryError::Duplicate`] when `native` is registered already.
 pub fn register_native(builder: &mut RegistryBuilder) -> Result<(), RegistryError> {
-    let log: Factory<LogStoreSeam> = Arc::new(|_, config| native::log_factory(config));
-    let state: Factory<StateStoreSeam> = Arc::new(|_, config| native::state_factory(config));
+    let log: Factory<LogStoreSeam> = Arc::new(native::log_factory);
+    let state: Factory<StateStoreSeam> = Arc::new(native::state_factory);
     builder.register::<LogStoreSeam>(impl_name("native"), log)?;
     builder.register::<StateStoreSeam>(impl_name("native"), state)
 }

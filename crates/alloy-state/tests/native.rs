@@ -1,12 +1,20 @@
 //! The `native` stores on the `os` runtime, in a fresh directory under the
-//! system's temporary directory: durability across a reopen, exclusive use of
-//! a directory, exports that match `mem`'s, and a group that restarts on them.
+//! system's temporary directory: store files created private, durability
+//! across a reopen, exclusive use of a directory, exports that match `mem`'s,
+//! and a group that restarts on them.
+//!
+//! On Windows a store file is created with owner `Administrators`, which only
+//! an elevated process may name (ARFC 0005 clause 3.1.15). A test run by a
+//! process that is not elevated checks that the build then fails and leaves
+//! no file, and checks nothing more.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use alloy_rt::{OsHost, RtPath, Runtime, RuntimeConfig, register_os};
+use alloy_rt::{
+    DiskError, EntryKind, OsHost, Protection, RtPath, Runtime, RuntimeConfig, Security, register_os,
+};
 use alloy_seam::{
     Binding, BuildError, ConfigError, ConfigValue, ImplName, Registry, RegistryBuilder, SeamConfig,
 };
@@ -77,6 +85,44 @@ impl Fixture {
         self.registry
             .instantiate::<StateStoreSeam>(&self.runtime, &native, &self.config())
     }
+
+    /// The `disk-io` path of `file` in the fixture's directory.
+    fn path(&self, file: &str) -> RtPath {
+        RtPath::root().join(&self.name).unwrap().join(file).unwrap()
+    }
+
+    /// A fixture in which this process may create private files: always on
+    /// Linux and macOS, and on Windows when it may name `Administrators` as
+    /// owner. Otherwise it checks that each store fails to build and leaves
+    /// no file, and returns `None`.
+    fn private() -> Option<Fixture> {
+        let fixture = Fixture::new();
+        let disk = fixture.runtime.disk_io();
+        let probe = fixture.path("probe");
+        match fixture
+            .host
+            .block_on(disk.create_dir_protected(&probe, Protection::Private))
+        {
+            Ok(()) => {
+                fixture.host.block_on(disk.remove(&probe)).unwrap();
+                Some(fixture)
+            }
+            Err(DiskError::PermissionDenied) if cfg!(windows) => {
+                let log = fixture.log().map(drop);
+                let state = fixture.state().map(drop);
+                for (built, file) in [(log, "log.redb"), (state, "state.redb")] {
+                    assert!(
+                        matches!(&built, Err(BuildError::Failed(d)) if d.as_str().contains("permission denied")),
+                        "{file}: {built:?}"
+                    );
+                    let left = fixture.host.block_on(disk.metadata(&fixture.path(file)));
+                    assert_eq!(left.map(drop), Err(DiskError::NotFound), "{file}");
+                }
+                None
+            }
+            Err(other) => panic!("probe: {other:?}"),
+        }
+    }
 }
 
 impl Drop for Fixture {
@@ -119,9 +165,69 @@ fn a_missing_directory_is_invalid_config() {
     );
 }
 
+/// ARFC 0006 clause 5.2: `native` creates its file with mode `0600` on
+/// Linux, whatever the umask, and on Windows with owner `Administrators` and
+/// only the list it inherits from `dir`. A file that exists is opened as it
+/// is.
+#[test]
+fn store_files_are_created_private() {
+    let Some(fixture) = Fixture::private() else {
+        return;
+    };
+    let disk = fixture.runtime.disk_io();
+    let stores = (fixture.log().unwrap(), fixture.state().unwrap());
+    for file in ["log.redb", "state.redb"] {
+        let path = fixture.path(file);
+        match fixture.host.block_on(disk.security(&path)).unwrap() {
+            Security::Unix {
+                kind,
+                symlink,
+                mode,
+                ..
+            } => {
+                assert_eq!(
+                    (kind, symlink, mode),
+                    (EntryKind::File, false, 0o600),
+                    "{file}"
+                );
+            }
+            Security::Windows {
+                kind,
+                reparse_point,
+                owner,
+                dacl_protected,
+                dacl,
+            } => {
+                assert_eq!((kind, reparse_point), (EntryKind::File, false), "{file}");
+                assert_eq!(owner.sid, "S-1-5-32-544", "{file}");
+                assert!(!dacl_protected, "{file}");
+                let dacl = dacl.expect("a list");
+                assert!(
+                    !dacl.is_empty() && dacl.iter().all(|ace| ace.inherited),
+                    "{file}"
+                );
+            }
+        }
+    }
+    drop(stores);
+    if cfg!(unix) {
+        let path = fixture.path("log.redb");
+        fixture.host.block_on(disk.set_mode(&path, 0o640)).unwrap();
+        let log = fixture.log().unwrap();
+        let Security::Unix { mode, .. } = fixture.host.block_on(disk.security(&path)).unwrap()
+        else {
+            panic!("a Unix entry");
+        };
+        assert_eq!(mode, 0o640, "an existing file is opened as it is");
+        drop(log);
+    }
+}
+
 #[test]
 fn native_stores_keep_their_contents_across_a_reopen() {
-    let fixture = Fixture::new();
+    let Some(fixture) = Fixture::private() else {
+        return;
+    };
     let vote = Vote {
         term: 3,
         node: ME,
@@ -194,7 +300,9 @@ async fn export(store: &dyn StateStore) -> Vec<u8> {
 
 #[test]
 fn exports_install_across_implementations() {
-    let fixture = Fixture::new();
+    let Some(fixture) = Fixture::private() else {
+        return;
+    };
     let mem_config = MemStoreConfig {
         name: "cross".to_owned(),
         fail_after: 0,
@@ -249,7 +357,9 @@ fn exports_install_across_implementations() {
 
 #[test]
 fn a_group_on_native_stores_survives_a_restart() {
-    let fixture = Fixture::new();
+    let Some(fixture) = Fixture::private() else {
+        return;
+    };
     let created = fixture.host.block_on(async {
         let group = Group::open(
             &fixture.runtime,
@@ -262,7 +372,7 @@ fn a_group_on_native_stores_survives_a_restart() {
         group.initialize().await.unwrap();
         let labels = BTreeMap::from([("role".to_owned(), "control".to_owned())]);
         let created = group
-            .create("Node", Scope::Cluster, "first", b"spec".to_vec(), labels)
+            .create("Item", Scope::Cluster, "first", b"spec".to_vec(), labels)
             .await
             .unwrap();
         group.shutdown().await.unwrap();
@@ -277,7 +387,7 @@ fn a_group_on_native_stores_survives_a_restart() {
         )
         .await
         .unwrap();
-        let read = group.get("Node", &Scope::Cluster, "first").await.unwrap();
+        let read = group.get("Item", &Scope::Cluster, "first").await.unwrap();
         assert_eq!(read, Some(created));
         group.shutdown().await.unwrap();
     });

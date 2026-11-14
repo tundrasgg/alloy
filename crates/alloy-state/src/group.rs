@@ -28,7 +28,7 @@ use openraft::{
 };
 use tokio::sync::Mutex;
 
-use crate::node::Soft;
+use crate::node::{NODE_KIND, Node, Soft};
 use crate::resource::{
     Command, Dec, Enc, Resource, ResourceError, Scope, Target, Uid, check_command, check_size,
     command_key, decide, decode_command, decode_resource, encode_command, encode_resource,
@@ -357,6 +357,12 @@ impl StateAdapter {
                     ),
                     None => None,
                 };
+                // A remove answers with the resource it removed, so that the
+                // leader can drop that node's soft state.
+                let removed = match &command {
+                    Command::Remove { .. } => found.clone(),
+                    _ => None,
+                };
                 Ok(match decide(command, found) {
                     // `write` refused an oversized resource before proposing
                     // it; this check is deterministic, so every member agrees.
@@ -367,7 +373,7 @@ impl StateAdapter {
                         }
                         Err(error) => (Vec::new(), Err(error)),
                     },
-                    Ok((key, None)) => (vec![Op::Delete { key }], Ok(None)),
+                    Ok((key, None)) => (vec![Op::Delete { key }], Ok(removed)),
                     Err(error) => (Vec::new(), Err(error)),
                 })
             }
@@ -642,9 +648,21 @@ impl Group {
     }
 
     /// Proposes `command` once it passes every check that does not need the
-    /// state, so that no client input reaches a store call that fails.
+    /// state, so that no client input reaches a store call that fails. A
+    /// create or update of kind `Node` must hold a [`Node`] that passes the
+    /// checks of [`Group::create_node`], so the group never holds a `Node`
+    /// that does not decode as one (section 2.6).
     async fn write(&self, command: Command) -> Result<Option<Resource>, GroupError> {
         check_command(&command)?;
+        if let Command::Create(resource) | Command::Update(resource) = &command
+            && resource.kind == NODE_KIND
+        {
+            Node::from_resource(resource)
+                .ok_or(ResourceError::Invalid(
+                    "a Node resource must hold a Node spec and status in the cluster scope",
+                ))?
+                .check()?;
+        }
         let response = scoped(&self.scope, self.raft.client_write(command))
             .await
             .map_err(unavailable)?;
@@ -814,7 +832,8 @@ impl Group {
     }
 
     /// Removes a `deleting` resource when its generation is `generation`, the
-    /// last phase of clause 3.6.
+    /// last phase of clause 3.6. Removing a node drops the soft state held
+    /// for it (section 2.3).
     ///
     /// # Errors
     ///
@@ -831,9 +850,14 @@ impl Group {
             scope: scope.clone(),
             name: name.to_owned(),
         };
-        self.write(Command::Remove { target, generation })
-            .await
-            .map(drop)
+        let removed = self.write(Command::Remove { target, generation }).await?;
+        if let Some(node) = removed.filter(|r| r.kind == NODE_KIND) {
+            self.soft
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .forget(node.uid);
+        }
+        Ok(())
     }
 
     /// Takes a snapshot now and purges the log through it, as clause 3.12.4
