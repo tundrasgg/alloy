@@ -608,7 +608,7 @@ process, then check the local join state (sections 3.1 and 3.3), exiting 5 on
 |---|---|---|---|
 | host | Linux 6.1 or later on x86_64 or aarch64. For `join` of a client node, also Windows build 17763 or later on x86_64 or aarch64. On either, the unit `alloyd.service` or the service `alloyd` is installed | | Anything else, 1. A missing service is named, with the install command of ARFC 0017 clause 3.15 |
 | hardware virtualization | `/dev/kvm` opens for reading and writing | Otherwise | |
-| ports | The mesh UDP port (default 7476, ARFC 0004 section 3.6) is free, and, when the node's roles include `anchor` or `control`, so is its API TCP port (default 443, ARFC 0008 section 3.8) | | A port is in use, 5. The message names the process and pid holding it when they can be found |
+| ports | The mesh UDP port (default 7476, ARFC 0004 section 3.6) is free, and, when the node's roles include `anchor` or `control`, so is its API TCP port (default 443, ARFC 0008 section 3.8) | | A port is in use, 5. The message names each holder, with its process and pid when they can be found. The holders cannot be read, 1 |
 | data directory | The data directory does not exist, or is an Alloy data directory, or is a directory that section 3.12 lets `init` and `join` adopt | | Any other directory or file at its path, 5. The message names the path and its owner |
 | names | No object that ARFC 0017 clause 3.17 reserves by name exists, other than an Alloy data directory and the install's files and service. On Linux, every id of the guest id range is free (ARFC 0017 clause 3.17.7) | | One exists, or an id is held, 5. The message names the object, or the entry, line, or process that holds the id |
 | addresses | The cluster's infrastructure prefix (section 3.4) overlaps no route and no address, as ARFC 0017 clause 3.17.3 says | | An overlap, 5. The message names the route or the interface and address |
@@ -623,6 +623,31 @@ host check reads `platform` and `arch` from `facts`, and the service with
 `privileged` from `facts`, the hardware virtualization check is
 `virtualization` from `facts`, and free space is `free_space` of the data
 directory's native path.
+
+The ports check calls `port_holders` (ARFC 0005 clause 3.1.18.5) with `Udp`
+and the mesh port, and, when the roles include `anchor` or `control`, with
+`Tcp` and the API port. A port is free when the call returns no holder, and
+in use otherwise, whatever local address and family the holder has. The check
+opens, binds, and listens on no socket, on every platform, so it raises no
+Windows Firewall prompt and leaves no firewall rule (ARFC 0017 clause 3.17.4).
+For a port in use the message names every holder, one line each, in the
+order the call returns them, as
+`<protocol> <port> is in use on <local> by <process> (pid <pid>)`:
+`<protocol>` is `UDP` or `TCP`, `<local>` is the holder's `local`
+as Rust's `Display` for `SocketAddr` writes it, such as `0.0.0.0:7476` or
+`[::]:7476`, and `<process>` is the holder's `process` as the call returns
+it, which holds no control character, so a name a process gave itself
+cannot write an escape sequence or another line. A holder without a process
+name ends ` by pid <pid>`, and one without a pid ends after `<local>`. The
+lines for the UDP port come before those for the TCP port. An error from a
+call fails the check, and the message names the protocol, the port, and the
+error. The check's exit code is 5 when a port is in use, else 1.
+
+The check sees only ports that a socket holds. A port that no socket holds
+but that the machine still refuses to bind passes it, as a port in a range
+that Windows excludes from binding does (the ranges that `netsh interface
+ipv4 show excludedportrange` lists). The run then meets that port only when
+`alloyd` binds it, after the checks.
 
 For a client node the hardware virtualization check does not run, and free
 space is `ok` from 1 GiB, with no `warn`. `join` takes the `cluster_id` for the

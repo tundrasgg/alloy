@@ -23,7 +23,7 @@ before anything else.
 | `disk-io` | `DiskIo` | Open, read at, write at, sync, truncate, list, direct block access, owner and permissions, durable replace |
 | `rng` | `Rng` | Random bytes |
 | `spawn` | `Spawn` | Start a task, join it, cancel it |
-| `host` | `Host` | Facts about the machine, free space at a path, and enabling, starting, stopping, and disabling the service `alloyd` and no other |
+| `host` | `Host` | Facts about the machine, free space at a path, the holders of a local TCP or UDP port, and enabling, starting, stopping, and disabling the service `alloyd` and no other |
 
 A `Runtime` value bundles one instance of each of the first five, and the
 **runtime kinds** in this ARFC are those five. Every component takes a
@@ -1160,6 +1160,11 @@ pub struct MachineConfig {
     pub virtualization: bool,
     /// Whether the service `alloyd` is installed. Default true.
     pub service: bool,
+    /// Holders of ports that `port_holders` reports beside the host's own
+    /// sockets, as other programs on the machine would hold them. They
+    /// hold no port of the host's `net` (clause 3.1.18.5). At most 256.
+    /// Default empty.
+    pub ports: Vec<(PortProtocol, PortHolder)>,
 }
 
 impl Default for MachineConfig { /* the defaults above */ }
@@ -1307,8 +1312,8 @@ are not registered and have no `mem` or `os` implementation.
 ### 2.8 Host
 
 The `host` seam is the machine itself: the facts that ARFC 0002 section 3.8
-checks, free space at a path, and control of the one service Alloy owns,
-`alloyd` (ARFC 0017 clause 3.17). It is part of the interface of `alloy-rt`
+checks, free space at a path, the holders of a local port, and control of
+the one service Alloy owns, `alloyd` (ARFC 0017 clause 3.17). It is part of the interface of `alloy-rt`
 but not of `Runtime`: `alloy init` and `alloy join` build an instance with
 `Registry::instantiate::<HostSeam>`, context `()`, beside their `Runtime`.
 Clause 3.1.18 gives its behavior, and ADR 0071 records it.
@@ -1329,6 +1334,11 @@ pub trait Host: Send + Sync + fmt::Debug + 'static {
     /// absolute native path `path`, or its nearest existing ancestor
     /// (clause 3.1.18.2).
     fn free_space<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<u64, HostError>>;
+    /// The sockets that hold the local `protocol` port `port`, on every
+    /// address of both families. TCP counts listening sockets only. Opens
+    /// no socket (clause 3.1.18.5).
+    fn port_holders(&self, protocol: PortProtocol, port: u16)
+        -> BoxFuture<'_, Result<Vec<PortHolder>, HostError>>;
     /// The state of the service `alloyd` (clause 3.1.18.3).
     fn service_status(&self) -> BoxFuture<'_, Result<ServiceStatus, HostError>>;
     /// Applies `action` to the service `alloyd`. No method names any other
@@ -1383,6 +1393,27 @@ pub struct DiskFact {
     pub path: String,
     /// Bytes.
     pub size: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PortProtocol {
+    Tcp,
+    Udp,
+}
+
+/// One socket that holds a local port, and a process that holds the
+/// socket (clause 3.1.18.5). The derived order is the order of
+/// `port_holders`' result: by `local`, then `pid` with `None` first, then
+/// `process` with `None` first.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PortHolder {
+    /// The socket's local address. Its port is the port asked for.
+    pub local: SocketAddr,
+    /// The process that holds the socket, when it can be found.
+    pub pid: Option<u32>,
+    /// That process's name, 1 to 255 bytes with no control character,
+    /// when it can be read. Always `None` when `pid` is `None`.
+    pub process: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2203,9 +2234,9 @@ platform every method under `os` returns `Unsupported`.
   on Windows the service `alloyd` (ARFC 0017 clauses 3.15 and 3.17). No method
   takes a service name, and no implementation reads or changes any other unit
   or service, the units named `alloyd-*` included.
-- `facts`, `free_space`, and `service_status` change nothing on the machine and
-  need no privilege. Only `service` changes anything, and only what clause
-  3.1.18.4 allows.
+- `facts`, `free_space`, `port_holders`, and `service_status` change nothing
+  on the machine and need no privilege. Only `service` changes anything, and
+  only what clause 3.1.18.4 allows.
 - `service` calls on one instance run one at a time: a call starts its action
   only once every earlier `service` call on the instance has returned or been
   dropped. The other methods may run at any time.
@@ -2411,6 +2442,124 @@ property:
 - The conformance suite checks, under `os` with privilege, that across every
   action the unit file's bytes, or on Windows the configuration that
   `QueryServiceConfigW` returns other than `dwStartType`, are unchanged.
+
+3.1.18.5 Port holders. `port_holders(protocol, port)` returns the sockets on
+the machine whose local port is `port`, on every local address of IPv4 and
+IPv6, the unspecified and loopback addresses included. For `Tcp` a socket
+counts only while it listens: connected and closing TCP sockets are left out,
+the connections a listener has accepted included. For `Udp` every UDP socket counts, bound or
+connected. It reads the operating system's socket tables and opens, binds,
+and listens on no socket, so it raises no firewall prompt.
+
+- `port` 0 returns `InvalidInput`. Otherwise an empty result means no socket
+  held the port when the tables were read. A socket opened or closed during
+  the call may be in the result or not.
+- Each entry is one socket and one process that holds it. A socket held by
+  several processes, as after a `fork`, gives one entry per process. A socket
+  for which no process can be found gives one entry with `pid` `None`.
+  `process` is `None` when `pid` is `None` or the name cannot be read.
+  Otherwise it is the name the bullets below give, made into text in three
+  steps, in this order. First, on Linux each byte sequence that is not UTF-8,
+  and on Windows each unpaired UTF-16 surrogate, becomes U+FFFD, as Rust's
+  `String::from_utf8_lossy` and `String::from_utf16_lossy` do. Second, each
+  control character, one for which Rust's `char::is_control` is true (Unicode
+  general category Cc: U+0000 to U+001F and U+007F to U+009F), becomes
+  U+FFFD. Third, the text is cut to 255 bytes at a character boundary.
+  `process` is `None` when that leaves it empty. So `process` holds no control
+  character: printed to a terminal, it writes no escape or control sequence
+  and no line break, whatever name a process gave itself, as any process may
+  on Linux with `prctl(PR_SET_NAME)`
+  (<https://man7.org/linux/man-pages/man2/pr_set_name.2const.html>).
+- The result is sorted by the derived order of `PortHolder`, holds no two
+  equal entries, and holds at most the first 256.
+- Under `os`, a failing operating system call returns `Os` with its error
+  code, except where a bullet says what a failure gives.
+- `os` on Linux. The tables are `/proc/net/tcp` and `/proc/net/tcp6` for
+  `Tcp`, and `/proc/net/udp` and `/proc/net/udp6` for `Udp`. They list the
+  sockets of the calling process's network namespace. A table that does not
+  exist, as `tcp6` and `udp6` on a kernel without IPv6, gives no entries.
+  - Each line after the first holds fields separated by runs of spaces,
+    leading spaces ignored. The second is the local address, then `:`, then
+    the port as four hexadecimal digits. The fourth is the state in hexadecimal, and the tenth the
+    socket's inode in decimal. This is the layout that `get_tcp4_sock` in
+    `net/ipv4/tcp_ipv4.c`, `get_tcp6_sock` in `net/ipv6/tcp_ipv6.c`,
+    `udp4_format_sock` in `net/ipv4/udp.c`, and
+    `__ip6_dgram_sock_seq_show` in `net/ipv6/datagram.c` of the kernel
+    source write (<https://github.com/torvalds/linux>). A line with fewer
+    fields, or one whose fields do not parse, is skipped.
+  - An IPv4 address is 8 hexadecimal digits: a 32-bit value whose bytes, in
+    the machine's native byte order, are the address in network order. An
+    IPv6 address is 32 hexadecimal digits: four such 32-bit values in turn.
+    An IPv6 `local` has `flowinfo` and `scope_id` 0.
+  - For `Tcp` only lines whose state is `0A`, `TCP_LISTEN` in
+    `include/net/tcp_states.h`, count.
+  - The processes that hold a socket are found through its inode. Every
+    entry of `/proc` whose name is a decimal number is a process with that
+    pid. A link in its directory `fd` whose target, read with `readlink(2)`,
+    is `socket:[<inode>]` holds that socket
+    (<https://man7.org/linux/man-pages/man5/proc_pid_fd.5.html>). Its name
+    is the content of `/proc/<pid>/comm` without the trailing newline
+    (<https://man7.org/linux/man-pages/man5/proc_pid_comm.5.html>). A
+    directory, link, or file that cannot be read, such as another user's
+    without root or one of a process that has ended, is skipped. A line
+    whose inode is 0 is held by no process.
+- `os` on Windows. For `Tcp`, `GetExtendedTcpTable` with `bOrder` false,
+  `TableClass` `TCP_TABLE_OWNER_PID_LISTENER` (3), and `Reserved` 0
+  (<https://learn.microsoft.com/en-us/windows/win32/api/iphlpapi/nf-iphlpapi-getextendedtcptable>).
+  For `Udp`, `GetExtendedUdpTable` with `bOrder` false, `TableClass`
+  `UDP_TABLE_OWNER_PID` (1), and `Reserved` 0
+  (<https://learn.microsoft.com/en-us/windows/win32/api/iphlpapi/nf-iphlpapi-getextendedudptable>).
+  Each is called with `ulAf` `AF_INET` (2), then `AF_INET6` (23).
+  - The first call of a table passes a size of 0. While a call returns
+    `ERROR_INSUFFICIENT_BUFFER` (122), the next call passes a buffer of the
+    size it returned, at most 4 calls after the first, after which the
+    method returns `Os` with code 122. Any other return but `NO_ERROR` (0)
+    gives `Os` with that code.
+  - The IPv4 rows are `MIB_TCPROW_OWNER_PID` and `MIB_UDPROW_OWNER_PID`:
+    `dwLocalAddr` holds the address as an `in_addr` does, and the low 16
+    bits of `dwLocalPort` hold the port in network byte order
+    (<https://learn.microsoft.com/en-us/windows/win32/api/tcpmib/ns-tcpmib-mib_tcprow_owner_pid>).
+    The IPv6 rows are `MIB_TCP6ROW_OWNER_PID` and `MIB_UDP6ROW_OWNER_PID`:
+    `ucLocalAddr` holds the 16 bytes of the address, `dwLocalScopeId` is the
+    `scope_id` of `local`, `flowinfo` is 0, and `dwLocalPort` is as above.
+    A TCP row counts only when `dwState` is `MIB_TCP_STATE_LISTEN` (2).
+  - `pid` is `dwOwningPid`. Its name is the part after the last `\` of the
+    path that `QueryFullProcessImageNameW` with flags 0 returns, into a
+    buffer of 32,768 UTF-16 units, for a handle from `OpenProcess` with
+    `PROCESS_QUERY_LIMITED_INFORMATION` (`0x1000`) and no inheritance
+    (<https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamew>).
+    The handle is closed at once. When either call fails, as `OpenProcess`
+    does for the System Idle Process and the System process
+    (<https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocess>),
+    `process` is `None`.
+- `mem`. The sockets are those of the host in its current start, whichever
+  `net` instance made them: each `UdpSocket` for `Udp`, and each `Listener`
+  on a `StreamAddr::Ip` for `Tcp`, while it is not dropped, with `pid` and
+  `process` `None`, since a `mem` host has no processes. While the host is
+  crashed it has none. Then the entries of `MachineConfig::ports` whose
+  protocol is `protocol` and whose `local` port is `port`, which hold no
+  port: `bind_udp` and `listen` on the same address do not fail for them.
+  Such an entry's `process` is given after the second and third steps above.
+  `add_host` returns `Invalid` for a `ports` entry whose `local` port is 0,
+  whose `process` is outside 1 to 255 bytes or is `Some` with `pid` `None`,
+  and for more than 256 entries. `port_holders` writes no trace record.
+- The conformance suite runs its `os` checks of `port_holders` in one test,
+  in a test binary that holds no other test, so that no other socket of the
+  test's pid opens or closes while they run. Binding and listening only on
+  `127.0.0.1` and `::1` with port 0, never on an unspecified address, it
+  checks that: a UDP socket and a TCP listener of the test process each give
+  an entry with their `local_addr`, the test's own pid, and as `process`, on
+  Linux `/proc/self/comm` without its newline, and on Windows the file name
+  of the test's executable; a stream connected to that listener gives no
+  entry with the stream's `local_addr` and the test's pid; once the listener
+  is dropped while the stream it accepted stays open, the listener's port
+  gives no entry with the listener's `local_addr` and the test's pid; once
+  the UDP socket is dropped, its port gives no entry with its `local_addr`
+  and the test's pid; and port 0 gives `InvalidInput`. Under `mem` it checks
+  the exact result with sockets and `ports` entries together, its order, a
+  crash, the `add_host` refusals, and that a `ports` entry whose `process`
+  holds ESC, CR, LF, and U+009B is given with each of them replaced by
+  U+FFFD.
 
 ### 3.2 Determinism
 
@@ -3065,8 +3214,8 @@ test that meets `PermissionDenied` fails, and so does a run that skips clause
 lacks the privilege checks the `PermissionDenied` refusal and says in its
 output that it did so.
 
-In the `host` suite, `facts`, `free_space`, and `service_status` need no
-privilege and run on every host. The `os` tests of `service` need root, or on
+In the `host` suite, `facts`, `free_space`, `port_holders`, and
+`service_status` need no privilege and run on every host. The `os` tests of `service` need root, or on
 Windows elevation, and a unit or service `alloyd` that nothing else uses, so
 they never act on an installed Alloy. On the CI hosts, where `GITHUB_ACTIONS`
 is `true`, `cargo xtask ci` provides both, with the privilege above. Before
@@ -3155,6 +3304,10 @@ streamed to disk and capped at 1 GiB unless a scenario raises the cap.
 | Linux `release` in `Platform` | 64 bytes | Cut at a character boundary |
 | `Arch::Other` text | 32 bytes | Cut |
 | `free_space` path under `os` | 4,096 bytes | `HostError::InvalidInput` |
+| Entries in a `port_holders` result | 256 | The first 256 in the result's order are kept, the rest left out |
+| `process` in `PortHolder` | 255 bytes | Cut at a character boundary |
+| `GetExtendedTcpTable` or `GetExtendedUdpTable` calls with too small a buffer, per table | 4 after the first | `HostError::Os` with code 122 |
+| `MachineConfig::ports` entries | 256 | `add_host` returns `Invalid` |
 | `Instant` | 2^63 - 1 ns | Saturates or `None` (section 2.1) |
 | `mem` clock rate offset | -500,000 to 500,000 parts per million | The world rejects the fault when it is injected |
 | Trace record body | 65,535 bytes | `text` fields are cut to 1,024 bytes |
@@ -3196,6 +3349,11 @@ The `host` seam can change one thing on a machine: whether the service
 `alloyd` is enabled and running (clause 3.1.18.4). It takes no service name,
 runs `systemctl` only from a fixed path with a fixed environment, and is kept
 out of `Runtime`, so only `init` and `join` hold it (ADR 0071).
+`port_holders` reports only what the calling account may already read from
+the operating system's tables, changes nothing, and opens no socket. The
+process names it returns hold no control character, so a local process that
+holds a port cannot write a terminal control sequence through its name into
+the output of `init` or `join` (clause 3.1.18.5).
 
 ## 9. Open questions
 
