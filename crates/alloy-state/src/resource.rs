@@ -10,6 +10,8 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use crate::identity::IdentityCommand;
+
 /// The largest resource, in bytes of this crate's encoding (ARFC 0006
 /// section 7). A larger one is refused with [`ResourceError::Invalid`] before
 /// it is proposed.
@@ -24,6 +26,8 @@ pub struct Uid(pub [u8; 16]);
 pub enum Scope {
     /// The whole cluster.
     Cluster,
+    /// One org, by name.
+    Org(String),
     /// One project of one org.
     Project {
         /// The org's name.
@@ -119,6 +123,9 @@ pub(crate) enum Command {
     Delete { target: Target, generation: u64 },
     /// Removes a resource that is `deleting` when `generation` is current.
     Remove { target: Target, generation: u64 },
+    /// A write of identity state decided against several resources at once
+    /// (ARFC 0002 section 3.7).
+    Identity(IdentityCommand),
 }
 
 impl fmt::Display for Command {
@@ -128,6 +135,12 @@ impl fmt::Display for Command {
             Command::Update(r) => ("update", &r.kind, &r.name),
             Command::Delete { target, .. } => ("delete", &target.kind, &target.name),
             Command::Remove { target, .. } => ("remove", &target.kind, &target.name),
+            Command::Identity(IdentityCommand::Issue(issue)) => {
+                ("issue", &issue.code.kind, &issue.code.name)
+            }
+            Command::Identity(IdentityCommand::Exchange(exchange)) => {
+                ("exchange", &exchange.code.kind, &exchange.code.name)
+            }
         };
         write!(f, "{verb} {kind}/{name}")
     }
@@ -149,11 +162,17 @@ pub(crate) fn kind_prefix(kind: &str) -> Result<Vec<u8>, ResourceError> {
     Ok(key)
 }
 
-/// The key of one resource.
-pub(crate) fn key(target: &Target) -> Result<Vec<u8>, ResourceError> {
-    let mut key = kind_prefix(&target.kind)?;
-    match &target.scope {
+/// The key prefix of every resource of `kind` in `scope`: the key of each
+/// such resource is this followed by its name.
+pub(crate) fn scope_prefix(kind: &str, scope: &Scope) -> Result<Vec<u8>, ResourceError> {
+    let mut key = kind_prefix(kind)?;
+    match scope {
         Scope::Cluster => key.push(b'c'),
+        Scope::Org(org) => {
+            check_part(org, "an org must be 1 to 253 bytes with no zero byte")?;
+            key.push(b'o');
+            key.extend_from_slice(org.as_bytes());
+        }
         Scope::Project { org, project } => {
             check_part(org, "an org must be 1 to 253 bytes with no zero byte")?;
             check_part(
@@ -167,6 +186,12 @@ pub(crate) fn key(target: &Target) -> Result<Vec<u8>, ResourceError> {
         }
     }
     key.push(0);
+    Ok(key)
+}
+
+/// The key of one resource.
+pub(crate) fn key(target: &Target) -> Result<Vec<u8>, ResourceError> {
+    let mut key = scope_prefix(&target.kind, &target.scope)?;
     check_part(
         &target.name,
         "a name must be 1 to 253 bytes with no zero byte",
@@ -207,18 +232,19 @@ impl Enc {
         self
     }
 
-    fn target(&mut self, target: &Target) -> &mut Enc {
+    pub(crate) fn target(&mut self, target: &Target) -> &mut Enc {
         self.bytes(target.kind.as_bytes());
         match &target.scope {
             Scope::Cluster => self.u8(0),
             Scope::Project { org, project } => {
                 self.u8(1).bytes(org.as_bytes()).bytes(project.as_bytes())
             }
+            Scope::Org(org) => self.u8(2).bytes(org.as_bytes()),
         };
         self.bytes(target.name.as_bytes())
     }
 
-    fn resource(&mut self, r: &Resource) -> &mut Enc {
+    pub(crate) fn resource(&mut self, r: &Resource) -> &mut Enc {
         self.target(&r.target()).bytes(&r.uid.0).u64(r.generation);
         self.bytes(&r.spec)
             .bytes(&r.status)
@@ -253,11 +279,11 @@ impl<'a> Dec<'a> {
         self.take(len)
     }
 
-    fn string(&mut self) -> Option<String> {
+    pub(crate) fn string(&mut self) -> Option<String> {
         String::from_utf8(self.bytes()?.to_vec()).ok()
     }
 
-    fn target(&mut self) -> Option<Target> {
+    pub(crate) fn target(&mut self) -> Option<Target> {
         let kind = self.string()?;
         let scope = match self.u8()? {
             0 => Scope::Cluster,
@@ -265,13 +291,14 @@ impl<'a> Dec<'a> {
                 org: self.string()?,
                 project: self.string()?,
             },
+            2 => Scope::Org(self.string()?),
             _ => return None,
         };
         let name = self.string()?;
         Some(Target { kind, scope, name })
     }
 
-    fn resource(&mut self) -> Option<Resource> {
+    pub(crate) fn resource(&mut self) -> Option<Resource> {
         let Target { kind, scope, name } = self.target()?;
         let uid = Uid(self.bytes()?.try_into().ok()?);
         let generation = self.u64()?;
@@ -324,6 +351,10 @@ pub(crate) fn encode_command(command: &Command) -> Vec<u8> {
         Command::Update(r) => enc.u8(1).resource(r),
         Command::Delete { target, generation } => enc.u8(2).target(target).u64(*generation),
         Command::Remove { target, generation } => enc.u8(3).target(target).u64(*generation),
+        Command::Identity(command) => {
+            command.encode(enc.u8(4));
+            &mut enc
+        }
     };
     enc.0
 }
@@ -341,6 +372,7 @@ pub(crate) fn decode_command(bytes: &[u8]) -> Option<Command> {
             target: dec.target()?,
             generation: dec.u64()?,
         },
+        4 => Command::Identity(IdentityCommand::decode(&mut dec)?),
         _ => return None,
     };
     dec.end()?;
@@ -363,9 +395,14 @@ fn current(found: Option<Resource>, generation: u64) -> Result<Resource, Resourc
 }
 
 /// Decides a command against the resource stored under its key, `found`.
-/// Deterministic: every member decides the same from the same state.
+/// Deterministic: every member decides the same from the same state. An
+/// identity command reads more than one key and is decided by
+/// [`crate::identity`]; here it changes nothing.
 pub(crate) fn decide(command: Command, found: Option<Resource>) -> Outcome {
     match command {
+        Command::Identity(_) => Err(ResourceError::Invalid(
+            "an identity command is decided against several resources",
+        )),
         Command::Create(resource) => {
             let key = key(&resource.target())?;
             if found.is_some() {
@@ -405,6 +442,7 @@ fn encoded_len(r: &Resource) -> usize {
     let field = |bytes: usize| bytes.saturating_add(8);
     let scope = match &r.scope {
         Scope::Cluster => 1,
+        Scope::Org(org) => 1 + field(org.len()),
         Scope::Project { org, project } => 1 + field(org.len()) + field(project.len()),
     };
     let labels = r.labels.iter().fold(8usize, |total, (key, value)| {
@@ -433,10 +471,13 @@ fn encoded_len(r: &Resource) -> usize {
 /// log entry holds one command of at most about `MAX_RESOURCE` bytes, far
 /// below `MAX_ENTRY_PAYLOAD`.
 pub(crate) fn check_command(command: &Command) -> Result<(), ResourceError> {
-    command_key(command)?;
     match command {
-        Command::Create(r) | Command::Update(r) => check_size(r),
-        Command::Delete { .. } | Command::Remove { .. } => Ok(()),
+        Command::Create(r) | Command::Update(r) => {
+            command_key(command)?;
+            check_size(r)
+        }
+        Command::Delete { .. } | Command::Remove { .. } => command_key(command).map(drop),
+        Command::Identity(command) => command.check(),
     }
 }
 
@@ -448,11 +489,14 @@ pub(crate) fn check_size(resource: &Resource) -> Result<(), ResourceError> {
     Ok(())
 }
 
-/// The key a command reads before it is decided.
+/// The key a command reads before it is decided. An identity command reads
+/// several, so it names the key of the login code it writes.
 pub(crate) fn command_key(command: &Command) -> Result<Vec<u8>, ResourceError> {
     match command {
         Command::Create(r) | Command::Update(r) => key(&r.target()),
         Command::Delete { target, .. } | Command::Remove { target, .. } => key(target),
+        Command::Identity(IdentityCommand::Issue(issue)) => key(&issue.code.target()),
+        Command::Identity(IdentityCommand::Exchange(exchange)) => key(&exchange.code),
     }
 }
 

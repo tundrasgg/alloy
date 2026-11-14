@@ -28,6 +28,7 @@ use openraft::{
 };
 use tokio::sync::Mutex;
 
+use crate::identity::{Refusal, check_kind};
 use crate::node::{NODE_KIND, Node, Soft};
 use crate::resource::{
     Command, Dec, Enc, Resource, ResourceError, Scope, Target, Uid, check_command, check_size,
@@ -44,7 +45,7 @@ openraft::declare_raft_types!(
     /// The `openraft` types of a group.
     pub(crate) Cfg:
         D = Command,
-        R = Result<Option<Resource>, ResourceError>,
+        R = Result<Option<Resource>, Refusal>,
         NodeId = u128,
         Node = EmptyNode,
         AsyncRuntime = AlloyRt,
@@ -330,7 +331,7 @@ impl StateAdapter {
         &self,
         log_id: &RaftLogId,
         payload: EntryPayload<Command, Membership>,
-    ) -> Result<(Vec<Op>, Result<Option<Resource>, ResourceError>), io::Error> {
+    ) -> Result<(Vec<Op>, Result<Option<Resource>, Refusal>), io::Error> {
         match payload {
             EntryPayload::Blank => Ok((Vec::new(), Ok(None))),
             EntryPayload::Membership(membership) => {
@@ -345,10 +346,15 @@ impl StateAdapter {
                 };
                 Ok((vec![op], Ok(None)))
             }
+            EntryPayload::Normal(Command::Identity(command)) => {
+                crate::identity::apply(&*self.store, command)
+                    .await
+                    .map_err(io_error)
+            }
             EntryPayload::Normal(command) => {
                 let key = match command_key(&command) {
                     Ok(key) => key,
-                    Err(error) => return Ok((Vec::new(), Err(error))),
+                    Err(error) => return Ok((Vec::new(), Err(error.into()))),
                 };
                 let found = match self.store.get(&key).await.map_err(io_error)? {
                     Some(bytes) => Some(
@@ -371,10 +377,10 @@ impl StateAdapter {
                             let value = encode_resource(&resource);
                             (vec![Op::Put { key, value }], Ok(Some(resource)))
                         }
-                        Err(error) => (Vec::new(), Err(error)),
+                        Err(error) => (Vec::new(), Err(error.into())),
                     },
                     Ok((key, None)) => (vec![Op::Delete { key }], Ok(removed)),
-                    Err(error) => (Vec::new(), Err(error)),
+                    Err(error) => (Vec::new(), Err(error.into())),
                 })
             }
         }
@@ -530,7 +536,19 @@ pub struct Group {
     state: Arc<dyn StateStore>,
     /// The soft state of this member's tenure as leader (section 2.3).
     pub(crate) soft: std::sync::Mutex<Soft>,
+    /// When set, the next heartbeat that finds its node signals the first
+    /// half and waits for the second before it records soft state, so a
+    /// test can land a removal in between.
+    #[cfg(test)]
+    pub(crate) pause_heartbeat: std::sync::Mutex<Option<Pause>>,
 }
+
+/// The two halves of a `Group::pause_heartbeat`.
+#[cfg(test)]
+pub(crate) type Pause = (
+    tokio::sync::oneshot::Sender<()>,
+    tokio::sync::oneshot::Receiver<()>,
+);
 
 impl fmt::Debug for Group {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -591,6 +609,8 @@ impl Group {
             me,
             state,
             soft: std::sync::Mutex::new(Soft::default()),
+            #[cfg(test)]
+            pause_heartbeat: std::sync::Mutex::new(None),
         };
         if let Some(last) = last {
             let wait = group.raft.wait(Some(OPEN_TIMEOUT));
@@ -651,25 +671,53 @@ impl Group {
     /// state, so that no client input reaches a store call that fails. A
     /// create or update of kind `Node` must hold a [`Node`] that passes the
     /// checks of [`Group::create_node`], so the group never holds a `Node`
-    /// that does not decode as one (section 2.6).
+    /// that does not decode as one (section 2.6); the identity kinds and
+    /// join tokens are held to their own checks (`check_kind`).
     async fn write(&self, command: Command) -> Result<Option<Resource>, GroupError> {
-        check_command(&command)?;
-        if let Command::Create(resource) | Command::Update(resource) = &command
-            && resource.kind == NODE_KIND
-        {
-            Node::from_resource(resource)
-                .ok_or(ResourceError::Invalid(
-                    "a Node resource must hold a Node spec and status in the cluster scope",
-                ))?
-                .check()?;
+        if let Command::Create(resource) | Command::Update(resource) = &command {
+            if resource.kind == NODE_KIND {
+                Node::from_resource(resource)
+                    .ok_or(ResourceError::Invalid(
+                        "a Node resource must hold a Node spec and status in the cluster scope",
+                    ))?
+                    .check()?;
+            }
+            check_kind(resource, matches!(command, Command::Create(_)))?;
         }
+        match self.propose(command).await? {
+            Ok(answer) => Ok(answer),
+            Err(Refusal::Resource(error)) => Err(error.into()),
+            Err(other) => Err(unavailable(format!(
+                "a resource write was refused as an identity write: {other:?}"
+            ))),
+        }
+    }
+
+    /// Proposes an identity command and returns how the group decided it.
+    pub(crate) async fn propose_identity(
+        &self,
+        command: crate::identity::IdentityCommand,
+    ) -> Result<Result<Option<Resource>, Refusal>, GroupError> {
+        self.propose(Command::Identity(command)).await
+    }
+
+    async fn propose(
+        &self,
+        command: Command,
+    ) -> Result<Result<Option<Resource>, Refusal>, GroupError> {
+        check_command(&command)?;
         let response = scoped(&self.scope, self.raft.client_write(command))
             .await
             .map_err(unavailable)?;
-        Ok(response.data?)
+        Ok(response.data)
     }
 
-    async fn linearize(&self) -> Result<(), GroupError> {
+    /// The state store, for reads after `Group::linearize`.
+    pub(crate) fn state_store(&self) -> &dyn StateStore {
+        &*self.state
+    }
+
+    pub(crate) async fn linearize(&self) -> Result<(), GroupError> {
         scoped(
             &self.scope,
             self.raft.ensure_linearizable(ReadPolicy::ReadIndex),
@@ -771,26 +819,8 @@ impl Group {
     /// As [`Group::get`].
     pub async fn list(&self, kind: &str) -> Result<Vec<Resource>, GroupError> {
         let prefix = kind_prefix(kind)?;
-        let mut end = prefix.clone();
-        // The prefix ends with a zero byte, which this raises to one.
-        if let Some(last) = end.last_mut() {
-            *last = 1;
-        }
         self.linearize().await?;
-        let mut out = Vec::new();
-        let mut start = prefix;
-        loop {
-            let pairs = self.state.scan(&start, Some(&end), MAX_SCAN).await?;
-            let Some((last, _)) = pairs.last() else { break };
-            start = last.clone();
-            start.push(0);
-            for (_, value) in pairs {
-                out.push(decode_resource(&value).ok_or_else(|| {
-                    StoreError::Corrupt(Detail::new("a stored resource does not decode"))
-                })?);
-            }
-        }
-        Ok(out)
+        Ok(scan_prefix(&*self.state, &prefix).await?)
     }
 
     /// Replaces the spec, status, and labels of the resource of `resource`'s
@@ -898,6 +928,33 @@ impl Group {
         stopped.map_err(unavailable)?;
         ended
     }
+}
+
+/// Reads every resource whose key starts with `prefix`, which ends with a
+/// zero byte, in key order, [`MAX_SCAN`] pairs at a time.
+pub(crate) async fn scan_prefix(
+    store: &dyn StateStore,
+    prefix: &[u8],
+) -> Result<Vec<Resource>, StoreError> {
+    let mut end = prefix.to_vec();
+    // The prefix ends with a zero byte, which this raises to one.
+    if let Some(last) = end.last_mut() {
+        *last = 1;
+    }
+    let mut out = Vec::new();
+    let mut start = prefix.to_vec();
+    loop {
+        let pairs = store.scan(&start, Some(&end), MAX_SCAN).await?;
+        let Some((last, _)) = pairs.last() else { break };
+        start = last.clone();
+        start.push(0);
+        for (_, value) in pairs {
+            out.push(decode_resource(&value).ok_or_else(|| {
+                StoreError::Corrupt(Detail::new("a stored resource does not decode"))
+            })?);
+        }
+    }
+    Ok(out)
 }
 
 /// Dropping a group without [`Group::shutdown`] ends its tasks without

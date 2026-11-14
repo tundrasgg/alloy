@@ -6,9 +6,10 @@
 //! On Windows a store file is created with owner `Administrators`, which only
 //! an elevated process may name (ARFC 0005 clause 3.1.15). A test run by a
 //! process that is not elevated checks that the build then fails and leaves
-//! no file, and checks nothing more.
+//! no file, checks nothing more, and prints one line saying so and why.
 
 use std::collections::BTreeMap;
+use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -94,8 +95,9 @@ impl Fixture {
     /// A fixture in which this process may create private files: always on
     /// Linux and macOS, and on Windows when it may name `Administrators` as
     /// owner. Otherwise it checks that each store fails to build and leaves
-    /// no file, and returns `None`.
-    fn private() -> Option<Fixture> {
+    /// no file, prints one line saying that the checks of `test` did not
+    /// run and why, and returns `None`.
+    fn private(test: &str) -> Option<Fixture> {
         let fixture = Fixture::new();
         let disk = fixture.runtime.disk_io();
         let probe = fixture.path("probe");
@@ -118,6 +120,15 @@ impl Fixture {
                     let left = fixture.host.block_on(disk.metadata(&fixture.path(file)));
                     assert_eq!(left.map(drop), Err(DiskError::NotFound), "{file}");
                 }
+                // Straight to the handle, so the test harness does not
+                // capture the line.
+                writeln!(
+                    std::io::stderr(),
+                    "alloy-state native: the checks of {test} did not run: this process may \
+                     not name Administrators as owner, so native refuses to build (ARFC 0005 \
+                     clause 3.1.15, D-0062); that refusal was checked instead"
+                )
+                .expect("stderr takes the skip line");
                 None
             }
             Err(other) => panic!("probe: {other:?}"),
@@ -171,7 +182,7 @@ fn a_missing_directory_is_invalid_config() {
 /// is.
 #[test]
 fn store_files_are_created_private() {
-    let Some(fixture) = Fixture::private() else {
+    let Some(fixture) = Fixture::private("store_files_are_created_private") else {
         return;
     };
     let disk = fixture.runtime.disk_io();
@@ -225,7 +236,8 @@ fn store_files_are_created_private() {
 
 #[test]
 fn native_stores_keep_their_contents_across_a_reopen() {
-    let Some(fixture) = Fixture::private() else {
+    let Some(fixture) = Fixture::private("native_stores_keep_their_contents_across_a_reopen")
+    else {
         return;
     };
     let vote = Vote {
@@ -300,7 +312,7 @@ async fn export(store: &dyn StateStore) -> Vec<u8> {
 
 #[test]
 fn exports_install_across_implementations() {
-    let Some(fixture) = Fixture::private() else {
+    let Some(fixture) = Fixture::private("exports_install_across_implementations") else {
         return;
     };
     let mem_config = MemStoreConfig {
@@ -357,7 +369,7 @@ fn exports_install_across_implementations() {
 
 #[test]
 fn a_group_on_native_stores_survives_a_restart() {
-    let Some(fixture) = Fixture::private() else {
+    let Some(fixture) = Fixture::private("a_group_on_native_stores_survives_a_restart") else {
         return;
     };
     let created = fixture.host.block_on(async {
