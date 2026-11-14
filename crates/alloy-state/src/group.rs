@@ -28,6 +28,7 @@ use openraft::{
 };
 use tokio::sync::Mutex;
 
+use crate::node::Soft;
 use crate::resource::{
     Command, Dec, Enc, Resource, ResourceError, Scope, Target, Uid, check_command, check_size,
     command_key, decide, decode_command, decode_resource, encode_command, encode_resource,
@@ -518,9 +519,11 @@ fn unavailable(error: impl fmt::Display) -> GroupError {
 /// resources over one `openraft` group.
 pub struct Group {
     raft: Raft<Cfg, StateAdapter>,
-    scope: RtScope,
+    pub(crate) scope: RtScope,
     me: NodeId,
     state: Arc<dyn StateStore>,
+    /// The soft state of this member's tenure as leader (section 2.3).
+    pub(crate) soft: std::sync::Mutex<Soft>,
 }
 
 impl fmt::Debug for Group {
@@ -581,6 +584,7 @@ impl Group {
             scope,
             me,
             state,
+            soft: std::sync::Mutex::new(Soft::default()),
         };
         if let Some(last) = last {
             let wait = group.raft.wait(Some(OPEN_TIMEOUT));
@@ -596,6 +600,7 @@ impl Group {
                 group.shutdown().await?;
                 return Err(unavailable(error));
             }
+            group.begin_serving();
         }
         Ok(group)
     }
@@ -620,7 +625,20 @@ impl Group {
                 .map(drop)
                 .map_err(unavailable)
         })
-        .await
+        .await?;
+        self.begin_serving();
+        Ok(())
+    }
+
+    /// Starts this member's tenure as the group's one voter and leader: from
+    /// now it serves the group (clause 3.12.3), holding no heartbeat times
+    /// (clause 3.15).
+    fn begin_serving(&self) {
+        let now = self.scope.runtime.clock().now();
+        self.soft
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .serve(now);
     }
 
     /// Proposes `command` once it passes every check that does not need the
@@ -659,6 +677,24 @@ impl Group {
         spec: Vec<u8>,
         labels: BTreeMap<String, String>,
     ) -> Result<Resource, GroupError> {
+        let target = Target {
+            kind: kind.to_owned(),
+            scope,
+            name: name.to_owned(),
+        };
+        self.create_with_status(target, spec, Vec::new(), labels)
+            .await
+    }
+
+    /// [`Group::create`] with a status.
+    pub(crate) async fn create_with_status(
+        &self,
+        target: Target,
+        spec: Vec<u8>,
+        status: Vec<u8>,
+        labels: BTreeMap<String, String>,
+    ) -> Result<Resource, GroupError> {
+        let Target { kind, scope, name } = target;
         let mut uid = [0; 16];
         self.scope
             .runtime
@@ -666,13 +702,13 @@ impl Group {
             .fill(&mut uid)
             .map_err(unavailable)?;
         let resource = Resource {
-            kind: kind.to_owned(),
+            kind,
             uid: Uid(uid),
-            name: name.to_owned(),
+            name,
             scope,
             generation: 1,
             spec,
-            status: Vec::new(),
+            status,
             labels,
             deleting: false,
         };

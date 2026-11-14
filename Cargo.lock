@@ -148,11 +148,14 @@ name = "alloy-state"
 version = "0.0.0"
 dependencies = [
  "alloy-crypto",
+ "alloy-proto",
  "alloy-rt",
  "alloy-seam",
  "alloy-sim",
  "futures-util",
  "openraft",
+ "prost",
+ "prost-types",
  "rand_core 0.10.1",
  "redb",
  "thiserror",
