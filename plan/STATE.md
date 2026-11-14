@@ -33,7 +33,7 @@ Only tasks that are not done or cancelled. A finished task leaves the board in t
 | T-0113 | verify | verifier | review | T-0136 | Write the M11 rung 2 join and node list check |
 | T-0119 | spec | architect | queued | before rung 5 | Keep VNI binds alive across crossed rekeys, record the ADR |
 | T-0136 | build | developer | fix | none | Build M11 rung 2 end to end: API, init, join, and the CLI |
-| T-0141 | build | developer | active | none | Build the rung 2 CLI commands |
+| T-0141 | build | developer | fix | none | Build the rung 2 CLI commands |
 | T-0138 | build | developer | fix | none | Build the alloy-path path manager for direct paths |
 | T-0140 | build | developer | review | none | Build the console shell and first screens on fixture data |
 | T-0142 | spec | architect | review | none | Close the session and bridge gaps of the T-0139 re-review |
