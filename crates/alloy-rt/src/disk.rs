@@ -183,6 +183,155 @@ pub trait DiskIo: Send + Sync + fmt::Debug + 'static {
     /// [`DiskError::NotFound`], [`DiskError::NotDirectory`], and
     /// [`DiskError::Io`].
     fn sync_dir<'a>(&'a self, dir: &'a RtPath) -> BoxFuture<'a, Result<(), DiskError>>;
+
+    /// Creates a file that does not exist, protected as `protection` says,
+    /// and returns it open with [`Access::ReadWrite`] (ARFC 0005 clause
+    /// 3.1.15). It is [`DiskIo::open`] with `Create::New` and `direct` and
+    /// `exclusive` false, except for the protection the new file gets. With
+    /// [`Protection::Private`] or [`Protection::PrivateRoot`] the call that
+    /// creates the file carries the protection, so the file never has more
+    /// access than it gives.
+    ///
+    /// # Errors
+    ///
+    /// Those of `open`. A call that cannot give the protection returns the
+    /// error and leaves nothing at `path`; on Windows a process whose token
+    /// may not name `Administrators` as owner gets
+    /// [`DiskError::PermissionDenied`].
+    fn create_file<'a>(
+        &'a self,
+        path: &'a RtPath,
+        protection: Protection,
+    ) -> BoxFuture<'a, Result<Box<dyn DiskFile>, DiskError>>;
+
+    /// [`DiskIo::create_dir`], protected as `protection` says (ARFC 0005
+    /// clause 3.1.15).
+    ///
+    /// # Errors
+    ///
+    /// Those of `create_dir`, and those of [`DiskIo::create_file`] for a
+    /// protection that cannot be given.
+    fn create_dir_protected<'a>(
+        &'a self,
+        path: &'a RtPath,
+        protection: Protection,
+    ) -> BoxFuture<'a, Result<(), DiskError>>;
+
+    /// The owner and permissions of the entry at `path`. A symbolic link or
+    /// reparse point at the last component is not followed; components above
+    /// it are (ARFC 0005 clause 3.1.15).
+    ///
+    /// # Errors
+    ///
+    /// [`DiskError::NotFound`] for a missing entry,
+    /// [`DiskError::PermissionDenied`] when the process may not read the
+    /// entry's security descriptor, and [`DiskError::InvalidInput`] for an
+    /// access control list of more than 4,096 entries.
+    fn security<'a>(&'a self, path: &'a RtPath) -> BoxFuture<'a, Result<Security, DiskError>>;
+
+    /// Sets the permission bits of the entry at `path` to `mode`, as `chmod`
+    /// does: a symbolic link is followed and the owner is kept (ARFC 0005
+    /// clause 3.1.15). The new mode is durable once a `sync(SyncKind::All)`
+    /// of the file, or a `sync_dir` of the directory itself, completes after
+    /// this call returns.
+    ///
+    /// # Errors
+    ///
+    /// [`DiskError::InvalidInput`] for a `mode` above `0o7777`,
+    /// [`DiskError::NotFound`] for a missing entry, and
+    /// [`DiskError::Unsupported`] on Windows.
+    fn set_mode<'a>(&'a self, path: &'a RtPath, mode: u32) -> BoxFuture<'a, Result<(), DiskError>>;
+
+    /// The path that names the absolute native path `native` in this
+    /// instance: `/` followed by the components of `native` after those of
+    /// the configured root (ARFC 0005 clause 3.1.15). It reads nothing from
+    /// the disk.
+    ///
+    /// # Errors
+    ///
+    /// [`DiskError::InvalidPath`] when `native` is not absolute, holds a
+    /// component `.` or `..`, does not begin with the root, or gives a path
+    /// that [`RtPath::new`] refuses. [`DiskError::Unsupported`] under `mem`,
+    /// which has no native paths.
+    fn rt_path(&self, native: &str) -> Result<RtPath, DiskError>;
+}
+
+/// How [`DiskIo::create_file`] and [`DiskIo::create_dir_protected`] protect
+/// what they create (ARFC 0005 clause 3.1.15).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Protection {
+    /// As [`DiskIo::open`] and [`DiskIo::create_dir`] create.
+    Default,
+    /// Linux and macOS: mode `0o600` for a file, `0o700` for a directory.
+    /// Windows: owner `Administrators` and no list of its own, so its list
+    /// is what the parent passes on.
+    Private,
+    /// Linux and macOS: as `Private`. Windows: owner `Administrators`, and a
+    /// list protected from inheritance that grants full control to `SYSTEM`
+    /// and `Administrators` only.
+    PrivateRoot,
+}
+
+/// What [`DiskIo::security`] reports for one entry (ARFC 0005 clause
+/// 3.1.15).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Security {
+    /// Linux, macOS, and `mem`: what `lstat` reports.
+    Unix {
+        /// The entry's kind; [`EntryKind::Other`] for a symbolic link.
+        kind: EntryKind,
+        /// Whether the entry is a symbolic link.
+        symlink: bool,
+        /// The owner's user id.
+        uid: u32,
+        /// `st_mode & 0o7777`.
+        mode: u32,
+    },
+    /// Windows.
+    Windows {
+        /// [`EntryKind::Dir`] when the entry has the directory attribute,
+        /// else [`EntryKind::File`].
+        kind: EntryKind,
+        /// `FILE_ATTRIBUTE_REPARSE_POINT`: a symbolic link, junction, or
+        /// mounted folder.
+        reparse_point: bool,
+        /// The entry's owner.
+        owner: Sid,
+        /// `SE_DACL_PROTECTED`: the list does not inherit from the parent.
+        dacl_protected: bool,
+        /// The discretionary access control list in its order. `None` for a
+        /// null list, which grants everyone everything.
+        dacl: Option<Vec<Ace>>,
+    },
+}
+
+/// A Windows security identifier.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Sid {
+    /// String form, such as `S-1-5-18`.
+    pub sid: String,
+    /// `DOMAIN\name` as `LookupAccountSidW` gives it, for messages. Empty
+    /// when it gives none.
+    pub name: String,
+}
+
+/// One access control entry of a discretionary list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ace {
+    /// `false` for an access-denied type, `true` for every other type.
+    pub allow: bool,
+    /// Whom the entry grants or denies.
+    pub trustee: Sid,
+    /// The access mask as stored, with no generic right mapped.
+    pub mask: u32,
+    /// `INHERIT_ONLY_ACE`: applies only to what the entry holds.
+    pub inherit_only: bool,
+    /// `INHERITED_ACE`: came from the parent.
+    pub inherited: bool,
+    /// `OBJECT_INHERIT_ACE`: files created in the entry inherit it.
+    pub object_inherit: bool,
+    /// `CONTAINER_INHERIT_ACE`: directories created in the entry inherit it.
+    pub container_inherit: bool,
 }
 
 /// Whether a handle may write.

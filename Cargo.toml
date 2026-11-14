@@ -125,9 +125,10 @@ socket2 = { version = "=0.6.5", features = ["all"] }
 # `signal` feature added, to watch the stop signals of its process, which no
 # runtime seam carries.
 tokio = { version = "=1.54.1", default-features = false, features = ["net", "rt-multi-thread", "sync", "time"] }
-# Interface enumeration, and a write handle for `sync` on a read handle, on
+# Interface enumeration, a write handle for `sync` on a read handle, and the
+# security descriptors of `create_file`, `create_dir_protected`, and `security`, on
 # Windows.
-windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_Storage", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage", "Win32_Storage_FileSystem"] }
 
 [workspace.lints.rust]
 missing_docs = "warn"

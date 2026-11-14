@@ -1,6 +1,6 @@
-//! The `os` disk-io (ARFC 0005 clauses 3.1.10 to 3.1.13): paths mapped below
-//! a native root directory, every blocking call on the runtime's blocking
-//! pool, one blocking call per batch.
+//! The `os` disk-io (ARFC 0005 clauses 3.1.10 to 3.1.13 and 3.1.15): paths
+//! mapped below a native root directory, every blocking call on the
+//! runtime's blocking pool, one blocking call per batch.
 
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
@@ -20,8 +20,19 @@ use super::errors;
 use super::{Host, Permit, Stopped};
 use crate::{
     Access, BoxFuture, Create, DirEntry, DiskError, DiskFile, DiskIo, EntryKind, FileInfo, IoBuf,
-    MAX_DISK_BATCH, Metadata, OpenOptions, ReadDone, ReadOp, RtPath, SyncKind, WriteDone, WriteOp,
+    MAX_DISK_BATCH, Metadata, OpenOptions, Protection, ReadDone, ReadOp, RtPath, Security,
+    SyncKind, WriteDone, WriteOp,
 };
+
+mod native;
+#[cfg(unix)]
+mod unix;
+#[cfg(unix)]
+use unix as protect;
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+use windows as protect;
 
 /// The most open handles of one instance (ARFC 0005 section 7).
 const MAX_OPEN: usize = 65_536;
@@ -104,14 +115,15 @@ impl OsDiskIo {
             Err(e) => fail(e),
         }
     }
-}
 
-impl DiskIo for OsDiskIo {
-    fn open<'a>(
-        &'a self,
-        path: &'a RtPath,
+    /// Opens `path` with `options`; a file it creates is protected as
+    /// `protection` says.
+    fn open_protected(
+        &self,
+        path: &RtPath,
         options: OpenOptions,
-    ) -> BoxFuture<'a, Result<Box<dyn DiskFile>, DiskError>> {
+        protection: Protection,
+    ) -> BoxFuture<'_, Result<Box<dyn DiskFile>, DiskError>> {
         if options.create != Create::Never && options.access == Access::Read {
             return fail(invalid("creating a file needs Access::ReadWrite"));
         }
@@ -123,14 +135,24 @@ impl DiskIo for OsDiskIo {
             return fail(DiskError::TooManyOpen);
         };
         let host = self.host.clone();
-        let task = self
-            .host
-            .blocking(move || open_native(&native, options).map(|opened| (opened, permit)));
+        let task = self.host.blocking(move || {
+            open_native(&native, options, protection).map(|opened| (opened, permit))
+        });
         Box::pin(async move {
             let (opened, permit) = task.await.unwrap_or(Err(DiskError::Io))?;
             let file: Box<dyn DiskFile> = Box::new(OsDiskFile::new(host, opened, permit, options));
             Ok(file)
         })
+    }
+}
+
+impl DiskIo for OsDiskIo {
+    fn open<'a>(
+        &'a self,
+        path: &'a RtPath,
+        options: OpenOptions,
+    ) -> BoxFuture<'a, Result<Box<dyn DiskFile>, DiskError>> {
+        self.open_protected(path, options, Protection::Default)
     }
 
     fn metadata<'a>(&'a self, path: &'a RtPath) -> BoxFuture<'a, Result<Metadata, DiskError>> {
@@ -226,6 +248,49 @@ impl DiskIo for OsDiskIo {
                 .map_err(|e| errors::disk(&e))
         })
     }
+
+    fn create_file<'a>(
+        &'a self,
+        path: &'a RtPath,
+        protection: Protection,
+    ) -> BoxFuture<'a, Result<Box<dyn DiskFile>, DiskError>> {
+        let options = OpenOptions {
+            access: Access::ReadWrite,
+            create: Create::New,
+            direct: false,
+            exclusive: false,
+        };
+        self.open_protected(path, options, protection)
+    }
+
+    fn create_dir_protected<'a>(
+        &'a self,
+        path: &'a RtPath,
+        protection: Protection,
+    ) -> BoxFuture<'a, Result<(), DiskError>> {
+        self.on_path(path, move |native| protect::create_dir(&native, protection))
+    }
+
+    fn security<'a>(&'a self, path: &'a RtPath) -> BoxFuture<'a, Result<Security, DiskError>> {
+        self.on_path(path, |native| protect::security(&native))
+    }
+
+    /// `Unsupported` on Windows, which adopts no existing directory (ARFC
+    /// 0005 clause 3.1.15).
+    #[cfg(windows)]
+    fn set_mode<'a>(&'a self, _: &'a RtPath, _: u32) -> BoxFuture<'a, Result<(), DiskError>> {
+        fail(DiskError::Unsupported)
+    }
+
+    #[cfg(not(windows))]
+    fn set_mode<'a>(&'a self, path: &'a RtPath, mode: u32) -> BoxFuture<'a, Result<(), DiskError>> {
+        self.on_path(path, move |native| protect::set_mode(&native, mode))
+    }
+
+    fn rt_path(&self, native: &str) -> Result<RtPath, DiskError> {
+        let root = self.root.to_str().ok_or(DiskError::InvalidPath)?;
+        native::rt_path(root, native, native::Style::HOST)
+    }
 }
 
 fn kind_of(file_type: &fs::FileType) -> EntryKind {
@@ -257,8 +322,13 @@ struct Opened {
     block_size: u32,
 }
 
-/// Opens `path` with `options` (ARFC 0005 clause 3.1.10).
-fn open_native(path: &Path, options: OpenOptions) -> Result<Opened, DiskError> {
+/// Opens `path` with `options` (ARFC 0005 clause 3.1.10). A file it creates
+/// is protected as `protection` says (clause 3.1.15).
+fn open_native(
+    path: &Path,
+    options: OpenOptions,
+    protection: Protection,
+) -> Result<Opened, DiskError> {
     let existing = match fs::metadata(path) {
         Ok(meta) => Some(meta),
         Err(e) if e.kind() == io::ErrorKind::NotFound => None,
@@ -288,13 +358,17 @@ fn open_native(path: &Path, options: OpenOptions) -> Result<Opened, DiskError> {
         }
     }
     platform::set_flags(&mut std_options, options)?;
-    let file = std_options.open(path).map_err(|e| {
-        if options.direct && errors::invalid_argument(&e) {
-            DiskError::Unsupported
-        } else {
-            errors::disk(&e)
-        }
-    })?;
+    let file = if protection == Protection::Default {
+        std_options.open(path).map_err(|e| {
+            if options.direct && errors::invalid_argument(&e) {
+                DiskError::Unsupported
+            } else {
+                errors::disk(&e)
+            }
+        })?
+    } else {
+        protect::create_file(&mut std_options, path, protection)?
+    };
     if options.direct {
         platform::bypass_cache(&file).map_err(|e| errors::disk(&e))?;
     }
