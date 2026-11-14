@@ -23,8 +23,57 @@ alloy join alyt_...                    # every other machine
 
 ## Status
 
-Design stage. The specifications in `spec/` and the plan in `plan/` are the
-current product. Code lands milestone by milestone, see `plan/milestones.md`.
+Preview. Alloy publishes preview releases, tagged `v0.0.PATCH-preview.N`, as
+GitHub pre-releases at <https://github.com/tundrasgg/alloy/releases>. A preview
+is not for production use: it makes no compatibility promise, and a cluster on
+one moves to another release only by being created again. A preview carries
+only part of what this file describes; the specifications in `spec/` describe
+the whole design.
+
+### What a preview installs
+
+Install a preview by its tag, for example `v0.0.1-preview.2`:
+
+```
+# Linux, as root or a user that can sudo
+curl -fsSL https://github.com/tundrasgg/alloy/releases/download/<tag>/install.sh | sh
+
+# Windows 10 version 1809 or later, from an elevated PowerShell
+irm https://github.com/tundrasgg/alloy/releases/download/<tag>/install.ps1 | iex
+```
+
+Previews are built for x86_64 Linux and x86_64 Windows.
+
+- On Linux 6.1 or later with systemd, the install places `alloy` (the CLI) and
+  `alloyd` (the node daemon) in `/usr/local/bin` and writes the systemd unit
+  `alloyd`. The unit is enabled once the machine is part of a cluster. On any
+  other Linux machine, it installs the CLI only.
+- On Windows, the install places `alloy` and `alloyd` in
+  `%ProgramFiles%\Alloy` and registers `alloyd` as a service, disabled until the
+  machine is part of a cluster. A Windows machine is a client and hosts no
+  compute.
+
+Uninstall, as root or from an elevated PowerShell:
+
+```
+sh /usr/local/share/alloy/uninstall.sh
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:ProgramFiles\Alloy\uninstall.ps1"
+```
+
+An uninstall keeps the data directory unless given `--purge` (`-Purge` on
+Windows).
+
+### Milestone M11: first deployment
+
+The current milestone is M11, a slice through the mesh, the control plane, and
+compute, run on real machines: two Linux nodes, one of them a Proxmox VE host,
+and one Windows client. It proceeds in seven rungs, in order: install, join,
+mesh, compute, VPC, client, and survival. A rung is done when its check, a
+script under `tests/e2e/`, passes on the real machines. Rung 1, install, has
+passed.
+
+`plan/milestones.md` defines M11, its rungs, and the other milestones.
+`plan/STATE.md` names the rung in progress.
 
 ## Repository layout
 
@@ -36,7 +85,9 @@ current product. Code lands milestone by milestone, see `plan/milestones.md`.
 | `agent/` | How work is done here: behavior, protocol, roles, engineering rules |
 | `product/` | Product principles and briefs for user-facing surfaces |
 | `research/` | Research notes with sources |
-| `crates/` | Rust workspace members (created by the first tasks) |
+| `crates/` | Rust workspace members |
+| `packaging/` | Install and uninstall scripts, and the tools that build release assets |
+| `tests/` | Conformance suites and the M11 end-to-end checks |
 
 ## How work happens
 

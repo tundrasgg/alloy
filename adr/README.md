@@ -33,13 +33,14 @@ or supersede it.
 
 | ADR | Decision |
 |---|---|
-| [0008](0008-deterministic-simulation-comes-first-and-all-i-o-goes-throug.md) | Deterministic simulation comes first and all I/O goes through alloy-rt |
+| [0008](0008-deterministic-simulation-comes-first-and-all-i-o-goes-throug.md) | Deterministic simulation comes first and all I/O goes through alloy-rt (superseded by 0067) |
 | [0009](0009-every-subsystem-boundary-is-a-runtime-swappable-seam-from-da.md) | Every subsystem boundary is a runtime-swappable seam from day zero |
 | [0036](0036-alloy-sim-is-written-in-house-on-the-alloy-rt-seams.md) | alloy-sim is written in-house on the alloy-rt seams |
 | [0035](0035-dependencies-must-be-permissively-licensed.md) | Dependencies must be permissively licensed |
 | [0054](0054-simulated-worlds-are-network-trees-driven-by-a-control-task.md) | Simulated worlds are network trees driven by a control task |
 | [0060](0060-libfuzzer-sys-alone-may-use-ncsa-in-fuzz-targets-only.md) | libfuzzer-sys alone may use NCSA, in fuzz targets only |
 | [0062](0062-the-windows-client-may-ship-the-signed-wintun-dll-unmodified.md) | The Windows client may ship the signed Wintun DLL unmodified |
+| [0067](0067-all-i-o-goes-through-alloy-rt-and-the-simulator-gates-work-a.md) | All I/O goes through alloy-rt, and the simulator gates work after M11 |
 
 ## Architecture
 
