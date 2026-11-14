@@ -1,14 +1,19 @@
 //! Two links under loss, duplication and reordering, by seed: no packet is
 //! delivered twice, and once the faults stop, traffic flows both ways on
-//! every VNI within 10 seconds, whatever rekeys crossed, were lost or came
-//! late (ARFC 0003 sections 3.3 and 3.4).
+//! every VNI, whatever rekeys crossed, were lost or came late (ARFC 0003
+//! sections 3.3 and 3.4). VNI 0 flows within 10 seconds. VNI 5 flows by the
+//! next rekey: after a crossed rekey, section 3.4 binds nothing under a
+//! session that no longer qualifies, so the peer that seals under the other
+//! session gets no binding until both converge on the next handshake
+//! (D-0058; T-0119 changes that rule).
 
 mod common;
 
 use std::time::Duration;
 
+use alloy_link::REKEY_AFTER;
 use alloy_wire::Vni;
-use common::{A, B, Pair, vni, with_rng};
+use common::{A, B, Pair, SplitMix, vni, with_rng};
 
 /// Seeds run by `cargo test`.
 const SEEDS: u64 = 32;
@@ -17,27 +22,13 @@ const SEEDS: u64 = 32;
 /// sessions rekey about three times.
 const STEPS: usize = 300;
 
-/// The test's own choices, apart from the links' randomness.
-struct SplitMix(u64);
+/// Clean seconds within which VNI 0 must flow both ways.
+const VNI0_BOUND: u64 = 10;
 
-impl SplitMix {
-    fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
-    }
-
-    /// True with probability `percent` in 100.
-    fn chance(&mut self, percent: u64) -> bool {
-        self.next() % 100 < percent
-    }
-
-    fn below(&mut self, n: u64) -> u64 {
-        self.next() % n
-    }
-}
+/// Clean seconds within which every VNI must flow both ways: a rekey, at
+/// most 120 seconds after the newest session was made, and 10 seconds more
+/// for its handshake and binds.
+const BOUND: u64 = REKEY_AFTER.as_secs() + VNI0_BOUND;
 
 /// An IPv4 packet carrying `id`, so each delivery can be traced to its send.
 fn packet(id: u32) -> Vec<u8> {
@@ -134,12 +125,18 @@ fn run(seed: u64) -> Result<(), String> {
                 break;
             }
         }
-        // Faults stop. Each second for 10 seconds, each node sends one packet
-        // on each VNI; at least one must arrive per direction and VNI.
+        // Faults stop. Each second, each node sends one packet on each VNI.
+        // At least one must arrive per direction on VNI 0 within 10 seconds,
+        // and per direction and VNI within `BOUND`.
         let mut arrived = [[false; 2]; 2];
         let mut asked = Vec::new();
-        for _ in 0..10 {
-            if failure.is_some() {
+        for second in 0..BOUND {
+            if second == VNI0_BOUND && failure.is_none() && !(arrived[A][0] && arrived[B][0]) {
+                failure = Some(format!(
+                    "seed {seed}: VNI 0 after {VNI0_BOUND} s, arrived per (sender, VNI) {arrived:?}"
+                ));
+            }
+            if failure.is_some() || arrived == [[true; 2]; 2] {
                 break;
             }
             for i in [A, B] {

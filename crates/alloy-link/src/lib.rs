@@ -40,19 +40,22 @@
 //!   that initiator.
 //! - Sessions (3.3): at most 4 per peer, pending initiations included, the
 //!   oldest discarded first; rekeyed by a new handshake when a packet is sent
-//!   under a session 120 seconds old or with 2^30 packets on a queue; keys
-//!   discarded 180 seconds after their handshake, and a previous session's
-//!   receive key 10 seconds after a packet accepted under a newer session
-//!   shows that the peer no longer seals under it. When two rekeys cross,
-//!   the nodes may each seal under a different one of the two new
-//!   sessions; each keeps the other's receive key until such a packet
-//!   arrives or the 180 seconds end. Every call that seals or opens first
-//!   discards the peer's keys that are past their lifetime, so no key
-//!   outlives it whether or not [`Link::tick`] ran on time.
+//!   under a session 120 seconds old or with 2^30 packets on a queue. A
+//!   session is discarded, all its keys at once, 180 seconds after its
+//!   handshake, or 10 seconds after the first packet accepted under a
+//!   session that follows it: one made by a handshake message this node
+//!   sent while the older session was confirmed here, which shows that the
+//!   peer moved past the older one. When two rekeys cross, neither new
+//!   session follows the other, the nodes may each seal under a different
+//!   one, and each keeps both. Every call that seals or opens first discards
+//!   the peer's sessions that are past their lifetime, so no key outlives it
+//!   whether or not [`Link::tick`] ran on time.
 //! - Transport (3.4): receiver index blocks of 64, one per VNI per session,
-//!   at most 1,024 per session; bind requests and binds; session choice;
-//!   holding up to 16 packets per VNI per peer for 1 second while no session
-//!   qualifies; counters below 2^31; the 2,048-counter replay window.
+//!   at most 1,024 per session; bind requests and binds; session choice,
+//!   where a session stops qualifying 5 seconds after the first packet
+//!   sealed under a newer one; holding up to 16 packets per VNI per peer for
+//!   1 second while no session is chosen; counters below 2^31; the
+//!   2,048-counter replay window.
 //! - Fragmentation (3.5): frames larger than the caller's payload budget are
 //!   split into 2 to 16 fragments; reassembly is bounded to 2 seconds, 4 MiB
 //!   per peer and 256 MiB per node, oldest dropped first.
@@ -80,9 +83,7 @@
 //!
 //! Probes, paths and relays (sections 3.6 and 3.7), stream framing (3.8),
 //! process handover (3.9), sockets and TUN devices. A session's probe keys
-//! are held and erased with the session key of the same direction (3.3);
-//! the longer retention 3.6 gives them after a rekey belongs to the probe
-//! code.
+//! are held and erased with the session (3.3).
 
 #![forbid(unsafe_code)]
 
@@ -115,7 +116,7 @@ pub const MAX_BLOCKS_PER_SESSION: usize = 1_024;
 /// Bindings for VNIs other than 0 a sender holds per session (section 7).
 pub const MAX_BINDINGS_PER_SESSION: usize = 1_023;
 
-/// Packets held per VNI per peer while no session qualifies (section 7).
+/// Packets held per VNI per peer while no session is chosen (section 7).
 /// Packets are held for at most [`MAX_BLOCKS_PER_SESSION`] VNIs per peer,
 /// since no session binds more.
 pub const MAX_HELD_PER_VNI: usize = 16;
@@ -138,10 +139,14 @@ pub const REKEY_AFTER_PACKETS: u64 = 1 << 30;
 /// (section 3.3).
 pub const REJECT_AFTER: Duration = Duration::from_secs(180);
 
-/// The previous session's receive key stays valid this long after a rekey
-/// (section 3.3), counted from the first packet accepted under a newer
-/// session that shows the peer no longer seals under it.
-pub const PREVIOUS_RECV_TIME: Duration = Duration::from_secs(10);
+/// A session is discarded this long after the first transport packet
+/// accepted under a session that follows it (section 3.3, rule 2).
+pub const DISCARD_AFTER_FOLLOWED: Duration = Duration::from_secs(10);
+
+/// A session stops qualifying for any message this long after the first
+/// transport packet sealed under a newer session with the same peer
+/// (section 3.4).
+pub const QUALIFY_TIME: Duration = Duration::from_secs(5);
 
 /// Lifetime of a `cookie_secret` as the current one, then again as the
 /// previous one; and how long an initiator keeps a cookie (section 3.1).
@@ -196,7 +201,7 @@ pub struct Outbound {
 pub enum Sent {
     /// Sealed into one or more transport packets, now in the outputs.
     Sealed,
-    /// Held until a session qualifies, for at most [`HOLD_TIME`].
+    /// Held until a session is chosen, for at most [`HOLD_TIME`].
     Held,
 }
 
@@ -269,8 +274,9 @@ pub enum Event {
         /// The peer.
         peer: PublicKey,
     },
-    /// A session's keys were discarded: at 180 seconds, for a fifth session,
-    /// or with its peer.
+    /// A session's keys were discarded: at 180 seconds, 10 seconds after a
+    /// packet under a session that follows it, for a fifth session, or with
+    /// its peer.
     SessionDiscarded {
         /// The peer.
         peer: PublicKey,
