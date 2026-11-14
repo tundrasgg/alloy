@@ -84,15 +84,6 @@
 //! Probes, paths and relays (sections 3.6 and 3.7), stream framing (3.8),
 //! process handover (3.9), sockets and TUN devices. A session's probe keys
 //! are held and erased with the session (3.3).
-//!
-//! # Binds after a crossed rekey
-//!
-//! Section 3.4 also forbids binding, and sealing a bind, under a session
-//! that no longer qualifies. After a crossed rekey, that drops every bind
-//! request the peer sends under the session it initiated, so a VNI first
-//! used later is never bound in that direction. This crate binds, and seals
-//! the bind, under the session the request came under whether it qualifies
-//! or not, until T-0119 settles the rule in the ARFC.
 
 #![forbid(unsafe_code)]
 

@@ -998,6 +998,11 @@ impl Link {
                 let Some(session) = self.sessions.get(&id) else {
                     return Err(DropReason::UnknownIndex);
                 };
+                // Section 3.4: no bind, and no bind sealed, under a session
+                // that no longer qualifies.
+                if !self.qualifies(&session.peer, id, cx.now) {
+                    return Err(DropReason::Bind);
+                }
                 let base = match session.local.get(&vni) {
                     Some(base) => *base,
                     None if session.local.len() >= MAX_BLOCKS_PER_SESSION => {
@@ -1108,32 +1113,46 @@ impl Link {
     /// `now`: the newest that qualifies, is confirmed and holds a binding for
     /// `vni`, or for VNI 0 when none both qualifies and is confirmed, the
     /// newest.
-    ///
-    /// A session qualifies until 5 seconds after this node first sealed a
-    /// transport packet under a newer session with the peer. Sessions are
-    /// listed oldest first, so walking them newest first carries the
-    /// earliest such seal along.
     fn choose(&self, peer: &PublicKey, vni: Vni, now: Instant) -> Option<u64> {
         let p = self.peers.get(peer)?;
         let mut any_confirmed = false;
-        let mut newer_sealed: Option<Instant> = None;
         for id in p.sessions.iter().rev() {
             let s = self.sessions.get(id)?;
-            let qualifies = newer_sealed.is_none_or(|at| now < at.saturating_add(QUALIFY_TIME));
-            if qualifies {
+            if self.qualifies(peer, *id, now) {
                 any_confirmed |= s.confirmed;
                 if s.confirmed && s.bindings.contains_key(&vni) {
                     return Some(*id);
                 }
             }
-            newer_sealed = match (newer_sealed, s.first_sealed) {
-                (Some(a), Some(b)) => Some(a.min(b)),
-                (a, b) => a.or(b),
-            };
         }
         (vni == Vni::INFRASTRUCTURE && !any_confirmed)
             .then(|| p.sessions.last().copied())
             .flatten()
+    }
+
+    /// Whether session `id` with `peer` qualifies at `now` (section 3.4):
+    /// fewer than 5 seconds have passed since this node first sealed a
+    /// transport packet under a session with `peer` it orders newer. A
+    /// session this node does not hold does not qualify.
+    ///
+    /// Sessions are listed oldest first, so walking them newest first
+    /// carries the earliest such seal along.
+    fn qualifies(&self, peer: &PublicKey, id: u64, now: Instant) -> bool {
+        let Some(p) = self.peers.get(peer) else {
+            return false;
+        };
+        let mut newer_sealed: Option<Instant> = None;
+        for sid in p.sessions.iter().rev() {
+            if *sid == id {
+                return newer_sealed.is_none_or(|at| now < at.saturating_add(QUALIFY_TIME));
+            }
+            let first = self.sessions.get(sid).and_then(|s| s.first_sealed);
+            newer_sealed = match (newer_sealed, first) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+        }
+        false
     }
 
     /// Sends a bind request for `vni` under the session a VNI 0 packet to

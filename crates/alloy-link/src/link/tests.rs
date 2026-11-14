@@ -342,6 +342,53 @@ fn a_session_binds_at_most_1024_blocks() {
 }
 
 #[test]
+fn a_session_that_no_longer_qualifies_binds_nothing() {
+    with_rng(37, |rng| {
+        let mut t = Two::new(rng);
+        t.links[B].add_local_vni(vni(5));
+        let old = t.id(B);
+        let cx = t.cx();
+        let mut out = Vec::new();
+        t.links[A].connect(cx, t.keys[B], &mut out).unwrap();
+        t.pump(A, out).unwrap();
+        let newer = t.id(B);
+        assert_ne!(old, newer);
+        let sealed = t.now;
+        t.session(B).first_sealed = Some(sealed);
+        let request = |t: &mut Two<'_>, after: Duration| {
+            let cx = Ctx {
+                now: sealed.saturating_add(after),
+                rng: t.rng,
+            };
+            let mut out = Vec::new();
+            let control = Control::BindRequest { vni: vni(5) };
+            let got = t.links[B].on_control(cx, old, control, &mut out);
+            (got, out.len())
+        };
+        // Section 3.4: 5 s after b first sealed under the newer session, the
+        // older one no longer qualifies: the request is dropped, nothing is
+        // bound and no bind is sealed.
+        assert_eq!(request(&mut t, QUALIFY_TIME), (Err(DropReason::Bind), 0));
+        assert!(!t.links[B].sessions[&old].local.contains_key(&vni(5)));
+        assert_eq!(
+            request(&mut t, QUALIFY_TIME - Duration::from_millis(1)),
+            (Ok(()), 1)
+        );
+        assert!(t.links[B].sessions[&old].local.contains_key(&vni(5)));
+        // The newer session still qualifies and binds.
+        let cx = Ctx {
+            now: sealed.saturating_add(QUALIFY_TIME),
+            rng: t.rng,
+        };
+        let control = Control::BindRequest { vni: vni(5) };
+        assert_eq!(
+            t.links[B].on_control(cx, newer, control, &mut Vec::new()),
+            Ok(())
+        );
+    });
+}
+
+#[test]
 fn a_sender_keeps_only_binds_it_asked_for() {
     with_rng(36, |rng| {
         let mut t = Two::new(rng);
