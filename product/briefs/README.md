@@ -10,3 +10,4 @@ a brief, the ARFC is the reference.
 | Brief | Surface | Task |
 |---|---|---|
 | PB-0001 | Init, join, and first login | T-0013 |
+| PB-0002 | Alloy Console: first screens, interaction model, and browser API needs | T-0124 |
