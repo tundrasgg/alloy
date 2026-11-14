@@ -41,6 +41,21 @@ pub(crate) fn wrap(text: &str, width: usize) -> String {
     out
 }
 
+/// `text` with every control character escaped as Rust escapes it (`\n`,
+/// `\u{1b}`), so that text the user or a server gave cannot move the cursor
+/// or change the terminal when it is echoed (T-0091 review F3).
+pub(crate) fn escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_control() {
+            out.extend(c.escape_default());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// The candidate nearest to `word`, when it is at most two edits away and
 /// fewer edits than `word` has characters; the first such candidate on a tie.
 pub(crate) fn nearest<'c>(word: &str, candidates: &[&'c str]) -> Option<&'c str> {
@@ -93,6 +108,13 @@ mod tests {
         assert_eq!(nearest("ab", &["a", "b"]), Some("a"));
         assert_eq!(nearest("frobnicate", &words), None);
         assert_eq!(nearest("version", &[]), None);
+    }
+
+    #[test]
+    fn escape_escapes_control_characters_only() {
+        assert_eq!(escape("plain é `x`"), "plain é `x`");
+        assert_eq!(escape("\u{1b}[2J\n\t\u{7f}"), "\\u{1b}[2J\\n\\t\\u{7f}");
+        assert_eq!(escape("\u{85}"), "\\u{85}");
     }
 
     #[test]

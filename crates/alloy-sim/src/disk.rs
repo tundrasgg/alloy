@@ -599,6 +599,12 @@ impl Disk {
         self.capacity = bytes;
     }
 
+    /// The capacity less the bytes counted against it, 0 at or above it
+    /// (clause 3.1.18.2).
+    pub(crate) fn free(&self) -> u64 {
+        self.capacity.saturating_sub(self.used)
+    }
+
     /// Whether the logged change `op` of sequence number `seq` is durable.
     fn durable(&self, seq: u64, op: &Op) -> bool {
         if self.forced.contains(&seq) {

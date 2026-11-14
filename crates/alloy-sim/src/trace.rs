@@ -38,6 +38,9 @@ pub(crate) const KIND_DISK_OP: u16 = 0x0050;
 pub(crate) const KIND_RNG: u16 = 0x0060;
 /// Kind `fault`: a text describing the fault.
 pub(crate) const KIND_FAULT: u16 = 0x0070;
+/// Kind `service`: a `service` call of a `mem` `host` instance and its
+/// result (clause 3.1.18.3).
+pub(crate) const KIND_SERVICE: u16 = 0x0080;
 /// Kind `note`: text from the scenario.
 pub(crate) const KIND_NOTE: u16 = 0x00F0;
 /// Kind `run-end`: the result of the run.
@@ -75,6 +78,7 @@ pub(crate) fn kind_name(kind: u16) -> &'static str {
         KIND_DISK_OP => "disk-op",
         KIND_RNG => "rng",
         KIND_FAULT => "fault",
+        KIND_SERVICE => "service",
         KIND_NOTE => "note",
         KIND_RUN_END => "run-end",
         _ => "unknown",

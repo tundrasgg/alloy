@@ -25,12 +25,13 @@ use alloy_seam::{BuildError, ConfigValue, Detail, ImplName, RegistryBuilder, Reg
 use alloy_seam::{Factory, SeamConfig};
 use tokio::runtime::{Handle, Runtime};
 
-use crate::{BoxFuture, ClockSeam, DiskIoSeam, NetSeam, RngSeam, SpawnSeam};
+use crate::{BoxFuture, ClockSeam, DiskIoSeam, HostSeam, NetSeam, RngSeam, SpawnSeam};
 
 mod clock;
 mod config;
 mod disk;
 mod errors;
+mod host;
 mod net;
 mod rng;
 mod spawn;
@@ -302,11 +303,13 @@ impl Drop for Permit {
 }
 
 /// Registers `os` for the five runtime kinds, `clock`, `net`, `disk-io`,
-/// `rng`, and `spawn`, with factories that build instances on `host` (ARFC
-/// 0005 clause 3.1.14).
+/// `rng`, and `spawn`, and for `host` (ARFC 0005 section 2.8), with
+/// factories that build instances on `host` (ARFC 0005 clause 3.1.14).
+/// [`Runtime::from_registry`](crate::Runtime::from_registry) builds no
+/// `host` instance.
 ///
 /// Each factory accepts configuration version 1 only (ARFC 0005 section 4.2):
-/// `message Empty {}` for `clock`, `net`, `rng`, and `spawn`, and
+/// `message Empty {}` for `clock`, `net`, `rng`, `spawn`, and `host`, and
 /// `message OsDiskIoConfig { string root = 1; }` for `disk-io`, ignoring
 /// unknown fields. `root` must be an absolute native path of an existing
 /// directory; an empty `root` means `/` on Unix platforms and is rejected
@@ -357,6 +360,13 @@ pub fn register_os(builder: &mut RegistryBuilder, host: &OsHost) -> Result<(), R
         Ok(Arc::new(disk::OsDiskIo::new(h.clone(), root)))
     });
     builder.register::<DiskIoSeam>(name(), disk_io)?;
+
+    let h = host.host();
+    let machine: Factory<HostSeam> = Arc::new(move |(): &(), value: &ConfigValue| {
+        decode::<config::Empty>(value)?;
+        Ok(Arc::new(host::OsMachine::new(h.clone())))
+    });
+    builder.register::<HostSeam>(name(), machine)?;
     Ok(())
 }
 
@@ -384,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn register_os_registers_the_five_kinds() {
+    fn register_os_registers_the_five_kinds_and_host() {
         let host = host();
         let entries: Vec<String> = registry(&host)
             .entries()
@@ -393,7 +403,14 @@ mod tests {
             .collect();
         assert_eq!(
             entries,
-            ["clock/os", "disk-io/os", "net/os", "rng/os", "spawn/os"]
+            [
+                "clock/os",
+                "disk-io/os",
+                "host/os",
+                "net/os",
+                "rng/os",
+                "spawn/os"
+            ]
         );
         let mut again = RegistryBuilder::new();
         register_os(&mut again, &host).unwrap();

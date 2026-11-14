@@ -13,10 +13,10 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use alloy_rt::{
-    BoxFuture, Clock, ClockSeam, DiskIoSeam, Instant, Interface, InterfaceAddr, InterfaceList,
-    JoinError, ListenOptions, Listener, Net, NetError, NetSeam, Rng, RngError, RngSeam, RtPath,
-    Runtime, Spawn, SpawnError, SpawnSeam, Stream as RtStream, StreamAddr, StreamOptions,
-    TaskHandle, TaskId, TaskName, UdpOptions, UdpSocket, WallTime,
+    BoxFuture, Clock, ClockSeam, DiskIoSeam, Host as MachineHost, HostSeam, Instant, Interface,
+    InterfaceAddr, InterfaceList, JoinError, ListenOptions, Listener, Net, NetError, NetSeam, Rng,
+    RngError, RngSeam, RtPath, Runtime, Spawn, SpawnError, SpawnSeam, Stream as RtStream,
+    StreamAddr, StreamOptions, TaskHandle, TaskId, TaskName, UdpOptions, UdpSocket, WallTime,
 };
 use alloy_seam::{BuildError, ConfigError, ConfigValue, Detail, ImplName, RegistryBuilder};
 
@@ -24,6 +24,7 @@ use crate::core::{After, BootJob, Core, End, Event, HostTimer, MAX_NANOS, Shared
 use crate::disk::{Disk, MemDiskIo};
 use crate::exec::{Joint, Owner, TaskKey, lock};
 use crate::fault::Unsynced;
+use crate::machine::{MachineConfig, MemMachine};
 use crate::stream::Stream;
 use crate::trace::{KIND_HOST_CRASH, KIND_HOST_STALL, KIND_HOST_START, KIND_RNG, KIND_TASK_SPAWN};
 use crate::world::HostId;
@@ -50,8 +51,13 @@ pub struct HostBoot {
     pub start: u32,
     /// The five `mem` instances of this start.
     pub runtime: Runtime,
-    /// Holds `mem` for the five runtime kinds, bound to this host and this
-    /// start.
+    /// The host's `mem` instance of `host` (clause 3.1.18). One instance
+    /// per host, shared by every start, so its service state outlives a
+    /// crash as clause 3.1.18.3 says. The registry's `host` factory returns
+    /// this same instance.
+    pub machine: Arc<dyn MachineHost>,
+    /// Holds `mem` for the five runtime kinds and for `host`, bound to this
+    /// host and this start.
     pub registry: RegistryBuilder,
 }
 
@@ -80,6 +86,8 @@ pub struct HostConfig {
     pub capacity: u64,
     /// `block_size` of the file namespace, 512 or 4,096. Default 4,096.
     pub block_size: u32,
+    /// What the host's `host` instance reports (clause 3.1.18).
+    pub machine: MachineConfig,
 }
 
 impl HostConfig {
@@ -92,12 +100,13 @@ impl HostConfig {
             devices: Vec::new(),
             capacity: 1_073_741_824,
             block_size: 4_096,
+            machine: MachineConfig::default(),
         }
     }
 }
 
 impl fmt::Debug for HostConfig {
-    /// Every field but `boot`.
+    /// Every field but `boot` and `machine`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HostConfig")
             .field("clock_ppm", &self.clock_ppm)
@@ -236,6 +245,8 @@ pub(crate) struct Host {
     rng: Vec<RngStart>,
     /// The file namespace and devices, which persist across crashes.
     pub(crate) disk: Disk,
+    /// The host's one `host` instance, which persists across crashes.
+    pub(crate) machine: Arc<MemMachine>,
 }
 
 /// The `rng` instances of one start: how many it has built, and, for a start
@@ -249,8 +260,15 @@ struct RngStart {
 
 impl Host {
     /// A host created at world time `now`, not yet started.
-    pub(crate) fn new(config: HostConfig, disk: Disk, now: u64, wall_start: i64) -> Host {
+    pub(crate) fn new(
+        config: HostConfig,
+        disk: Disk,
+        machine: Arc<MemMachine>,
+        now: u64,
+        wall_start: i64,
+    ) -> Host {
         Host {
+            machine,
             boot: config.boot,
             start: 0,
             crashed: true,
@@ -335,6 +353,8 @@ impl Core {
         entry.next_task += 1;
         let boot = Arc::clone(&entry.boot);
         let clock = Arc::clone(&entry.clock);
+        let machine = Arc::clone(&entry.machine);
+        machine.starting();
         shared.push(Some(host), KIND_HOST_START, &[]);
         let key = self.exec.insert(Owner::Host { host, id }, None, None);
         shared.push(Some(host), KIND_TASK_SPAWN, &spawn_body(id, "boot"));
@@ -364,7 +384,8 @@ impl Core {
                 host,
                 start,
                 runtime,
-                registry: registry(&at, &clock),
+                machine: Arc::clone(&machine) as Arc<dyn MachineHost>,
+                registry: registry(&at, &clock, machine),
             },
         });
     }
@@ -396,6 +417,7 @@ impl Core {
         let mut stall_event = None;
         if let Ok(entry) = self.host_mut(host) {
             entry.crashed = true;
+            entry.machine.crashed();
             entry.pending_crash = None;
             entry.armed = None;
             // Each start crashes at most once, so each crash draws its own
@@ -930,8 +952,13 @@ fn skip_fields(mut bytes: &[u8]) -> Result<(), &'static str> {
 }
 
 /// A registry builder holding `mem` for the five runtime kinds, bound to
-/// the start at `at`.
-fn registry(at: &Place, clock: &Arc<Mutex<HostClock>>) -> RegistryBuilder {
+/// the start at `at`, and for `host`, whose factory returns the host's one
+/// instance `machine`.
+fn registry(
+    at: &Place,
+    clock: &Arc<Mutex<HostClock>>,
+    machine: Arc<MemMachine>,
+) -> RegistryBuilder {
     // "mem" is 3 lowercase letters, a valid implementation name.
     let mem = ImplName::new("mem").expect("mem is a valid implementation name");
     let mut builder = RegistryBuilder::new();
@@ -964,14 +991,19 @@ fn registry(at: &Place, clock: &Arc<Mutex<HostClock>>) -> RegistryBuilder {
         check_config(config)?;
         Ok(Arc::new(MemSpawn::new(place.clone())))
     });
-    // A new builder holds no registration, and the five kinds are valid
-    // and distinct, so none of these can be refused.
+    let host_factory: alloy_seam::Factory<HostSeam> = Arc::new(move |_, config| {
+        check_config(config)?;
+        Ok(Arc::clone(&machine) as Arc<dyn MachineHost>)
+    });
+    // A new builder holds no registration, and the six kinds are valid and
+    // distinct, so none of these can be refused.
     let registered = builder
         .register::<ClockSeam>(mem.clone(), clock_factory)
         .and_then(|()| builder.register::<NetSeam>(mem.clone(), net_factory))
         .and_then(|()| builder.register::<DiskIoSeam>(mem.clone(), disk_factory))
         .and_then(|()| builder.register::<RngSeam>(mem.clone(), rng_factory))
-        .and_then(|()| builder.register::<SpawnSeam>(mem, spawn_factory));
+        .and_then(|()| builder.register::<SpawnSeam>(mem.clone(), spawn_factory))
+        .and_then(|()| builder.register::<HostSeam>(mem, host_factory));
     debug_assert!(registered.is_ok(), "{registered:?}");
     builder
 }

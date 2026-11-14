@@ -3,7 +3,10 @@
 //! All of Alloy reaches the world through five seams: [`Clock`], [`Net`],
 //! [`DiskIo`], [`Rng`], and [`Spawn`]. A [`Runtime`] bundles one instance of
 //! each, and every component takes a `Runtime` at construction and uses
-//! nothing else for time, network, storage, randomness, or concurrency. In
+//! nothing else for time, network, storage, randomness, or concurrency.
+//! A sixth seam, [`Host`], gives the machine's facts and control of the
+//! service `alloyd`; it is not in `Runtime`, and only `alloy init` and
+//! `alloy join` build one (ARFC 0005 section 2.8, ADR 0071). In
 //! production the `os` implementations serve the seams; under test the
 //! deterministic simulator's `mem` implementations do.
 //!
@@ -29,6 +32,7 @@
 pub use alloy_seam::BoxFuture;
 
 mod disk;
+mod host;
 mod net;
 mod os;
 mod rng;
@@ -40,6 +44,10 @@ pub use disk::{
     Access, Ace, Create, DirEntry, DiskError, DiskFile, DiskIo, EntryKind, FileInfo, IoBuf,
     MAX_DISK_BATCH, Metadata, OpenOptions, Protection, ReadDone, ReadOp, RtPath, Security, Sid,
     SyncKind, WriteDone, WriteOp,
+};
+pub use host::{
+    Arch, DiskFact, Host, HostError, HostFacts, HostSeam, Platform, RunState, ServiceAction,
+    ServiceStatus,
 };
 pub use net::{
     Datagram, Interface, InterfaceAddr, InterfaceList, ListenOptions, Listener, MAX_NET_BATCH, Net,

@@ -19,6 +19,7 @@ use crate::fault::Fault;
 use crate::history::History;
 use crate::hook;
 use crate::host::{Host, HostConfig, HostState, MAX_HOSTS, MAX_PPM};
+use crate::machine::MemMachine;
 use crate::stream::Stream;
 use crate::trace::{KIND_NOTE, Observer, text_field};
 
@@ -137,7 +138,9 @@ impl World {
     ///
     /// # Errors
     ///
-    /// [`WorldError::Invalid`] for a `clock_ppm` outside -500,000 to 500,000,
+    /// [`WorldError::Invalid`] for a `machine` that `MachineConfig` refuses:
+    /// `cores` 0, a Linux `release` over 64 bytes, or an `Arch::Other` text
+    /// outside 1 to 32 bytes; for a `clock_ppm` outside -500,000 to 500,000,
     /// a `block_size` other than 512 or 4,096, more than 64 devices, and a
     /// device that clause 3.3.7 rejects: one with a length outside its
     /// range, or whose path is the root, another device's, or below one.
@@ -151,6 +154,9 @@ impl World {
                 "clock_ppm must be -500,000 to 500,000",
             )));
         }
+        if let Err(reason) = config.machine.check() {
+            return Err(WorldError::Invalid(Detail::new(reason)));
+        }
         let mut after = After::default();
         let id = {
             let mut core = lock(&self.0.core);
@@ -161,7 +167,19 @@ impl World {
             let id = HostId(core.hosts.len() as u32);
             let reads = Stream::new(self.0.seed(), b"disk-read", &[u64::from(id.0)]);
             let disk = Disk::new(config.block_size, config.capacity, &config.devices, reads)?;
-            let host = Host::new(config, disk, self.0.now_nanos(), self.0.wall_start());
+            let machine = Arc::new(MemMachine::new(
+                Arc::downgrade(&self.0),
+                id,
+                config.machine.clone(),
+                &config.devices,
+            ));
+            let host = Host::new(
+                config,
+                disk,
+                machine,
+                self.0.now_nanos(),
+                self.0.wall_start(),
+            );
             core.hosts.push(host);
             core.start(&self.0, id, None, &mut after);
             id

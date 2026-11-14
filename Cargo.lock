@@ -24,6 +24,17 @@ dependencies = [
 [[package]]
 name = "alloy"
 version = "0.0.0"
+dependencies = [
+ "alloy-api",
+ "alloy-crypto",
+ "alloy-id",
+ "alloy-proto",
+ "alloy-rt",
+ "alloy-seam",
+ "alloy-sim",
+ "alloyd",
+ "prost-types",
+]
 
 [[package]]
 name = "alloy-api"

@@ -7,5 +7,18 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[dependencies]
+alloy-api = { path = "../alloy-api" }
+alloy-crypto = { path = "../alloy-crypto" }
+alloy-id = { path = "../alloy-id" }
+alloy-proto = { path = "../alloy-proto" }
+alloy-rt = { path = "../alloy-rt" }
+alloy-seam = { path = "../alloy-seam" }
+alloyd = { path = "../alloyd" }
+prost-types.workspace = true
+
+[dev-dependencies]
+alloy-sim = { path = "../alloy-sim" }
+
 [lints]
 workspace = true
