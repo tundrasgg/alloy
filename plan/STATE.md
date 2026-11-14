@@ -12,7 +12,7 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0125 |
+| Task `T-` | T-0126 |
 | Decision `D-` | D-0060 |
 | ADR | 0068 |
 | Research `R-` | R-0009 |
@@ -34,12 +34,13 @@ Only tasks that are not done or cancelled. A finished task leaves the board in t
 | T-0111 | build | developer | queued | T-0104, T-0106, T-0109, T-0114 | Wire alloyd init, join, node channel, and heartbeats |
 | T-0112 | build | developer | queued | T-0109, T-0111 | Add alloy init, join, login, and node list to the CLI |
 | T-0113 | verify | verifier | review | T-0111 | Write the M11 rung 2 join and node list check |
-| T-0114 | build | developer | active | none | Add the Node kind, status messages, and node state to alloy-state |
-| T-0116 | build | developer | active | none | Implement the crossed rekey rule in alloy-link |
+| T-0114 | build | developer | review | none | Add the Node kind, status messages, and node state to alloy-state |
+| T-0116 | build | developer | review | none | Implement the crossed rekey rule in alloy-link |
 | T-0118 | build | developer | active | none | Move API TLS behind alloy-crypto and bound idle callers |
 | T-0119 | spec | architect | queued | before rung 5 | Keep VNI binds alive across crossed rekeys, record the ADR |
-| T-0120 | build | developer | active | none | Build the disk-io protection operations in os and mem |
+| T-0120 | build | developer | review | none | Build the disk-io protection operations in os and mem |
 | T-0121 | build | developer | queued | T-0120, T-0114 | Create keys and stores locked down in alloy-id and alloy-state |
+| T-0125 | build | developer | active | none | Fix the Linux Clippy error in the disk-io protection tests |
 
 ## Still to cut for M0
 
