@@ -12,9 +12,9 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0126 |
-| Decision `D-` | D-0061 |
-| ADR | 0068 |
+| Task `T-` | T-0128 |
+| Decision `D-` | D-0062 |
+| ADR | 0069 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0003 |
 
@@ -30,12 +30,14 @@ Only tasks that are not done or cancelled. A finished task leaves the board in t
 | T-0077 | build | developer | paused | D-0044 | Build alloy-sim networks, UDP, and the echo scenario |
 | T-0078 | build | developer | paused | D-0044 | Build alloy-sim mem streams |
 | T-0084 | verify | verifier | paused | D-0044 | Run the runtime conformance suites against os |
-| T-0111 | build | developer | active | none | Wire alloyd init, join, node channel, and heartbeats |
-| T-0112 | build | developer | queued | T-0109, T-0111 | Add alloy init, join, login, and node list to the CLI |
+| T-0111 | build | developer | review | none | Wire alloyd init, join, node channel, and heartbeats |
+| T-0112 | build | developer | queued | T-0126 builds | Add alloy init, join, login, and node list to the CLI |
 | T-0113 | verify | verifier | review | T-0111 | Write the M11 rung 2 join and node list check |
 | T-0116 | build | developer | active | none | Implement the crossed rekey rule in alloy-link |
 | T-0119 | spec | architect | queued | before rung 5 | Keep VNI binds alive across crossed rekeys, record the ADR |
 | T-0121 | build | developer | active | none | Create keys and stores locked down in alloy-id and alloy-state |
+| T-0126 | spec | architect | active | none | Specify what M11 rung 2 builds of init, join, and local admin |
+| T-0127 | build | developer | queued | T-0116 | Let alloy-link accept unknown initiators and draw counters |
 
 ## Still to cut for M0
 
@@ -103,6 +105,8 @@ Only tasks that are not done or cancelled. A finished task leaves the board in t
 - Spec: ARFC 0004 section 8 states the probe reflection bound from section 3.2 (T-0021 follow-up).
 
 ## M11 notes
+
+- From T-0111 (D-0061): `alloy_id::proto::JoinRequest` still has the old `secret` field and body layout; the `alloyd join` build fixes it with `crates/alloy-id/**` in its touches. T-0112 folds T-0091 F2 and F3.
 
 - D-0060: the next `alloy-api` task closes the evicted-connection hold (T-0118 re-review F1). The log-store kill check (ARFC 0006 section 5.5) needs a way to start a process from a test (T-0108).
 
