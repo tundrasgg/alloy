@@ -463,3 +463,48 @@ fn the_next_deadline_is_the_earliest_timer() {
         );
     });
 }
+
+/// The replay entries of keys never added as peers are bounded: the least
+/// recently accepted goes first, a key accepted again moves to the back, and
+/// a key admitted with `add_peer` is kept for good.
+#[test]
+fn unknown_replay_entries_are_bounded() {
+    let mut a = link(1);
+    let key = |n: u32| {
+        let mut bytes = [0; 32];
+        bytes[..4].copy_from_slice(&n.to_le_bytes());
+        PublicKey::from_bytes(bytes)
+    };
+    let accept = |a: &mut Link, n: u32| {
+        a.highest.insert(key(n), u64::from(n));
+        a.note_transient(key(n));
+    };
+    let cap = UNKNOWN_REPLAY_ENTRIES as u32;
+    for n in 0..cap {
+        accept(&mut a, n);
+    }
+    a.add_peer(key(1), PresharedKey::none());
+    accept(&mut a, 0);
+    accept(&mut a, cap);
+    assert_eq!(a.transient.len(), UNKNOWN_REPLAY_ENTRIES);
+    assert!(a.highest.contains_key(&key(2)));
+    accept(&mut a, cap + 1);
+    assert_eq!(a.transient.len(), UNKNOWN_REPLAY_ENTRIES);
+    assert_eq!(a.transient.len(), a.transient_order.len());
+    // Key 2 was the least recent: 0 moved to the back, 1 was admitted.
+    assert!(!a.highest.contains_key(&key(2)));
+    assert!(a.highest.contains_key(&key(0)));
+    assert!(a.highest.contains_key(&key(1)));
+    assert!(a.highest.contains_key(&key(cap + 1)));
+    for n in cap + 2..cap + 10 {
+        accept(&mut a, n);
+    }
+    assert_eq!(a.transient.len(), UNKNOWN_REPLAY_ENTRIES);
+    assert!(!a.highest.contains_key(&key(10)));
+    assert!(a.highest.contains_key(&key(11)));
+    assert!(
+        a.highest.contains_key(&key(1)),
+        "an admitted key is never evicted"
+    );
+    assert!(a.highest.contains_key(&key(0)));
+}

@@ -73,6 +73,21 @@
 //! [`Link::remove_peer`], so an initiation captured before a peer was
 //! removed stays a replay after it is added again.
 //!
+//! An anchor's join service takes sessions from initiators it does not know
+//! yet (ARFC 0002 section 3.3). With [`Link::set_accept_unknown`] on, such
+//! an initiation is accepted within [`UNKNOWN_PER_SOURCE`] per source
+//! address and [`UNKNOWN_TOTAL`] in total per [`UNKNOWN_WINDOW`], and the
+//! initiator is reported ([`Event::UnknownInitiator`]) for the caller to
+//! admit with [`Link::add_peer`] or drop with [`Link::remove_peer`]. The
+//! replay table keeps at most [`UNKNOWN_REPLAY_ENTRIES`] keys never added as
+//! peers.
+//!
+//! # Handshake counter
+//!
+//! The node channel takes its request ids from the handshake counter
+//! (ARFC 0002 section 3.13). [`Link::draw_counter`] takes the next value no
+//! initiation has used, so an initiation and a request never share one.
+//!
 //! # Queues
 //!
 //! A node sends on [`Config::queues`] queues, numbered from 0. The caller
@@ -159,6 +174,25 @@ pub const RETRY_INTERVAL: Duration = Duration::from_secs(5);
 /// How long an initiator keeps retrying a handshake before it abandons it.
 /// ARFC 0003 leaves this open (section 9); this crate fixes it.
 pub const RETRY_GIVE_UP: Duration = Duration::from_secs(90);
+
+/// Initiations from unknown initiators accepted per source address in any
+/// [`UNKNOWN_WINDOW`] (ARFC 0002 section 3.3 step 4).
+pub const UNKNOWN_PER_SOURCE: usize = 10;
+
+/// Initiations from unknown initiators accepted in total in any
+/// [`UNKNOWN_WINDOW`] (ARFC 0002 section 3.3 step 4).
+pub const UNKNOWN_TOTAL: usize = 100;
+
+/// The window over which [`UNKNOWN_PER_SOURCE`] and [`UNKNOWN_TOTAL`]
+/// count: an accepted initiation counts until this long after it arrived.
+pub const UNKNOWN_WINDOW: Duration = Duration::from_secs(1);
+
+/// Static keys never added as peers for which the replay table of section
+/// 3.2 keeps the highest counter, the least recently accepted evicted
+/// first. ARFC 0003 states no bound for them; this crate fixes it so that
+/// at [`UNKNOWN_TOTAL`] per second an entry lives at least 655 seconds,
+/// longer than any session ([`REJECT_AFTER`]) that it protects.
+pub const UNKNOWN_REPLAY_ENTRIES: usize = 65_536;
 
 /// How a [`Link`] is set up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -281,6 +315,14 @@ pub enum Event {
         /// The peer.
         peer: PublicKey,
     },
+    /// A session was made with `peer` from its initiation although it is not
+    /// an admitted peer ([`Link::set_accept_unknown`]). Pushed after the
+    /// [`Event::SessionMade`], for every such session. The caller admits the
+    /// peer with [`Link::add_peer`] or drops it with [`Link::remove_peer`].
+    UnknownInitiator {
+        /// The static key the handshake authenticated.
+        peer: PublicKey,
+    },
     /// A pending initiation ended without a session.
     HandshakeAbandoned {
         /// The peer.
@@ -310,9 +352,12 @@ pub enum DropReason {
     /// A handshake field, a cookie or a transport packet does not decrypt, or
     /// a Diffie-Hellman result is zero.
     Unauthentic,
-    /// An initiation's static key is not a peer of this link, or a packet is
-    /// sent to one that is not.
+    /// An initiation's static key is not a peer of this link while
+    /// accept-unknown is off, or a packet is sent to one that is not.
     UnknownPeer,
+    /// An initiation from an unknown initiator beyond [`UNKNOWN_PER_SOURCE`]
+    /// or [`UNKNOWN_TOTAL`] ([`Link::set_accept_unknown`]).
+    RateLimited,
     /// A decrypted handshake payload breaks section 3.1: `queues` outside 1
     /// to 64, a flag bit or a non-zero `reserved`.
     Payload,

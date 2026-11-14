@@ -22,7 +22,8 @@ use crate::{
     COOKIE_TIME, COUNTER_BLOCK, Config, Ctx, DISCARD_AFTER_FOLLOWED, Destination, DropReason,
     Event, HOLD_TIME, LOAD_THRESHOLD, MAX_BINDINGS_PER_SESSION, MAX_BLOCKS_PER_SESSION,
     MAX_HELD_PER_VNI, MAX_SESSIONS_PER_PEER, Outbound, Output, QUALIFY_TIME, REJECT_AFTER,
-    REKEY_AFTER, REKEY_AFTER_PACKETS, RETRY_GIVE_UP, RETRY_INTERVAL, Sent,
+    REKEY_AFTER, REKEY_AFTER_PACKETS, RETRY_GIVE_UP, RETRY_INTERVAL, Sent, UNKNOWN_PER_SOURCE,
+    UNKNOWN_REPLAY_ENTRIES, UNKNOWN_TOTAL, UNKNOWN_WINDOW,
 };
 
 /// Indexes per block. This node reserves only blocks whose base is a
@@ -41,6 +42,10 @@ enum BlockUse {
 
 /// A peer this link may talk to.
 struct Peer {
+    /// Added with [`Link::add_peer`]. Otherwise an unknown initiator the
+    /// caller has not admitted yet, held only while it has a session or a
+    /// pending initiation.
+    admitted: bool,
     psk: PresharedKey,
     /// `mac1` key of messages sent to the peer.
     mac1: Mac1Key,
@@ -52,6 +57,20 @@ struct Peer {
     sessions: Vec<u64>,
     /// Packets waiting for a session, per VNI, oldest first.
     held: BTreeMap<Vni, VecDeque<Held>>,
+}
+
+impl Peer {
+    fn new(key: &PublicKey, psk: PresharedKey, admitted: bool) -> Self {
+        Self {
+            admitted,
+            psk,
+            mac1: Mac1Key::new(key),
+            cookie_key: CookieReplyKey::new(key),
+            cookie: None,
+            sessions: Vec::new(),
+            held: BTreeMap::new(),
+        }
+    }
 }
 
 struct Held {
@@ -96,8 +115,25 @@ pub struct Link {
     /// The highest handshake counter accepted per initiator static key
     /// (3.2). It outlives [`Link::remove_peer`], so an initiation captured
     /// before a peer is removed is still a replay after it is added again.
-    /// One entry per static key ever added as a peer.
+    /// One entry per static key ever added as a peer, and at most
+    /// [`UNKNOWN_REPLAY_ENTRIES`] for keys never added, listed in
+    /// `transient`.
     highest: BTreeMap<PublicKey, u64>,
+    /// The keys of `highest` never added as peers, each with the sequence
+    /// number of its latest accepted initiation. `transient_order` is the
+    /// same map inverted, so the least recent is evicted first.
+    transient: BTreeMap<PublicKey, u64>,
+    transient_order: BTreeMap<u64, PublicKey>,
+    transient_seq: u64,
+    /// Whether initiations from static keys that are not peers are accepted
+    /// ([`Link::set_accept_unknown`]).
+    accept_unknown: bool,
+    /// The unknown initiations accepted in the last [`UNKNOWN_WINDOW`], with
+    /// their source addresses, oldest first. At most [`UNKNOWN_TOTAL`].
+    unknown_window: VecDeque<(Instant, Vec<u8>)>,
+    /// Unknown initiators that may have lost their last session or pending
+    /// initiation, checked at the end of every public call.
+    maybe_idle: BTreeSet<PublicKey>,
     pending: BTreeMap<PublicKey, Pending>,
     sessions: BTreeMap<u64, Session>,
     blocks: BTreeMap<u32, BlockUse>,
@@ -136,6 +172,12 @@ impl Link {
             backlog: 0,
             peers: BTreeMap::new(),
             highest: BTreeMap::new(),
+            transient: BTreeMap::new(),
+            transient_order: BTreeMap::new(),
+            transient_seq: 0,
+            accept_unknown: false,
+            unknown_window: VecDeque::new(),
+            maybe_idle: BTreeSet::new(),
             pending: BTreeMap::new(),
             sessions: BTreeMap::new(),
             blocks: BTreeMap::new(),
@@ -154,23 +196,76 @@ impl Link {
     /// Lets this link talk to the node whose static key is `peer`, with `psk`
     /// as the pair's pre-shared key ([`PresharedKey::none`] when none is
     /// configured). For a peer already added, replaces the pre-shared key
-    /// used by later handshakes.
+    /// used by later handshakes. For an unknown initiator
+    /// ([`Event::UnknownInitiator`]) this admits it: its sessions are kept,
+    /// it becomes a peer like any other, and `psk` applies from its next
+    /// handshake.
     pub fn add_peer(&mut self, peer: PublicKey, psk: PresharedKey) {
+        if let Some(seq) = self.transient.remove(&peer) {
+            self.transient_order.remove(&seq);
+        }
         if let Some(p) = self.peers.get_mut(&peer) {
             p.psk = psk;
+            p.admitted = true;
             return;
         }
-        self.peers.insert(
-            peer,
-            Peer {
-                psk,
-                mac1: Mac1Key::new(&peer),
-                cookie_key: CookieReplyKey::new(&peer),
-                cookie: None,
-                sessions: Vec::new(),
-                held: BTreeMap::new(),
-            },
-        );
+        self.peers.insert(peer, Peer::new(&peer, psk, true));
+    }
+
+    /// Turns the accept-unknown mode on or off. It is off for a new link.
+    ///
+    /// While it is on, an initiation whose static key is not a peer is
+    /// accepted as a peer's would be, with [`PresharedKey::none`], within
+    /// two limits over every window of [`UNKNOWN_WINDOW`]:
+    /// [`UNKNOWN_PER_SOURCE`] per source address and [`UNKNOWN_TOTAL`] in
+    /// total (ARFC 0002 section 3.3 step 4). An initiation beyond either is
+    /// dropped with [`DropReason::RateLimited`]. The source address is the
+    /// `src` of [`Link::receive`] without its 2-byte port when `src` is 6 or
+    /// 18 bytes long, and the whole `src` otherwise. Only initiations that
+    /// pass every earlier check count toward the limits, an unknown
+    /// initiator's rekeys included.
+    ///
+    /// The link then pushes [`Event::UnknownInitiator`] after the
+    /// [`Event::SessionMade`] and holds the initiator until the caller
+    /// admits it ([`Link::add_peer`]) or drops it ([`Link::remove_peer`]),
+    /// or until it has neither a session nor a pending initiation, when the
+    /// link forgets it. The highest counter accepted from it (section 3.2)
+    /// is kept for at most [`UNKNOWN_REPLAY_ENTRIES`] such keys, the least
+    /// recently accepted evicted first.
+    ///
+    /// Turned off, later initiations from keys that are not admitted peers
+    /// are dropped with [`DropReason::UnknownPeer`]. Unknown initiators
+    /// held already stay until admitted, dropped or forgotten.
+    pub fn set_accept_unknown(&mut self, on: bool) {
+        self.accept_unknown = on;
+    }
+
+    /// Whether `peer` was added with [`Link::add_peer`] and not removed.
+    pub fn is_admitted(&self, peer: &PublicKey) -> bool {
+        self.peers.get(peer).is_some_and(|p| p.admitted)
+    }
+
+    /// Whether `peer` is an unknown initiator that the link holds and the
+    /// caller has not admitted ([`Link::set_accept_unknown`]).
+    pub fn is_unknown(&self, peer: &PublicKey) -> bool {
+        self.peers.get(peer).is_some_and(|p| !p.admitted)
+    }
+
+    /// Takes the next handshake counter value that no initiation and no
+    /// earlier draw has used, and marks it used, so the node channel's
+    /// request ids (ARFC 0002 section 3.13: the value plus 1) and
+    /// initiation counters never share a value (ARFC 0003 section 3.2).
+    /// Draws and initiations take values from the same blocks, in the order
+    /// of the calls.
+    ///
+    /// Pushes [`Event::CounterBlockNeeded`] when the draw uses half of the
+    /// current block, as an initiation does. Returns `None`, pushing that
+    /// event, when the blocks the caller reserved are used up. Nothing is
+    /// counted as a drop.
+    pub fn draw_counter(&mut self, out: &mut Vec<Output>) -> Option<HandshakeCounter> {
+        let value = self.counter_available(out).ok()?;
+        self.counter_used(out);
+        Some(HandshakeCounter(value))
     }
 
     /// Removes `peer`: abandons its pending initiation, discards its
@@ -184,6 +279,7 @@ impl Link {
             self.discard_session(id, out);
         }
         self.peers.remove(peer);
+        self.forget_idle();
     }
 
     /// Declares that a VPC with VNI `vni` has a port on this node, so a peer's
@@ -287,6 +383,7 @@ impl Link {
             return Ok(());
         }
         let result = self.initiate(cx, peer, cx.now, out);
+        self.forget_idle();
         self.counted(result)
     }
 
@@ -312,6 +409,7 @@ impl Link {
             Some(MessageType::Transport) => self.on_transport(cx, datagram, out),
             None => Err(DropReason::UnknownType),
         };
+        self.forget_idle();
         self.counted(result)
     }
 
@@ -333,6 +431,7 @@ impl Link {
         out: &mut Vec<Output>,
     ) -> Result<Sent, DropReason> {
         let result = self.send_packet(cx, to, packet, out);
+        self.forget_idle();
         self.counted(result)
     }
 
@@ -390,6 +489,7 @@ impl Link {
         let abandoned = self.reassembly.expire(now);
         self.count_n(DropReason::Reassembly, abandoned);
         self.retire_cookie_secrets(now);
+        self.forget_idle();
     }
 
     fn counted<T>(&mut self, result: Result<T, DropReason>) -> Result<T, DropReason> {
@@ -430,12 +530,7 @@ impl Link {
         if !self.peers.contains_key(&peer) {
             return Err(DropReason::UnknownPeer);
         }
-        if self.counter_next >= self.counter_end {
-            out.push(Output::Event(Event::CounterBlockNeeded {
-                next_start: HandshakeCounter(self.counter_end),
-            }));
-            return Err(DropReason::NoCounter);
-        }
+        let counter = self.counter_available(out)?;
         let start = draw::<4>(cx.rng)?;
         let mut secret = draw::<32>(cx.rng)?;
         let ephemeral = EphemeralSecret::from_bytes(secret);
@@ -448,7 +543,7 @@ impl Link {
         let follows = self.confirmed_sessions(peer);
         let base = self.reserve_block(start, BlockUse::Pending(peer))?;
         let payload = InitiationPayload {
-            counter: HandshakeCounter(self.counter_next),
+            counter: HandshakeCounter(counter),
             queues: self.queues,
         }
         .to_bytes();
@@ -480,12 +575,7 @@ impl Link {
         if let Some((cookie, _)) = &p.cookie {
             msg.mac2 = cookie.mac2(&msg.to_bytes()[..Initiation::MAC2_OFFSET]);
         }
-        self.counter_next += 1;
-        if self.counter_next == self.counter_end - COUNTER_BLOCK / 2 {
-            out.push(Output::Event(Event::CounterBlockNeeded {
-                next_start: HandshakeCounter(self.counter_end),
-            }));
-        }
+        self.counter_used(out);
         self.pending.insert(
             peer,
             Pending {
@@ -502,6 +592,28 @@ impl Link {
             datagram: msg.to_bytes().to_vec(),
         });
         Ok(())
+    }
+
+    /// The next unused handshake counter, or `NoCounter` with
+    /// [`Event::CounterBlockNeeded`] when the reserved blocks are used up.
+    fn counter_available(&self, out: &mut Vec<Output>) -> Result<u64, DropReason> {
+        if self.counter_next >= self.counter_end {
+            out.push(Output::Event(Event::CounterBlockNeeded {
+                next_start: HandshakeCounter(self.counter_end),
+            }));
+            return Err(DropReason::NoCounter);
+        }
+        Ok(self.counter_next)
+    }
+
+    /// Marks the value [`Link::counter_available`] returned as used.
+    fn counter_used(&mut self, out: &mut Vec<Output>) {
+        self.counter_next += 1;
+        if self.counter_next == self.counter_end - COUNTER_BLOCK / 2 {
+            out.push(Output::Event(Event::CounterBlockNeeded {
+                next_start: HandshakeCounter(self.counter_end),
+            }));
+        }
     }
 
     fn on_initiation(
@@ -544,7 +656,8 @@ impl Link {
         let (handshake, initiator, payload) =
             ResponderHandshake::read_initiation(&self.local, &noise)
                 .map_err(|_| DropReason::Unauthentic)?;
-        if !self.peers.contains_key(&initiator) {
+        let admitted = self.is_admitted(&initiator);
+        if !admitted && !self.accept_unknown {
             return Err(DropReason::UnknownPeer);
         }
         let payload = InitiationPayload::decode(&payload).map_err(|_| DropReason::Payload)?;
@@ -555,7 +668,18 @@ impl Link {
         {
             return Err(DropReason::Replay);
         }
+        if !admitted {
+            self.take_unknown_slot(cx.now, src)?;
+        }
         self.highest.insert(initiator, payload.counter.0);
+        if !admitted {
+            self.note_transient(initiator);
+            self.peers
+                .entry(initiator)
+                .or_insert_with(|| Peer::new(&initiator, PresharedKey::none(), false));
+            // Forgotten at the end of this call unless a session is made.
+            self.maybe_idle.insert(initiator);
+        }
         self.expire_peer(cx.now, initiator, out);
         let start = draw::<4>(cx.rng)?;
         let mut secret = draw::<32>(cx.rng)?;
@@ -608,8 +732,79 @@ impl Link {
             follows,
         );
         self.add_session(id, session, false, out);
+        if !admitted {
+            out.push(Output::Event(Event::UnknownInitiator { peer: initiator }));
+        }
         self.flush_held(cx.now, initiator, out);
         Ok(())
+    }
+
+    /// Counts one initiation from an unknown initiator against the limits
+    /// of [`Link::set_accept_unknown`], or refuses it.
+    fn take_unknown_slot(&mut self, now: Instant, src: &[u8]) -> Result<(), DropReason> {
+        while self
+            .unknown_window
+            .front()
+            .is_some_and(|(at, _)| now >= at.saturating_add(UNKNOWN_WINDOW))
+        {
+            self.unknown_window.pop_front();
+        }
+        if self.unknown_window.len() >= UNKNOWN_TOTAL {
+            return Err(DropReason::RateLimited);
+        }
+        let source = source_address(src);
+        let from_source = self
+            .unknown_window
+            .iter()
+            .filter(|(_, s)| s.as_slice() == source)
+            .count();
+        if from_source >= UNKNOWN_PER_SOURCE {
+            return Err(DropReason::RateLimited);
+        }
+        self.unknown_window.push_back((now, source.to_vec()));
+        Ok(())
+    }
+
+    /// Marks `key`'s entry in `highest` as the most recently accepted of the
+    /// keys never added as peers, and evicts the least recent beyond
+    /// [`UNKNOWN_REPLAY_ENTRIES`].
+    fn note_transient(&mut self, key: PublicKey) {
+        self.transient_seq += 1;
+        let seq = self.transient_seq;
+        if let Some(old) = self.transient.insert(key, seq) {
+            self.transient_order.remove(&old);
+        }
+        self.transient_order.insert(seq, key);
+        while self.transient.len() > UNKNOWN_REPLAY_ENTRIES {
+            let Some((_, evicted)) = self.transient_order.pop_first() else {
+                break;
+            };
+            self.transient.remove(&evicted);
+            self.highest.remove(&evicted);
+        }
+    }
+
+    /// Forgets the unknown initiators in `maybe_idle` that have neither a
+    /// session nor a pending initiation. It runs at the end of each public
+    /// call and never inside one, so no internal step loses a peer it has
+    /// just looked up.
+    fn forget_idle(&mut self) {
+        for key in std::mem::take(&mut self.maybe_idle) {
+            let idle = self
+                .peers
+                .get(&key)
+                .is_some_and(|p| !p.admitted && p.sessions.is_empty())
+                && !self.pending.contains_key(&key);
+            if idle {
+                self.peers.remove(&key);
+            }
+        }
+    }
+
+    fn mark_if_unknown(&mut self, peer: PublicKey) {
+        if self.is_unknown(&peer) {
+            self.maybe_idle.insert(peer);
+        }
     }
 
     fn send_cookie_reply(
@@ -869,6 +1064,7 @@ impl Link {
             self.blocks.remove(&pending.base);
             out.push(Output::Event(Event::HandshakeAbandoned { peer }));
         }
+        self.mark_if_unknown(peer);
     }
 
     /// Discards a session: its keys are erased as it drops, its blocks freed
@@ -884,6 +1080,7 @@ impl Link {
             p.sessions.retain(|s| *s != id);
         }
         self.reassembly.remove_session(id);
+        self.mark_if_unknown(session.peer);
         out.push(Output::Event(Event::SessionDiscarded {
             peer: session.peer,
         }));
@@ -1336,6 +1533,15 @@ fn draw<const N: usize>(rng: &dyn Rng) -> Result<[u8; N], DropReason> {
 /// Overwrites this frame's copy of secret bytes once the key type that
 /// erases itself holds them. `black_box` keeps the store from being removed
 /// as dead.
+/// The source address in a cookie `src` (section 3.1): an IPv4 or IPv6
+/// address and port lose the port, and any other `src` is taken whole.
+fn source_address(src: &[u8]) -> &[u8] {
+    match src.len() {
+        6 | 18 => src.split_at(src.len() - 2).0,
+        _ => src,
+    }
+}
+
 fn wipe(bytes: &mut [u8]) {
     bytes.fill(0);
     std::hint::black_box(bytes);
