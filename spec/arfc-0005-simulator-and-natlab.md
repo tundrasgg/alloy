@@ -3,7 +3,7 @@
 - Status: accepted
 - Depends on: 0001
 - Crates: alloy-rt, alloy-sim, alloy-natlab
-- Decisions: 0008, 0036, 0039, 0045, 0054
+- Decisions: 0008, 0036, 0039, 0045, 0054, 0068
 
 ## 1. Purpose
 
@@ -19,8 +19,8 @@ before anything else.
 | Seam | Trait | Gives |
 |---|---|---|
 | `clock` | `Clock` | Monotonic now, wall now, sleep until, timers |
-| `net` | `Net` | Datagram and stream sockets, interface list, batch send and receive |
-| `disk-io` | `DiskIo` | Open, read at, write at, sync, truncate, list, direct block access, owner and permissions |
+| `net` | `Net` | Datagram and stream sockets, interface list, batch send and receive, the user id of a Unix socket's peer |
+| `disk-io` | `DiskIo` | Open, read at, write at, sync, truncate, list, direct block access, owner and permissions, durable replace |
 | `rng` | `Rng` | Random bytes |
 | `spawn` | `Spawn` | Start a task, join it, cancel it |
 
@@ -330,6 +330,9 @@ pub trait Stream: Send + Sync + fmt::Debug {
     /// Writes from `bufs` in order. Returns the bytes written.
     fn write<'a>(&'a self, bufs: &'a [&'a [u8]]) -> BoxFuture<'a, Result<usize, NetError>>;
     fn shutdown_write(&self) -> BoxFuture<'_, Result<(), NetError>>;
+    /// The effective user id that the kernel recorded for the process at
+    /// the other end of a Unix stream socket (clause 3.1.9.2).
+    fn peer_uid(&self) -> Result<u32, NetError>;
 }
 
 pub trait Listener: Send + Sync + fmt::Debug {
@@ -413,6 +416,10 @@ pub trait DiskIo: Send + Sync + fmt::Debug + 'static {
     /// Removes a file or an empty directory.
     fn remove<'a>(&'a self, path: &'a RtPath) -> BoxFuture<'a, Result<(), DiskError>>;
     fn rename<'a>(&'a self, from: &'a RtPath, to: &'a RtPath)
+        -> BoxFuture<'a, Result<(), DiskError>>;
+    /// `rename` of a file over another in one directory, durable when it
+    /// returns (clause 3.1.16).
+    fn replace<'a>(&'a self, from: &'a RtPath, to: &'a RtPath)
         -> BoxFuture<'a, Result<(), DiskError>>;
     fn sync_dir<'a>(&'a self, dir: &'a RtPath) -> BoxFuture<'a, Result<(), DiskError>>;
     /// Creates a file that does not exist, protected as `protection` says,
@@ -1483,6 +1490,32 @@ read.
 - After the peer's end of stream arrives, `read` returns every byte before it and
   then 0, and `write` still succeeds until a reset arrives.
 
+3.1.9.2 Peer credentials. `peer_uid` tells the local admin socket of ARFC 0007
+clause 3.10.2 who is calling. It reads and writes nothing on the stream and
+writes no trace record.
+
+- Under `os` on Linux, on a stream to or from a `Unix` address, it returns the
+  `uid` field of the `struct ucred` that `getsockopt` with `SOL_SOCKET` and
+  `SO_PEERCRED` gives for the stream's socket. That is the effective user id
+  the peer process had when it called `connect`, for a stream that `accept`
+  returned, or `listen`, for a stream that `connect` returned
+  (<https://man7.org/linux/man-pages/man7/unix.7.html>, `SO_PEERCRED`). It is
+  fixed when the connection is made: the peer changing its user id later, or
+  passing the descriptor to another process, does not change it. A failing
+  `getsockopt` returns `Os` with its error number.
+- On a TCP stream, under every implementation, it returns `InvalidInput`.
+- Under `os` on every other platform it returns `Unsupported`. None needs it: a
+  local admin exists only on a node that holds `control` (ARFC 0007 clause
+  3.10.3), every Windows node is a client node with no roles (ARFC 0002 section
+  3.3), so a Windows `alloyd` never serves a local admin socket, and macOS runs
+  no `alloyd` (ARFC 0019 section 2).
+- Under `mem` it returns 0 on both ends of every Unix stream, the user id that
+  owns every `mem` entry (clause 3.1.15). A scenario cannot make a peer of
+  another user, so a refusal of a user id other than 0 is tested under `os`.
+- The `os` suite on Linux opens a `Unix` listener, connects to it, and checks
+  that `peer_uid` on both ends equals the effective user id of the test
+  process, and that a TCP stream returns `InvalidInput`.
+
 3.1.10 Disk paths and the namespace.
 
 - `RtPath::new` accepts exactly the strings that start with `/`, are `/` alone or
@@ -1725,6 +1758,39 @@ naming a native path.
   ARFC 0002 section 3.12), so on Linux and macOS a file that the library
   creates by itself is out of reach of other users whatever its mode, since
   its directory cannot be entered by them.
+
+3.1.16 Durable replace. `replace(from, to)` writes a whole file durably for
+ARFC 0002 section 3.14: the caller writes and syncs a new file, then replaces
+the old one with it in one call that returns once the replacement is durable.
+
+- It is `rename(from, to)`, with the same results and errors, except: `from`
+  and `to` must be entries of the same directory, else it returns
+  `InvalidInput` and changes nothing; `from` must be a regular file, and a
+  directory there returns `IsDirectory` and any other kind `InvalidInput`; a
+  directory at `to` returns `IsDirectory`. A file at `to` is replaced
+  atomically.
+- When it returns `Ok`, the rename is durable: after any later crash and
+  restart, `to` names the file that `from` named and `from` names nothing.
+  When it returns an error, a crash leaves either the state before the call or
+  the renamed one, and a rename is never half done (clause 3.1.12).
+- It makes no write to the file durable. A caller that needs the content
+  durable completes a `sync` on a handle of `from` first.
+- Under `os` on Linux and macOS it is `rename(2)` followed by `fsync` of a
+  descriptor of the directory, as `sync_dir` does, and returns once both
+  complete. When the rename succeeds and the `fsync` fails, it returns the
+  `fsync` error, and the rename may or may not be durable.
+- Under `os` on Windows it is one `MoveFileExW` call with the flags
+  `MOVEFILE_REPLACE_EXISTING` and `MOVEFILE_WRITE_THROUGH`, which returns only
+  once the file is moved on the disk
+  (<https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw>).
+- Under `mem` it is the rename and its durability as one operation that
+  completes at one instant. At a crash after it completed, whatever the crash
+  fault's `unsynced` mode (clause 3.3.4), the rename is in the durable state,
+  together with the create of the file at `from` when that create was not, and
+  no other operation is made durable by it: no write, and no other create,
+  remove, or rename in the directory. A crash before it completed leaves the
+  directory as if it had not been called.
+- Its trace record is `disk-op` with operation 17 and handle 0 (section 4.1).
 
 ### 3.2 Determinism
 
@@ -1981,7 +2047,8 @@ disjoint sets of existing hosts, and `id` must not be in force: otherwise
   `set_mode` is in the durable state when it completed before the call of the
   last completed `sync(All)` on a handle of its file, or of the last completed
   `sync_dir` of its directory itself (clause 3.1.15); `sync(Data)` and a
-  `sync_dir` of the parent do not count. The rest is unsynced, and `unsynced`
+  `sync_dir` of the parent do not count. A completed `replace` is in the
+  durable state as clause 3.1.16 says. The rest is unsynced, and `unsynced`
   sets its fate:
   - `Lost`: every unsynced operation is undone.
   - `Seeded`: the unsynced operations are replayed on the durable state in
@@ -2233,7 +2300,7 @@ filtered by a NAT device, 8 no route.
 
 Disk operations: 1 open, 2 read, 3 write, 4 sync, 5 truncate, 6 metadata, 7 list,
 8 create-dir, 9 remove, 10 rename, 11 sync-dir, 12 info, 13 create-file, 14
-create-dir-protected, 15 security, 16 set-mode. `result` is 0 for success
+create-dir-protected, 15 security, 16 set-mode, 17 replace. `result` is 0 for success
 and otherwise the `DiskError` number of section 2.4.
 
 Which event writes each record, and its field values:
@@ -2291,7 +2358,8 @@ Which event writes each record, and its field values:
 - `disk-op` `handle`: for `open` and `create_file`, the number of the new
   handle, or 0 when the call fails; for read, write, sync, truncate, and info,
   the handle's number; 0 for the path operations metadata, list, create-dir,
-  remove, rename, sync-dir, create-dir-protected, security, and set-mode.
+  remove, rename, sync-dir, create-dir-protected, security, set-mode, and
+  replace.
 - `disk-op` `offset` and `length`: for a read or a write, the operation's offset
   and `buf.len()`, which is the requested length also when a read returns fewer
   bytes or fails; for truncate, 0 and the new length; for create-file and

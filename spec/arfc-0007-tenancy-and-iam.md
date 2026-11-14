@@ -3,7 +3,7 @@
 - Status: accepted
 - Depends on: 0006
 - Crates: alloy-iam
-- Decisions: 0017, 0018, 0055
+- Decisions: 0017, 0018, 0055, 0068
 
 ## 1. Purpose
 
@@ -39,6 +39,13 @@ with any credential.
 | session token | Ed25519-signed token, format below | 12 hours, refreshable for 30 days |
 | access key | `AKAL` + 16 characters, with a 40-character secret | Until revoked |
 | temporary key | Access key, secret, and session token | 15 minutes to 12 hours |
+
+An access key id is `AKAL` followed by 16 characters of the RFC 4648 section 6
+base32 alphabet in upper case (`A` to `Z`, `2` to `7`): the unpadded encoding of
+10 bytes from the `alloy-rt` randomness trait. The control plane draws again
+when the id is already in use. Its secret is 40 characters of the RFC 4648
+section 5 base64url alphabet: the unpadded encoding of 30 bytes from the same
+trait. The control plane generates both when it creates the key (3.9.4).
 
 Access keys sign requests with AWS Signature Version 4, on every API surface. A
 token is `base64url(payload) "." base64url(signature)` where the payload is a
@@ -80,6 +87,25 @@ conditions}`.
 
 Built-in roles per org and per project: `owner`, `admin`, `member`, `viewer`.
 Cluster roles: `cloud-admin`, `cloud-viewer`.
+
+### 2.5 Resources
+
+Identity state is resources of the global group (ARFC 0006 sections 2.1 and
+2.2) in service `iam`. Besides the fields of ARFC 0006 section 2.1, each kind
+below has the fields listed. Kinds for projects, groups, service accounts,
+policies, and role bindings other than cluster roles are added by the tasks
+that build them. Until a method serves a kind, its Protocol Buffers field
+numbers are the developer's choice (ARFC 0008 clause 3.1).
+
+| Kind | Scope | `name` | Fields |
+|---|---|---|---|
+| `Org` | cluster | The org's name | `enabled` (spec) |
+| `User` | its org | The user's name | `enabled` (spec); `cluster_roles` (spec), each `cloud-admin` or `cloud-viewer` |
+| `AccessKey` | the org of its user | The key id in lower case | `principal` (spec), the `uid` of its user; `key_name` (spec), the name of 3.9.3; `secret_sealed` (spec), the secret as 3.8 keeps it; `issued_by` (spec), as 3.9.5 says; `revoked` (status) |
+| `LoginCode` | the org of its user | `code-` followed by the 16 lower case hexadecimal digits of its `code_id` | `code_id`, `user` (the `uid` of its user), `secret_hash` (`BLAKE3` of the secret, 32 bytes), `issued_by`, `expire_time` (spec); `state` (status), one of `unused`, `spent`, `voided` |
+| `LocalAdminUse` | cluster | `local-admin-use` | The one record of 3.10.8: `principal`, `last_write_time`, `writes` (status) |
+
+No field of any kind holds a secret in clear.
 
 ## 3. Behavior
 
@@ -386,6 +412,13 @@ carries, and nothing else. It does not serve `ExchangeLoginCode` (ARFC 0002
 section 3.7), which fails on it with `PermissionDenied`. No TCP, UDP, mesh, or
 abstract socket listener may accept a local admin.
 
+`alloyd` learns the peer's user id from `peer_uid` of the `net` seam (ARFC 0005
+clause 3.1.9.2), once per connection, before it reads a byte. When `/run/alloy`
+is missing, it creates it `Private` (ARFC 0005 clause 3.1.15). When that path
+is anything other than a directory owned by user id 0 with mode `0700`, it
+creates no socket and logs why every 60 seconds. Before it listens, it removes
+an entry left at the socket path by an earlier start.
+
 3.10.3 `alloyd` must create the local admin socket only while its node's current
 node record holds the `control` role, and must remove it within 5 seconds of
 learning that the role or the record is gone.
@@ -503,6 +536,53 @@ delete the record 7 days after the commit of the latest local admin write, and
 the warning must no longer be reported 60 seconds after that. No call by any
 principal, a local admin included, deletes the record, changes it in any other
 way, or shortens the 7 days.
+
+### 3.11 First deployment
+
+M11 rung 2 (ADR 0068) builds of this ARFC what `alloy login <login code>` and
+`alloy node list` need on each machine, and the local admin path that issues
+the login codes:
+
+- Sections 2.1 and 2.2 for the org `default`, its user `admin`, and the local
+  admin. Section 2.3 for user access keys signed with SigV4 (ARFC 0008 clause
+  3.7.1). Section 2.4 for the cluster role `cloud-admin` alone. Section 2.5 for
+  the kinds it lists.
+- Clauses 3.1 and 3.4. With no policy and no other role in rung 2, a call is
+  allowed exactly when a local admin's fixed policy (3.10.1), or the cluster
+  role `cloud-admin` of the calling user, allows it. `ListNodes` is action
+  `cluster:ListNodes` on each `Node`, which `cloud-admin` allows (3.3).
+- Clause 3.8 for access key secrets, kept as below.
+- Clauses 3.9.1 to 3.9.5, 3.9.9, 3.9.10, and 3.9.12, and the limits of section
+  7 on access keys and names. Login codes are issued only by `alloy init` and
+  by a local admin (ARFC 0002 section 3.15), so every user access key has
+  `issued_by` `init` or `root@<node name>`, no key descends from another
+  (3.9.7), and no login code is issued by a key. A key that `replaces` revokes
+  therefore voids no login code and is deleted in the transaction that revokes
+  it (3.9.11).
+- Clauses 3.10.1 to 3.10.6 for the methods rung 2 serves, and 3.10.8 except the
+  standing warning: the record is created, updated, and deleted as 3.10.8
+  says, and the API reports no standing warning in rung 2 (ARFC 0002 section
+  3.15). The audit log records every local admin call (3.10.6).
+
+Everything else is built by later tasks: projects, groups, service accounts,
+instance roles, org and project roles, policies, session tokens and temporary
+keys, the seams of section 5, quotas, metering, deleting and disabling users
+and orgs, listing and revoking keys (3.9.6, 3.9.13), and the restore of
+3.10.7. The checks of the enabled state of a user or org still run, and in
+rung 2 always find it enabled. A call that carries a session token fails with
+`Unauthenticated`, as one whose token does not verify does (ARFC 0008 clause
+3.7.1).
+
+Access key secrets at rest. Rung 2 has one control node and no `key-provider`
+seam, so that node keeps each secret under its at-rest key (ARFC 0002 section
+3.14, ARFC 0020 clause 3.7). `secret_sealed` is a 24-byte nonce from the
+`alloy-rt` randomness trait, then the XChaCha20-Poly1305 encryption of the 40
+ASCII bytes of the secret under the at-rest key, with that nonce and, as
+associated data, the 27 ASCII bytes `alloy/at-rest/access-key/v1` followed by
+the 20 ASCII bytes of the key id. The secret is in no other field, log, or
+state export (I-22). A cluster that a rung 2 release made never changes release
+(ARFC 0017 clause 3.13), so the later task that builds `key-provider` replaces
+this rule for new clusters only.
 
 ## 5. Seams
 

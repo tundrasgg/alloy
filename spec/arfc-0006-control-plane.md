@@ -3,7 +3,7 @@
 - Status: accepted
 - Depends on: 0001, 0002, 0004, 0005, 0007, 0008, 0017, 0018
 - Crates: alloy-state, alloy-ctl
-- Decisions: 0019, 0031, 0064, 0065
+- Decisions: 0019, 0031, 0064, 0065, 0068
 
 ## 1. Purpose
 
@@ -15,7 +15,7 @@ and drives the world toward the desired state.
 ### 2.1 Resources
 
 All state is **resources**. A resource has `kind`, `uid` (128-bit, random),
-`name`, `scope` (cluster, or org and project), `generation`, `spec` (what is
+`name`, `scope` (cluster, an org, or an org and a project), `generation`, `spec` (what is
 wanted), `status` (what is), `labels`, and `deleting`. Kinds and their schemas are
 Protocol Buffers messages (ARFC 0008).
 
@@ -23,7 +23,7 @@ Protocol Buffers messages (ARFC 0008).
 
 | Group | Holds | One per |
 |---|---|---|
-| global | Orgs, projects, principals, policies, regions, cluster settings, node records | cluster |
+| global | Orgs, projects, principals, policies, access keys, login codes, regions, cluster settings, node records, join tokens | cluster |
 | regional | Everything else | region |
 
 Each group is a Raft consensus group among the control nodes of its scope. A
@@ -94,7 +94,8 @@ it inherits from the data directory (ARFC 0002 section 3.12). Simulated hosts bi
 M11 rung 2 builds this much of this ARFC:
 
 - Sections 2.1, 2.2 with the one region `default`, 2.3 for heartbeats, 2.4 for
-  the node lifecycle controller of clause 3.16, 2.6, and 2.7.
+  the node lifecycle controller of clause 3.16, 2.6, 2.7, and 2.9, and in the
+  global group the identity kinds that ARFC 0007 section 3.11 names.
 - Clauses 3.1 without stale reads, 3.2 with one control node and one voter, 3.5,
   3.6 for nodes, 3.10 without backups, and 3.12 to 3.16.
 - Sections 4 and 5, section 6 for one voter, section 7 except the 6 GiB warning
@@ -106,6 +107,30 @@ learners, more than one voter, and membership changes (3.2, 3.3), forwarding
 there is no follower to forward from. Until views exist, a node takes its homes
 and the control nodes of clause 3.13 from the bootstrap view of its join (ARFC
 0002 section 3.13).
+
+### 2.9 Join tokens
+
+Join tokens (ARFC 0002 section 3.2) are resources of kind `JoinToken` in
+service `cluster`, with cluster scope, held by the global group. A token's
+`name` is `token-` followed by the 16 lower case hexadecimal digits of its
+`token_id`. Besides the fields of section 2.1, a `JoinToken` has these:
+
+| Field | Part | Value |
+|---|---|---|
+| `token_id` | spec | The token's 8-byte public lookup id |
+| `token_pub` | spec | The token key's public key, 32 bytes (ARFC 0002 section 3.2) |
+| `cluster_key_fp` | spec | The 16 bytes the token carries |
+| `expire_time` | spec | The wall time at which its time limit ends |
+| `use_limit` | spec | Its use limit, 0 for unlimited |
+| `preset_roles` | spec | Its preset roles, each one of `anchor`, `control`, `compute`, `storage`. Empty for none |
+| `preset_zone` | spec | Its preset zone. Empty for none |
+| `revoked` | spec | Whether it is revoked |
+| `uses` | status | The uses counted so far (ARFC 0002 section 3.3). Committed state |
+
+These are exactly what ARFC 0002 section 3.14 has the control plane keep of a
+token. A `JoinToken` holds no secret. Until a method serves the kind, its
+Protocol Buffers field numbers are the developer's choice (ARFC 0008 clause
+3.1).
 
 ## 3. Behavior
 
