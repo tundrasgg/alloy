@@ -385,6 +385,17 @@ fn check_options(options: &JoinOptions, token: &JoinToken) -> Result<(), JoinErr
             "--roles differs from the roles the join token presets".to_owned(),
         ));
     }
+    if options
+        .roles
+        .is_some_and(|r| r.contains(alloy_id::Role::Compute))
+        && !options.facts.virtualization
+    {
+        return Err(JoinError::Usage(
+            "--roles names compute, and this machine's virtualization check is warn, so it \
+             holds compute only once a cloud admin dedicates it to one organization"
+                .to_owned(),
+        ));
+    }
     if options.facts.os == crate::nodes::WINDOWS_OS
         && (options.roles.is_some_and(|r| !r.is_empty()) || !token.preset_roles.is_empty())
     {
@@ -574,7 +585,7 @@ async fn attempt(
 }
 
 /// Waits until a session with `anchor` is made, at most `limit`.
-async fn wait_session(
+pub(crate) async fn wait_session(
     runtime: &Runtime,
     inbound: &mut mpsc::Receiver<Inbound>,
     anchor: &PublicKey,
@@ -596,36 +607,37 @@ async fn wait_session(
     }
 }
 
-/// Section 3.3 step 5: the cluster key's fingerprint is the token's, over
-/// the current key or a previous one it cross signed, and the anchor's
-/// record is signed by the current key, unexpired, and names the key the
-/// session authenticated. The current key, when every check passes.
-fn check_proof(
+/// Section 3.3 step 5: the cluster key's fingerprint is `fp`, the token's
+/// or that of the key a node holds, over the current key or a previous one
+/// it cross signed, and the anchor's record is a record of `cluster_id`
+/// signed by the current key, unexpired, and names the key the session
+/// authenticated. The current key, when every check passes.
+pub(crate) fn check_proof(
     proof: &ClusterProof,
-    token: &JoinToken,
+    cluster_id: &ClusterId,
+    fp: ClusterKeyFp,
     anchor: &PublicKey,
     now: alloy_rt::WallTime,
 ) -> Option<VerifyingKey> {
     let current = VerifyingKey::from_bytes(&proof.cluster_pub.as_slice().try_into().ok()?).ok()?;
     let fp_ok = if proof.previous_cluster_pub.is_empty() {
-        token.cluster_key_fp == ClusterKeyFp::of(&current)
+        fp == ClusterKeyFp::of(&current)
     } else {
         let previous =
             VerifyingKey::from_bytes(&proof.previous_cluster_pub.as_slice().try_into().ok()?)
                 .ok()?;
         let signature = Signature::from_bytes(proof.cross_signature.as_slice().try_into().ok()?);
         let mut message = CROSS_CONTEXT.to_vec();
-        message.extend_from_slice(token.cluster_id.as_bytes());
+        message.extend_from_slice(cluster_id.as_bytes());
         message.extend_from_slice(current.as_bytes());
         let cross_ok = previous.verify(&message, &signature).is_ok();
-        token.cluster_key_fp == ClusterKeyFp::of(&current)
-            || (cross_ok && token.cluster_key_fp == ClusterKeyFp::of(&previous))
+        fp == ClusterKeyFp::of(&current) || (cross_ok && fp == ClusterKeyFp::of(&previous))
     };
     if !fp_ok {
         return None;
     }
     let signed = SignedNodeRecord::from_proto(proof.anchor_record.as_ref()?).ok()?;
-    let record = signed.accept(&token.cluster_id, &current, now).ok()?;
+    let record = signed.accept(cluster_id, &current, now).ok()?;
     record.mesh_pub.contains(anchor).then_some(current)
 }
 
@@ -690,7 +702,13 @@ async fn exchange(
                 continue;
             }
         };
-        match check_proof(&proof, token, anchor, clock.wall()) {
+        match check_proof(
+            &proof,
+            &token.cluster_id,
+            token.cluster_key_fp,
+            anchor,
+            clock.wall(),
+        ) {
             Some(cluster_pub) => {
                 chosen = Some((*anchor, cluster_pub));
                 break;

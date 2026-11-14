@@ -16,6 +16,13 @@
 //!   is issued whose serial is above its own replaces its own, in its node
 //!   file. On `node_unknown` it stops renewing and logs that the machine is
 //!   no longer a node of the cluster.
+//! - While its record is valid it renews over its home session with a
+//!   control node. Once it has expired, peers no longer take it as a
+//!   registered node, so it renews through the join service: it opens a new
+//!   session to each home in turn as an unregistered initiator, with the
+//!   steps, time limits, and checks of section 3.3 steps 3 to 5, and sends
+//!   `renew` on the first that passes. When a home's cluster key is not the
+//!   node's, it stops renewing, as for `node_unknown`.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -25,15 +32,19 @@ use alloy_crypto::al::{PublicKey, StaticSecret};
 use alloy_crypto::ed25519::{SigningKey, VerifyingKey};
 use alloy_id::proto::NodeState as StoredNode;
 use alloy_id::record::sign_renew;
-use alloy_id::{ClusterId, DataDir, NodeRecord, Role, SignedNodeRecord};
+use alloy_id::{ClusterId, ClusterKeyFp, DataDir, NodeRecord, Role, SignedNodeRecord};
 use alloy_rt::{JoinHandle, Runtime, TaskName, UdpSocket};
+use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use crate::channel::heartbeat::{self, HeartbeatResult, Schedule};
-use crate::channel::proto::{Body, JoinReply, JoinResult, Renew, refusal};
+use crate::channel::proto::{
+    Body, HelloResult, JoinHello, JoinHelloReply, JoinReply, JoinResult, Renew, refusal,
+};
 use crate::channel::requester::Outcome;
 use crate::control::{NodeError, NodePaths};
-use crate::mesh::{Command, Mesh, MeshHandle, Target, reserve_counter};
+use crate::join::{STEP_LIMIT, check_proof};
+use crate::mesh::{Command, Inbound, Mesh, MeshHandle, Target, reserve_counter};
 
 /// The time limit of a `renew` (ARFC 0002 section 3.5).
 pub(crate) const RENEW_LIMIT: Duration = Duration::from_secs(10);
@@ -192,7 +203,7 @@ impl MemberNode {
             );
         }
         let counter = reserve_counter(&paths.data).await?;
-        let (mesh, _inbound) = Mesh::new(
+        let (mesh, inbound) = Mesh::new(
             runtime,
             mesh_key,
             counter,
@@ -228,6 +239,8 @@ impl MemberNode {
         let renewal = Renewal {
             runtime: runtime.clone(),
             mesh: handle,
+            inbound,
+            homes: homes.clone(),
             data: paths.data.clone(),
             member,
             current,
@@ -306,13 +319,50 @@ async fn heartbeats(runtime: &Runtime, mesh: &MeshHandle, current: &Current) {
     }
 }
 
+/// Waits until a session with `home` is made, at most `limit`. Unlike a
+/// joiner's wait, an abandoned handshake does not end it: forgetting a
+/// home abandons the handshake an earlier dial left pending, and the new
+/// dial's own handshake gives up only within `limit`.
+async fn session_made(
+    runtime: &Runtime,
+    inbound: &mut mpsc::Receiver<Inbound>,
+    home: &PublicKey,
+    limit: Duration,
+) -> bool {
+    let clock = runtime.clock();
+    let deadline = clock.now().saturating_add(limit);
+    loop {
+        let left = deadline.saturating_duration_since(clock.now());
+        if left.is_zero() {
+            return false;
+        }
+        match runtime.timeout(left, inbound.recv()).await {
+            Ok(Some(Inbound::SessionMade { peer })) if peer == *home => return true,
+            Ok(Some(_)) => {}
+            Ok(None) | Err(_) => return false,
+        }
+    }
+}
+
 /// The node's renewals (section 3.5).
 struct Renewal {
     runtime: Runtime,
     mesh: MeshHandle,
+    inbound: mpsc::Receiver<Inbound>,
+    homes: Vec<(PublicKey, SocketAddr)>,
     data: DataDir,
     member: Member,
     current: Current,
+}
+
+/// How one renewal ended.
+enum Renewed {
+    /// A record with a higher serial was taken.
+    Taken,
+    /// No record was taken; the next renewal is sent 60 seconds later.
+    Failed,
+    /// The machine is no longer a node of the cluster: it stops renewing.
+    Stop,
 }
 
 impl Renewal {
@@ -326,49 +376,161 @@ impl Renewal {
                 self.runtime.sleep(wait.min(RENEW_CHECK)).await;
                 continue;
             }
-            let signature = sign_renew(
-                &self.member.identity,
-                &self.member.cluster_id,
-                &self.member.record.node_id,
-                self.member.record.serial,
-            );
-            let renew = Body::Renew(Renew {
-                node_id: self.member.record.node_id.as_bytes().to_vec(),
-                serial: self.member.record.serial,
-                signature: signature.to_bytes().to_vec(),
-            });
-            let ended = self.mesh.request(renew, RENEW_LIMIT, Target::Control).await;
-            match ended.outcome {
-                Outcome::Reply(Body::JoinReply(JoinReply {
-                    result: Some(JoinResult::Admitted(admitted)),
-                })) => {
-                    let taken = admitted
-                        .record
-                        .as_ref()
-                        .is_some_and(|r| self.take(r).is_some());
-                    if taken {
-                        self.write().await;
-                    } else {
-                        self.runtime.sleep(RENEW_RETRY).await;
-                    }
-                }
-                Outcome::Reply(Body::JoinReply(JoinReply {
-                    result: Some(JoinResult::Refusal(refused)),
-                })) if refused.reason == refusal::NODE_UNKNOWN => {
+            let expired = !self.member.record.is_valid_at(clock.wall());
+            let renewed = if expired {
+                self.renew_expired().await
+            } else {
+                let renew = self.renew_body();
+                let ended = self.mesh.request(renew, RENEW_LIMIT, Target::Control).await;
+                self.outcome(ended.outcome)
+            };
+            match renewed {
+                Renewed::Taken => self.write().await,
+                Renewed::Stop => {
                     error!(
                         "this machine is no longer a node of the cluster: run alloy node leave \
                          --force, then alloy join with a new token, to make it one again"
                     );
                     return;
                 }
-                _ => {
-                    if !self.member.record.is_valid_at(clock.wall()) {
+                Renewed::Failed => {
+                    if expired {
                         warn!("this node's record expired and could not be renewed");
                     }
                     self.runtime.sleep(RENEW_RETRY).await;
                 }
             }
         }
+    }
+
+    /// The `renew` of the node's current record.
+    fn renew_body(&self) -> Body {
+        let signature = sign_renew(
+            &self.member.identity,
+            &self.member.cluster_id,
+            &self.member.record.node_id,
+            self.member.record.serial,
+        );
+        Body::Renew(Renew {
+            node_id: self.member.record.node_id.as_bytes().to_vec(),
+            serial: self.member.record.serial,
+            signature: signature.to_bytes().to_vec(),
+        })
+    }
+
+    /// What the outcome of a `renew` means.
+    fn outcome(&mut self, outcome: Outcome) -> Renewed {
+        match outcome {
+            Outcome::Reply(Body::JoinReply(JoinReply {
+                result: Some(JoinResult::Admitted(admitted)),
+            })) => {
+                let taken = admitted
+                    .record
+                    .as_ref()
+                    .is_some_and(|r| self.take(r).is_some());
+                if taken {
+                    Renewed::Taken
+                } else {
+                    Renewed::Failed
+                }
+            }
+            Outcome::Reply(Body::JoinReply(JoinReply {
+                result: Some(JoinResult::Refusal(refused)),
+            })) if refused.reason == refusal::NODE_UNKNOWN => Renewed::Stop,
+            _ => Renewed::Failed,
+        }
+    }
+
+    /// The renewal of an expired record through the join service of a
+    /// home: section 3.3 steps 3 to 5 on a new session to each home in
+    /// turn, within 10 seconds in total, then `renew` on the first that
+    /// passes.
+    async fn renew_expired(&mut self) -> Renewed {
+        let clock = Arc::clone(self.runtime.clock());
+        let deadline = clock.now().saturating_add(STEP_LIMIT);
+        let own_fp = ClusterKeyFp::of(&self.member.cluster_pub);
+        let homes = self.homes.clone();
+        let mut rotated = false;
+        let mut chosen = None;
+        for (i, (anchor, addr)) in homes.iter().enumerate() {
+            let left = deadline.saturating_duration_since(clock.now());
+            if left.is_zero() {
+                break;
+            }
+            let share = left / u32::try_from(homes.len() - i).unwrap_or(u32::MAX);
+            // The home dropped the sessions of the registered node this
+            // was, so a new one is made, from which it takes only the join
+            // service. Sessions made before this one are not waited for.
+            while self.inbound.try_recv().is_ok() {}
+            self.mesh.send(Command::Forget { peer: *anchor }).await;
+            self.mesh
+                .send(Command::Dial {
+                    peer: *anchor,
+                    addr: *addr,
+                })
+                .await;
+            if !session_made(&self.runtime, &mut self.inbound, anchor, share).await {
+                self.mesh.send(Command::Forget { peer: *anchor }).await;
+                continue;
+            }
+            let left = deadline.saturating_duration_since(clock.now());
+            let hello = Body::JoinHello(JoinHello {
+                release: crate::VERSION.to_owned(),
+            });
+            let ended = self.mesh.request(hello, left, Target::Peer(*anchor)).await;
+            let checked = match &ended.outcome {
+                Outcome::Reply(Body::JoinHelloReply(JoinHelloReply {
+                    result: Some(HelloResult::Cluster(proof)),
+                })) => {
+                    let current =
+                        check_proof(proof, &self.member.cluster_id, own_fp, anchor, clock.wall());
+                    // A home whose cluster key is a key, and not this node's,
+                    // has rotated it since this node's record expired.
+                    rotated |= current.is_none()
+                        && <[u8; 32]>::try_from(proof.cluster_pub.as_slice())
+                            .ok()
+                            .and_then(|k| VerifyingKey::from_bytes(&k).ok())
+                            .is_some_and(|k| ClusterKeyFp::of(&k) != own_fp);
+                    // Rung 2 does not rotate the cluster key (section 3.15),
+                    // so a record signed by a key this node does not hold is
+                    // not taken.
+                    current.is_some_and(|k| k.as_bytes() == self.member.cluster_pub.as_bytes())
+                }
+                _ => false,
+            };
+            if checked {
+                chosen = Some(*anchor);
+                break;
+            }
+            info!(%addr, "a home failed the checks of a renewal through the join service");
+            self.mesh.send(Command::Forget { peer: *anchor }).await;
+        }
+        let Some(anchor) = chosen else {
+            return if rotated {
+                Renewed::Stop
+            } else {
+                Renewed::Failed
+            };
+        };
+        let renew = self.renew_body();
+        let ended = self
+            .mesh
+            .request(renew, RENEW_LIMIT, Target::Peer(anchor))
+            .await;
+        let renewed = self.outcome(ended.outcome);
+        if matches!(renewed, Renewed::Taken) {
+            // The homes this renewal closed sessions with are dialed again,
+            // for the heartbeats and renewals of the valid record.
+            for (peer, addr) in homes.iter().filter(|(peer, _)| *peer != anchor) {
+                self.mesh
+                    .send(Command::Dial {
+                        peer: *peer,
+                        addr: *addr,
+                    })
+                    .await;
+            }
+        }
+        renewed
     }
 
     /// Takes `record` as the node's record when it is the cluster's, names

@@ -227,9 +227,42 @@ pub const ADMIN_SOCKET: &str = "/run/alloy/admin.sock";
 
 /// A node `alloyd` serves.
 #[derive(Debug)]
-enum Serving {
+pub(crate) enum Serving {
     Control(ControlNode),
     Member(MemberNode),
+}
+
+/// Serves the joined node of the data directory at `paths`: as a control
+/// node over the listeners `listen` opens when its record holds `control`,
+/// else as a member node over the mesh sockets `bind` binds.
+///
+/// # Errors
+///
+/// The [`NodeError`] of the start that applies.
+pub(crate) async fn serve_joined<L, B>(
+    runtime: &Runtime,
+    paths: &NodePaths,
+    listen: L,
+    bind: B,
+    transport: alloy_api::Transport,
+) -> Result<Serving, NodeError>
+where
+    L: FnOnce(&alloy_id::NodeRecord) -> Result<Listeners, NodeError>,
+    B: FnOnce(&alloy_id::NodeRecord) -> Result<Vec<Box<dyn alloy_rt::UdpSocket>>, NodeError>,
+{
+    match ControlNode::start(runtime, paths, listen, transport).await {
+        Ok(node) => {
+            info!(
+                node = node.name(),
+                "serving the API, the local admin socket, and the join service"
+            );
+            Ok(Serving::Control(node))
+        }
+        Err(NodeError::NotControl) => Ok(Serving::Member(
+            MemberNode::start(runtime, paths, bind).await?,
+        )),
+        Err(e) => Err(e),
+    }
 }
 
 fn node_paths(runtime: &Runtime, options: &RunOptions, location: &data_dir::Location) -> NodePaths {
@@ -252,25 +285,11 @@ async fn start_node(
     let paths = node_paths(runtime, options, location);
     let admin = admin_dir_ready(runtime).await;
     let listen = |record: &alloy_id::NodeRecord| listeners(runtime, record, admin);
-    match ControlNode::start(runtime, &paths, listen, transport).await {
-        Ok(node) => {
-            info!(
-                node = node.name(),
-                "serving the API, the local admin socket, and the join service"
-            );
-            return Some(Serving::Control(node));
-        }
-        Err(NodeError::NotControl) => {}
-        Err(e) => {
-            error!(error = %e, "this node cannot serve");
-            return None;
-        }
-    }
     let bind = |record: &alloy_id::NodeRecord| {
         mesh::bind(runtime, record.mesh_port).map_err(NodeError::Listen)
     };
-    match MemberNode::start(runtime, &paths, bind).await {
-        Ok(node) => Some(Serving::Member(node)),
+    match serve_joined(runtime, &paths, listen, bind, transport).await {
+        Ok(node) => Some(node),
         Err(e) => {
             error!(error = %e, "this node cannot serve");
             None
@@ -278,15 +297,23 @@ async fn start_node(
     }
 }
 
-async fn stop_node(node: Option<Serving>) {
-    match node {
-        Some(Serving::Control(node)) => {
-            if let Err(e) = node.stop().await {
-                warn!(error = %e, "the control node did not stop cleanly");
+impl Serving {
+    /// Stops the node, logging a control node that does not stop cleanly.
+    pub(crate) async fn stop(self) {
+        match self {
+            Serving::Control(node) => {
+                if let Err(e) = node.stop().await {
+                    warn!(error = %e, "the control node did not stop cleanly");
+                }
             }
+            Serving::Member(node) => node.stop().await,
         }
-        Some(Serving::Member(node)) => node.stop().await,
-        None => {}
+    }
+}
+
+async fn stop_node(node: Option<Serving>) {
+    if let Some(node) = node {
+        node.stop().await;
     }
 }
 

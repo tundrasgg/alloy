@@ -12,7 +12,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
-
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use alloy_api::Transport;
@@ -25,14 +25,15 @@ use alloy_proto::cluster::v1alpha1::{Node, NodeState, Role};
 use alloy_proto::common::v1alpha1::ErrorCode;
 use alloy_proto::iam::v1alpha1::{ExchangeLoginCodeRequest, IssueLoginCodeRequest};
 use alloy_rt::{
-    BoxFuture, DirEntry, DiskError, DiskFile, DiskIo, ListenOptions, Listener, Metadata, NetError,
-    OpenOptions, OsHost, Protection, RtPath, Runtime, Security, Stream, StreamAddr, StreamOptions,
+    BoxFuture, Clock, DirEntry, DiskError, DiskFile, DiskIo, Instant, ListenOptions, Listener,
+    Metadata, NetError, OpenOptions, OsHost, Protection, RtPath, Runtime, Security, Stream,
+    StreamAddr, StreamOptions, WallTime,
 };
 
 use crate::data_dir::{JoinState, Location};
 use crate::init::{InitError, InitOptions, init};
 use crate::join::{JoinError, JoinOptions, Refusal, join};
-use crate::{ControlNode, Listeners, MemberNode, NodePaths, SHUTDOWN_GRACE, os_runtime};
+use crate::{ControlNode, Listeners, NodeError, NodePaths, SHUTDOWN_GRACE, Serving, os_runtime};
 
 /// A data directory path no other test uses.
 fn temp_data_dir(name: &str, rng: &dyn alloy_rt::Rng) -> PathBuf {
@@ -181,8 +182,58 @@ struct Machine {
     native: PathBuf,
 }
 
+/// The `os` clock with its wall time moved forward by a shift the test
+/// sets, so that records expire without waiting a day. The monotonic clock
+/// and timers are the `os` clock's.
+#[derive(Debug)]
+struct Shifted {
+    inner: Arc<dyn Clock>,
+    offset: AtomicI64,
+}
+
+impl Shifted {
+    /// Moves the wall time forward by `by`.
+    fn advance(&self, by: Duration) {
+        let nanos = i64::try_from(by.as_nanos()).expect("a short shift");
+        self.offset.fetch_add(nanos, Ordering::SeqCst);
+    }
+
+    /// Moves the wall time forward to `seconds` since the Unix epoch.
+    fn advance_to(&self, seconds: i64) {
+        let now = self.wall().0;
+        let to = seconds.saturating_mul(1_000_000_000);
+        if to > now {
+            self.offset.fetch_add(to - now, Ordering::SeqCst);
+        }
+    }
+}
+
+impl Clock for Shifted {
+    fn now(&self) -> Instant {
+        self.inner.now()
+    }
+
+    fn wall(&self) -> WallTime {
+        WallTime(
+            self.inner
+                .wall()
+                .0
+                .saturating_add(self.offset.load(Ordering::SeqCst)),
+        )
+    }
+
+    fn sleep_until(&self, deadline: Instant) -> BoxFuture<'static, ()> {
+        self.inner.sleep_until(deadline)
+    }
+}
+
 impl Machine {
     fn new(name: &str) -> Machine {
+        Machine::shifted(name).0
+    }
+
+    /// A machine whose wall clock the returned [`Shifted`] moves forward.
+    fn shifted(name: &str) -> (Machine, Arc<Shifted>) {
         // Every data directory under the temporary directory has the same
         // root, so the runtime is built before the name is drawn.
         let temp = std::env::temp_dir();
@@ -191,20 +242,25 @@ impl Machine {
         let (os, transport) = os_runtime(&host, &root).expect("runtime");
         let native = temp_data_dir(name, os.rng().as_ref());
         let location = Location::of(&native).expect("location");
+        let clock = Arc::new(Shifted {
+            inner: Arc::clone(os.clock()),
+            offset: AtomicI64::new(0),
+        });
         let runtime = Runtime::new(
-            Arc::clone(os.clock()),
+            Arc::clone(&clock) as Arc<dyn Clock>,
             Arc::clone(os.net()),
             Arc::new(Unprotected(Arc::clone(os.disk_io()))),
             Arc::clone(os.rng()),
             Arc::clone(os.spawner()),
         );
-        Machine {
+        let machine = Machine {
             host,
             runtime,
             transport,
             location,
             native,
-        }
+        };
+        (machine, clock)
     }
 
     fn paths(&self) -> NodePaths {
@@ -550,13 +606,87 @@ async fn start_control(
         .expect("start")
 }
 
-async fn start_member(m: &Machine, other: &Other) -> MemberNode {
+/// Serves the joined node of `other` as `alloyd` does at start: the path
+/// tries a control node first and serves any other node as a member node,
+/// on its record's mesh port.
+async fn start_member(m: &Machine, other: &Other) -> Serving {
     let runtime = m.runtime.clone();
-    MemberNode::start(&m.runtime, &other.paths(m), move |record| {
-        crate::mesh::bind(&runtime, record.mesh_port).map_err(crate::NodeError::Listen)
-    })
+    let served = crate::serve_joined(
+        &m.runtime,
+        &other.paths(m),
+        |_| {
+            Err(NodeError::Damaged(
+                "no listener for a member node".to_owned(),
+            ))
+        },
+        move |record| crate::mesh::bind(&runtime, record.mesh_port).map_err(NodeError::Listen),
+        m.transport,
+    )
     .await
-    .expect("member")
+    .expect("the joined node is served");
+    assert!(matches!(served, Serving::Member(_)), "{served:?}");
+    served
+}
+
+/// The record in the node file of the data directory at `paths`.
+async fn stored_record(paths: &NodePaths) -> alloy_id::NodeRecord {
+    let state = paths
+        .data
+        .read_node_state()
+        .await
+        .expect("read")
+        .expect("node file");
+    let cluster_pub: [u8; 32] = state.cluster_pub[0].as_slice().try_into().expect("key");
+    let cluster_pub =
+        alloy_crypto::ed25519::VerifyingKey::from_bytes(&cluster_pub).expect("cluster key");
+    alloy_id::SignedNodeRecord::from_proto(state.record.as_ref().expect("record"))
+        .expect("decode")
+        .verify(&cluster_pub)
+        .expect("verify")
+}
+
+fn seconds_of(clock: &dyn Clock) -> i64 {
+    clock.wall().0.div_euclid(1_000_000_000)
+}
+
+/// Waits until `check` holds, at most `limit`.
+async fn until<F: AsyncFnMut() -> bool>(m: &Machine, limit: Duration, mut check: F) -> bool {
+    let deadline = m.runtime.clock().now().saturating_add(limit);
+    while m.runtime.clock().now() < deadline {
+        if check().await {
+            return true;
+        }
+        m.runtime.sleep(Duration::from_millis(100)).await;
+    }
+    check().await
+}
+
+/// Opens the global group of the stopped control node of `m`, runs `body`
+/// on it, and shuts it down.
+async fn with_group<T>(m: &Machine, body: impl AsyncFnOnce(&alloy_state::Group) -> T) -> T {
+    let own = stored_record(&m.paths()).await;
+    let me = alloy_state::NodeId(*own.node_id.as_bytes());
+    let group = crate::control::open_group(&m.runtime, &m.paths(), me)
+        .await
+        .expect("open the group");
+    let output = body(&group).await;
+    group.shutdown().await.expect("shut the group down");
+    output
+}
+
+/// Deletes the `Node` of `name` and keeps its record, as a stop between
+/// the two writes of an admission leaves them.
+async fn drop_node(group: &alloy_state::Group, name: &str) {
+    let view = group.get_node(name).await.expect("get").expect("node");
+    let scope = alloy_state::Scope::Cluster;
+    let marked = group
+        .delete(alloy_state::NODE_KIND, &scope, name, view.node.generation)
+        .await
+        .expect("delete");
+    group
+        .remove(alloy_state::NODE_KIND, &scope, name, marked.generation)
+        .await
+        .expect("remove");
 }
 
 /// Every node, once `count` of them are `active` and each has a heartbeat
@@ -785,8 +915,8 @@ fn joins_are_refused_by_name_and_compute_and_a_refused_joiner_retries_with_its_k
         assert_eq!(reopened.secrets.mesh_key, kept.secrets.mesh_key);
         assert!(reopened.secrets.join_request.is_none());
 
-        // Roles naming compute on a machine without virtualization are
-        // refused.
+        // --roles naming compute on a machine without virtualization is a
+        // usage error: nothing is written and nothing is sent.
         let third = Other::new(m, "third").await;
         let mut compute = join_options(token, "linux-4", "linux", free_udp_port(&m.runtime));
         compute.roles = Some(alloy_id::Roles::of(&[alloy_id::Role::Compute]));
@@ -794,11 +924,15 @@ fn joins_are_refused_by_name_and_compute_and_a_refused_joiner_retries_with_its_k
         let refused = join(&m.runtime, &third.paths(m), &compute)
             .await
             .expect_err("no virtualization");
-        assert!(
-            matches!(refused, JoinError::Refused(Refusal::ComputeUnsupported)),
-            "{refused:?}"
-        );
+        assert!(matches!(refused, JoinError::Usage(_)), "{refused:?}");
         assert_eq!(refused.exit_code(), 2);
+        let listed = m
+            .runtime
+            .disk_io()
+            .list(third.location.dir())
+            .await
+            .expect("list");
+        assert!(listed.is_empty(), "{listed:?}");
         // A token that does not decode is a usage error, before anything is
         // written.
         let usage = join(
@@ -812,6 +946,254 @@ fn joins_are_refused_by_name_and_compute_and_a_refused_joiner_retries_with_its_k
 
         control.stop().await.expect("stop");
         for other in [first, second, third] {
+            other.remove(m).await;
+        }
+    });
+}
+
+/// Sends one heartbeat with the mesh key of the node of `other`, on a new
+/// session to the control node `control` at `addr`, and returns how it
+/// ended.
+async fn heartbeat_on_a_new_session(
+    m: &Machine,
+    other: &Other,
+    control: alloy_crypto::al::PublicKey,
+    addr: SocketAddr,
+) -> crate::channel::requester::Outcome {
+    let paths = other.paths(m);
+    let opened = paths
+        .data
+        .open(m.runtime.rng().as_ref())
+        .await
+        .expect("open")
+        .expect("secrets");
+    let key: [u8; 32] = opened.secrets.mesh_key.as_slice().try_into().expect("key");
+    let record = stored_record(&paths).await;
+    let counter = crate::mesh::reserve_counter(&paths.data)
+        .await
+        .expect("counter");
+    let (mesh, mut inbound) = crate::mesh::Mesh::new(
+        &m.runtime,
+        alloy_crypto::al::StaticSecret::from_bytes(key),
+        counter,
+        paths.data.clone(),
+        record.cluster_id,
+        false,
+    );
+    let (handle, commands) = crate::mesh::MeshHandle::channel();
+    let (socket, _) = mesh_socket(&m.runtime);
+    let name = alloy_rt::TaskName::new("probe-mesh").expect("name");
+    let task = m
+        .runtime
+        .spawn(name, mesh.run(vec![socket], commands))
+        .expect("spawn");
+    handle
+        .send(crate::mesh::Command::Dial {
+            peer: control,
+            addr,
+        })
+        .await;
+    let made =
+        crate::join::wait_session(&m.runtime, &mut inbound, &control, Duration::from_secs(10))
+            .await;
+    assert!(made, "an unregistered initiator gets a session");
+    let ended = handle
+        .request(
+            crate::channel::proto::Body::NodeStatus(crate::channel::heartbeat::status(&[], "")),
+            crate::channel::heartbeat::HEARTBEAT_LIMIT,
+            crate::mesh::Target::Peer(control),
+        )
+        .await;
+    task.cancel();
+    // A cancelled task ends with an error; the outcome is not used.
+    let _ = task.join().await;
+    ended.outcome
+}
+
+/// The access key credential of the login code `init` printed.
+async fn admin_credential(m: &Machine, code: &LoginCode) -> Credential {
+    let anonymous = m.client(code, &Credential::None).await;
+    let key = anonymous
+        .exchange_login_code(exchange(code, "laptop"))
+        .await
+        .expect("exchange");
+    Credential::AccessKey(AccessKeyCredential::new(
+        &key.access_key_id,
+        Zeroizing::new(key.secret.clone()),
+    ))
+}
+
+#[test]
+fn an_expired_node_is_held_as_unregistered_and_renews_through_the_join_service() {
+    let (machine, clock) = Machine::shifted("expired");
+    machine.run(async |m| {
+        let (api, addr) = listen(&m.runtime, 0);
+        let (mesh, mesh_port) = mesh_socket(&m.runtime);
+        let mut init_options = options(addr.port());
+        init_options.mesh_port = mesh_port;
+        let done = init(&m.runtime, &m.paths(), &init_options)
+            .await
+            .expect("init");
+        let control = start_control(m, api, mesh).await;
+        let linux = Other::new(m, "linux-2").await;
+        let options = join_options(
+            &done.join_token,
+            "linux-2",
+            "linux",
+            free_udp_port(&m.runtime),
+        );
+        join(&m.runtime, &linux.paths(m), &options)
+            .await
+            .expect("joins");
+        let node = start_member(m, &linux).await;
+        let code = LoginCode::decode(&done.login_code).expect("code");
+        let credential = admin_credential(m, &code).await;
+        let admin = m.client(&code, &credential).await;
+        all_heard(m, &admin, 2, 0).await;
+        drop(admin);
+        node.stop().await;
+        let first = stored_record(&linux.paths(m)).await;
+        assert_eq!(first.serial, 1);
+
+        // Past half life the control node renews its own record; the
+        // stopped node does not renew its own.
+        clock.advance(Duration::from_secs(13 * 3_600));
+        let renewed_own = until(m, Duration::from_secs(10), async || {
+            stored_record(&m.paths()).await.serial >= 2
+        })
+        .await;
+        assert!(renewed_own, "the control node renews its own record");
+        // Now the node's record has expired, and the control node's is
+        // valid.
+        clock.advance_to(first.not_after + 3_600);
+
+        // A heartbeat with the expired node's key gets no reply: the
+        // control node takes only the join service from it.
+        let token = JoinToken::decode(&done.join_token).expect("token");
+        let anchor = token.anchors[0].mesh_pub;
+        let at = SocketAddr::from((Ipv4Addr::LOCALHOST, mesh_port));
+        let dropped = heartbeat_on_a_new_session(m, &linux, anchor, at).await;
+        assert_eq!(dropped, crate::channel::requester::Outcome::TimedOut);
+
+        // Served again, the node renews through the join service and is
+        // heard from.
+        let since = seconds_of(m.runtime.clock().as_ref());
+        let node = start_member(m, &linux).await;
+        let admin = m.client(&code, &credential).await;
+        all_heard(m, &admin, 2, since).await;
+        let renewed = stored_record(&linux.paths(m)).await;
+        assert_eq!(renewed.serial, 2);
+        assert!(renewed.is_valid_at(m.runtime.clock().wall()));
+        drop(admin);
+
+        node.stop().await;
+        control.stop().await.expect("stop");
+        linux.remove(m).await;
+    });
+}
+
+/// The control node of `m` again, its API on loopback port `api_port` and
+/// its mesh on loopback port `mesh_port`.
+async fn restart_control(m: &Machine, api_port: u16, mesh_port: u16) -> ControlNode {
+    let (api, _) = listen(&m.runtime, api_port);
+    let mesh = m
+        .runtime
+        .net()
+        .bind_udp(
+            SocketAddr::from((Ipv4Addr::LOCALHOST, mesh_port)),
+            alloy_rt::UdpOptions::default(),
+        )
+        .expect("the mesh port again");
+    start_control(m, api, mesh).await
+}
+
+async fn names(client: &Client) -> Vec<String> {
+    client
+        .list_all_nodes()
+        .await
+        .map(|nodes| nodes.into_iter().map(|n| n.name).collect())
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_record_left_without_its_node_is_completed_or_removed_and_joining_nodes_expire_in_time() {
+    let (machine, clock) = Machine::shifted("orphans");
+    machine.run(async |m| {
+        let (api, addr) = listen(&m.runtime, 0);
+        let (mesh, mesh_port) = mesh_socket(&m.runtime);
+        let mut init_options = options(addr.port());
+        init_options.mesh_port = mesh_port;
+        let done = init(&m.runtime, &m.paths(), &init_options)
+            .await
+            .expect("init");
+        let control = start_control(m, api, mesh).await;
+        // Two nodes join and are never served, so both stay `joining`.
+        let mut joined = Vec::new();
+        for name in ["linux-2", "linux-3"] {
+            let other = Other::new(m, name).await;
+            let options = join_options(&done.join_token, name, "linux", free_udp_port(&m.runtime));
+            join(&m.runtime, &other.paths(m), &options)
+                .await
+                .expect("joins");
+            joined.push(other);
+        }
+        let code = LoginCode::decode(&done.login_code).expect("code");
+        let credential = admin_credential(m, &code).await;
+        control.stop().await.expect("stop");
+
+        // A stop between an admission's writes leaves a record with no
+        // `Node`; the restarted control node completes it.
+        with_group(m, async |group| drop_node(group, "linux-2").await).await;
+        let control = restart_control(m, addr.port(), mesh_port).await;
+        let admin = m.client(&code, &credential).await;
+        let completed = until(m, Duration::from_secs(10), async || {
+            names(&admin).await == ["linux-1", "linux-2", "linux-3"]
+        })
+        .await;
+        assert!(completed, "the record with no node is completed");
+        drop(admin);
+        control.stop().await.expect("stop");
+
+        // Such a record whose node would have been deleted by now is
+        // removed, and a `joining` node is deleted within 60 seconds after
+        // its record's `not_after`.
+        with_group(m, async |group| drop_node(group, "linux-3").await).await;
+        let second = stored_record(&joined[0].paths(m)).await;
+        let third = stored_record(&joined[1].paths(m)).await;
+        clock.advance_to(second.not_after + crate::nodes::JOINING_DELETE_AFTER_SECS);
+        let control = restart_control(m, addr.port(), mesh_port).await;
+        let admin = m.client(&code, &credential).await;
+        let deleted = until(m, Duration::from_secs(10), async || {
+            names(&admin).await == ["linux-1"]
+        })
+        .await;
+        let at = seconds_of(m.runtime.clock().as_ref());
+        assert!(deleted, "the joining node is deleted");
+        assert!(
+            at <= second.not_after + 60,
+            "deleted {} seconds after not_after",
+            at - second.not_after
+        );
+        let due = third.not_after + crate::nodes::JOINING_DELETE_AFTER_SECS + 2;
+        until(m, Duration::from_secs(30), async || {
+            seconds_of(m.runtime.clock().as_ref()) >= due
+        })
+        .await;
+        drop(admin);
+        control.stop().await.expect("stop");
+        let left = with_group(m, async |group| {
+            group
+                .list(crate::records::RECORD_KIND)
+                .await
+                .expect("records")
+                .into_iter()
+                .filter(|r| !r.deleting)
+                .map(|r| r.name)
+                .collect::<Vec<_>>()
+        })
+        .await;
+        assert_eq!(left, ["linux-1"]);
+        for other in joined {
             other.remove(m).await;
         }
     });

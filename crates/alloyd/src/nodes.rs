@@ -10,11 +10,20 @@
 //! origin, so a request is handled at most once while it runs.
 //!
 //! The same task runs the node lifecycle controller of clause 3.16 once
-//! every [`LIFECYCLE_PERIOD`]: it deletes a `joining` node 60 seconds after
-//! its record's `not_after`, sets and clears `unreachable_since`, and renews
-//! the control node's own record at half life, as it renews any node's.
-//! All the writes to nodes and their records are made by this task, one at
-//! a time, so two joins never take the same name.
+//! every [`LIFECYCLE_PERIOD`]: it deletes a `joining` node within 60
+//! seconds after its record's `not_after`, completes or deletes a record
+//! that an admission stopped between its writes left with no `Node`, sets
+//! and clears `unreachable_since`, and renews the control node's own record
+//! at half life, as it renews any node's. All the writes to nodes and their
+//! records are made by this task, one at a time, so two joins never take
+//! the same name.
+//!
+//! A node is a registered peer of the mesh only while its record is valid
+//! by this node's wall clock (ARFC 0002 section 3.5, I-09). Once it has
+//! expired, the node's sessions are dropped, and its node messages other
+//! than the join service requests are dropped, so an expired node renews
+//! as an unregistered initiator, through the join service. It is a
+//! registered peer again once it is issued a valid record.
 //!
 //! Not built in rung 2 (ARFC 0002 section 3.15): approval, so no request is
 //! ever `pending` and `join_state` is answered only for an admitted node;
@@ -54,9 +63,11 @@ use crate::records::{self, Enrolled};
 /// clause 3.16 allows.
 pub(crate) const LIFECYCLE_PERIOD: Duration = Duration::from_secs(1);
 
-/// How long after its record's `not_after` a `joining` node is deleted, at
-/// most (ARFC 0002 section 6).
-pub(crate) const JOINING_GRACE_SECS: i64 = 60;
+/// How long after its record's `not_after` the lifecycle controller
+/// deletes a `joining` node. ARFC 0002 section 6 allows at most 60 seconds;
+/// the 10 left cover the wait for the next tick of [`LIFECYCLE_PERIOD`] and
+/// the deletion's writes.
+pub(crate) const JOINING_DELETE_AFTER_SECS: i64 = 50;
 
 /// The zone a node is put in when neither the request nor the token names
 /// one (ARFC 0002 section 3.3).
@@ -254,8 +265,11 @@ pub(crate) struct NodeService {
     own: Own,
     mesh: MeshHandle,
     entries: Entries,
-    /// The name of the node each registered mesh key belongs to.
-    by_mesh: BTreeMap<PublicKey, String>,
+    /// The name of the node each recorded mesh key belongs to, and its
+    /// record's `not_after`.
+    by_mesh: BTreeMap<PublicKey, (String, i64)>,
+    /// The mesh keys this task made registered peers of the mesh.
+    admitted: BTreeSet<PublicKey>,
 }
 
 impl std::fmt::Debug for NodeService {
@@ -294,12 +308,14 @@ impl NodeService {
             mesh,
             entries: Entries::new(),
             by_mesh: BTreeMap::new(),
+            admitted: BTreeSet::new(),
         }
     }
 
-    /// Admits every node the group holds as a peer of the mesh, then
-    /// answers what `inbound` brings and runs the lifecycle controller,
-    /// until `inbound` closes or the task is cancelled.
+    /// Admits every node whose record the group holds as valid as a peer
+    /// of the mesh, then answers what `inbound` brings and runs the
+    /// lifecycle controller, until `inbound` closes or the task is
+    /// cancelled.
     pub(crate) async fn serve(mut self, mut inbound: mpsc::Receiver<Inbound>) {
         match records::list(&self.group, &self.cluster_pub).await {
             Ok(nodes) => {
@@ -330,13 +346,50 @@ impl NodeService {
         }
     }
 
-    /// Makes `node`'s mesh keys registered peers, but for this node's own.
+    /// Makes `node`'s mesh keys registered peers while its record is valid
+    /// by the wall clock, and drops them and their sessions once it has
+    /// expired, but for this node's own keys.
     async fn register(&mut self, node: &Enrolled) {
+        let valid = node.record.is_valid_at(self.runtime.clock().wall());
         for key in &node.record.mesh_pub {
-            self.by_mesh.insert(*key, node.record.name.clone());
-            if node.record.name != self.own.name {
-                self.mesh.send(Command::Admit { peer: *key }).await;
+            self.by_mesh
+                .insert(*key, (node.record.name.clone(), node.record.not_after));
+            if node.record.name == self.own.name {
+                continue;
             }
+            if valid && self.admitted.insert(*key) {
+                self.mesh.send(Command::Admit { peer: *key }).await;
+            } else if !valid && self.admitted.remove(key) {
+                info!(
+                    node = %node.record.name,
+                    "a node's record expired, so it is no longer a registered peer"
+                );
+                self.mesh.send(Command::Forget { peer: *key }).await;
+            }
+        }
+    }
+
+    /// Whether `peer` is a mesh key of a node whose record is valid by the
+    /// wall clock.
+    fn holds_valid(&self, peer: &PublicKey) -> bool {
+        let now = seconds(self.runtime.clock().wall());
+        self.by_mesh
+            .get(peer)
+            .is_some_and(|(_, not_after)| now < *not_after)
+    }
+
+    /// Forgets every mesh key of node `name`, and drops its sessions.
+    async fn forget(&mut self, name: &str) {
+        let keys: Vec<PublicKey> = self
+            .by_mesh
+            .iter()
+            .filter(|(_, (n, _))| n.as_str() == name)
+            .map(|(k, _)| *k)
+            .collect();
+        for key in keys {
+            self.by_mesh.remove(&key);
+            self.admitted.remove(&key);
+            self.mesh.send(Command::Forget { peer: key }).await;
         }
     }
 
@@ -354,6 +407,9 @@ impl NodeService {
         let Some(kind) = Kind::of(&body) else {
             return;
         };
+        // A node whose record has expired is held as an unregistered
+        // initiator, whatever its session (ARFC 0006 clause 3.14).
+        let registered = registered && self.holds_valid(&peer);
         if !registered && !kind.is_join_service() {
             return;
         }
@@ -762,6 +818,9 @@ impl NodeService {
         }
         let renewed = self.reissue(node).await?;
         info!(node = %renewed.record.name, serial = renewed.record.serial, "a node record was renewed");
+        // A node that renewed an expired record through the join service
+        // is a registered peer again.
+        self.register(&renewed).await;
         let all: Vec<Enrolled> = nodes
             .into_iter()
             .map(|n| {
@@ -816,7 +875,7 @@ impl NodeService {
             result,
             finalized_release: String::new(),
         };
-        let Some(name) = self.by_mesh.get(peer) else {
+        let Some((name, _)) = self.by_mesh.get(peer) else {
             return reply(status::REFUSED);
         };
         let heartbeat = Heartbeat {
@@ -838,18 +897,54 @@ impl NodeService {
     /// The node lifecycle controller (clause 3.16), and this node's own
     /// renewal.
     async fn lifecycle(&mut self) {
+        let records = match records::list(&self.group, &self.cluster_pub).await {
+            Ok(records) => records,
+            Err(e) => {
+                warn!(reason = %e, "the nodes' records could not be read");
+                return;
+            }
+        };
+        for node in &records {
+            self.register(node).await;
+        }
         let Ok(views) = self.group.list_nodes().await else {
             return;
         };
         let wall = self.runtime.clock().wall();
+        let now = seconds(wall);
+        let delete_due =
+            |not_after: i64| now >= not_after.saturating_add(JOINING_DELETE_AFTER_SECS);
+        let with_node: BTreeSet<&str> = views.iter().map(|v| v.node.name.as_str()).collect();
+        let orphans: Vec<Enrolled> = records
+            .iter()
+            .filter(|n| !with_node.contains(n.record.name.as_str()))
+            .cloned()
+            .collect();
+        for orphan in &orphans {
+            // An admission that stopped after the record's write and before
+            // the `Node`'s (I-14): it is completed as a `joining` node, or
+            // removed once that node would have been deleted.
+            if delete_due(orphan.record.not_after) {
+                self.remove_record(&orphan.record.name).await;
+            } else if self.ensure_node(orphan).await.is_some() {
+                info!(node = %orphan.record.name, "a node admitted before a stop was completed");
+            }
+        }
+        let not_after: BTreeMap<String, i64> = records
+            .iter()
+            .map(|n| (n.record.name.clone(), n.record.not_after))
+            .collect();
         for view in views {
             let mut node = view.node;
             match view.state {
                 NodeState::Joining => {
-                    let expired = node.status.record.is_some_and(|r| {
-                        seconds(wall) >= r.not_after.saturating_add(JOINING_GRACE_SECS)
-                    });
-                    if expired {
+                    // The stored record is the one a renewal last issued,
+                    // whatever the `Node`'s copy of its terms holds.
+                    let expiry = not_after
+                        .get(&node.name)
+                        .copied()
+                        .or_else(|| node.status.record.map(|r| r.not_after));
+                    if expiry.is_some_and(delete_due) {
                         self.delete(&node.name, node.generation).await;
                     }
                 }
@@ -868,7 +963,7 @@ impl NodeService {
                 _ => {}
             }
         }
-        if self.own.record.renew_at() <= seconds(wall) {
+        if self.own.record.renew_at() <= now {
             self.renew_own().await;
         }
     }
@@ -895,20 +990,20 @@ impl NodeService {
             warn!(node = %name, reason = %e, "an expired joining node could not be removed");
             return;
         }
+        // A record a stop leaves here has no `Node`; the next tick removes
+        // it.
+        self.remove_record(name).await;
+        info!(node = %name, "a joining node whose record expired was deleted");
+    }
+
+    /// Removes the record of node `name`, which has no `Node`, and forgets
+    /// its mesh keys and sessions, so its name and keys are free.
+    async fn remove_record(&mut self, name: &str) {
         if let Err(e) = records::remove(&self.group, name).await {
             warn!(node = %name, reason = %e, "an expired joining node's record could not be removed");
+            return;
         }
-        let keys: Vec<PublicKey> = self
-            .by_mesh
-            .iter()
-            .filter(|(_, n)| n.as_str() == name)
-            .map(|(k, _)| *k)
-            .collect();
-        for key in keys {
-            self.by_mesh.remove(&key);
-            self.mesh.send(Command::Forget { peer: key }).await;
-        }
-        info!(node = %name, "a joining node whose record expired was deleted");
+        self.forget(name).await;
     }
 
     /// Renews this control node's own record in its own process, as it

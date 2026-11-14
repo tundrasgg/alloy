@@ -208,6 +208,11 @@ async fn read_stored(runtime: &Runtime, paths: &NodePaths) -> Result<Stored, Nod
     let record = signed
         .verify(&cluster_pub)
         .map_err(|e| NodeError::Damaged(format!("the node record: {e}")))?;
+    // Only a control node holds the cluster key, so the role is checked
+    // before it is read: any other joined node is served as a member node.
+    if !record.roles.contains(Role::Control) {
+        return Err(NodeError::NotControl);
+    }
     let cluster_key = <[u8; 32]>::try_from(opened.secrets.cluster_key.as_slice())
         .map(|seed| SigningKey::from_seed(&seed))
         .map_err(|_| damaged("the cluster key"))?;
@@ -292,9 +297,6 @@ impl ControlNode {
         L: FnOnce(&NodeRecord) -> Result<Listeners, NodeError>,
     {
         let stored = read_stored(runtime, paths).await?;
-        if !stored.record.roles.contains(Role::Control) {
-            return Err(NodeError::NotControl);
-        }
         let listeners = listen(&stored.record)?;
         let me = MemberId(*stored.record.node_id.as_bytes());
         let group = Arc::new(open_group(runtime, paths, me).await?);
