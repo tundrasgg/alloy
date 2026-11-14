@@ -217,7 +217,7 @@ impl ApiServer {
         match first(connection.as_mut(), gate.closed()).await {
             Some(Err(e)) => tracing::debug!(reason = %e, "an API connection ended with an error"),
             Some(Ok(())) => {}
-            None if !gate.proven() => {
+            None if !gate.is_proven() => {
                 // An unproven connection runs no authenticated call, so it
                 // is dropped at once, not given the grace (T-0118 re-review
                 // F1).
@@ -386,9 +386,7 @@ impl ApiServer {
         };
         // A body that does not arrive or is over 4 MiB cannot hash to the
         // signed value, so it fails as any call that does not verify.
-        let bytes = collect(body)
-            .await
-            .map_err(|_| access::unauthenticated())?;
+        let bytes = collect(body).await.map_err(|_| access::unauthenticated())?;
         let header_text = |name: &str| {
             parts
                 .headers

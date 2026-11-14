@@ -7,11 +7,12 @@ use std::collections::BTreeMap;
 use std::future::{Future, poll_fn};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use std::time::Duration;
 
+use alloy_crypto::Zeroizing;
 use alloy_crypto::ecdsa::SigningKey;
 use alloy_crypto::tls::{ALPN_STREAM, ClientTls, HandshakeError, NO_APPLICATION_PROTOCOL};
 use alloy_crypto::x509::{self, CertificateFields};
@@ -20,6 +21,10 @@ use alloy_proto::cluster::v1alpha1::{
 };
 use alloy_proto::common::v1alpha1::{Error, ErrorCode};
 use alloy_proto::error::ERROR_TRAILER;
+use alloy_proto::iam::v1alpha1::{
+    ExchangeLoginCodeRequest, ExchangeLoginCodeResponse, IssueLoginCodeRequest,
+    IssueLoginCodeResponse,
+};
 use alloy_rt::{
     BoxFuture, ListenOptions, Listener, NetError, OsHost, Runtime, RuntimeConfig, Stream,
     StreamAddr, StreamOptions, register_os,
@@ -29,37 +34,31 @@ use prost::Message;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::Notify;
 
-use crate::client::{Client, ConnectError, RetryPolicy, connect, retry};
+use crate::client::{Client, ConnectError, Credential, RetryPolicy, connect, retry};
 use crate::io::RtIo;
+use crate::sigv4::AccessKeyCredential;
 use crate::tls::{ApiCaFingerprint, Protocol, RtWall, ServerCert, server_config};
 use crate::transport::H2_PREFACE;
 use crate::{
-    Access, Action, AdminLimits, ApiPort, ApiServer, AuthnError, ConnLimits, MAX_MESSAGE_BYTES,
-    NodeName, NodeStore, Principal, SessionToken, StreamConn, StreamUnderlay, Transport,
-    UNAUTHENTICATED_MESSAGE,
+    Access, Action, AdminLimits, ApiPort, ApiServer, AuthnError, ConnLimits, Exchange, Issue,
+    KeyHolder, LoginCodes, MAX_MESSAGE_BYTES, NodeName, NodeStore, Principal, SessionToken,
+    StreamConn, StreamUnderlay, Transport, UNAUTHENTICATED_MESSAGE,
 };
 
 const ALICE: &str = "alice-token";
 const BOB: &str = "bob-token";
 const CAROL: &str = "carol-token";
 
-/// The nodes of a test cluster, by name. With `hold`, each `get` waits for a
-/// notification first.
+/// Alice's access key, for SigV4.
+const ALICE_KEY: &str = "AKALICE";
+const ALICE_SECRET: &str = "alice-secret-alice-secret-alice-secret-0";
+
+/// The nodes of a test cluster, by name. With `hold`, each `list` waits for
+/// a notification first.
 #[derive(Debug, Default)]
 struct Nodes(BTreeMap<String, Node>, Option<Arc<Notify>>);
 
 impl NodeStore for Nodes {
-    fn get<'a>(&'a self, name: &'a NodeName) -> BoxFuture<'a, Result<Option<Node>, Error>> {
-        let node = self.0.get(name.as_str()).cloned();
-        let hold = self.1.clone();
-        Box::pin(async move {
-            if let Some(hold) = hold {
-                hold.notified().await;
-            }
-            Ok(node)
-        })
-    }
-
     fn list<'a>(
         &'a self,
         after: Option<&'a NodeName>,
@@ -72,7 +71,76 @@ impl NodeStore for Nodes {
             .take(limit)
             .cloned()
             .collect();
-        Box::pin(async move { Ok(nodes) })
+        let hold = self.1.clone();
+        Box::pin(async move {
+            if let Some(hold) = hold {
+                hold.notified().await;
+            }
+            Ok(nodes)
+        })
+    }
+}
+
+/// The login codes of the tests: each issued code works once, with the
+/// secret whose hash it was issued with.
+#[derive(Debug, Default)]
+struct Codes(Mutex<BTreeMap<Vec<u8>, Code>>);
+
+/// A test code: its secret's hash, its user, and whether it was used.
+type Code = ([u8; 32], String, bool);
+
+impl LoginCodes for Codes {
+    fn issue(&self, issue: Issue) -> BoxFuture<'_, Result<IssueLoginCodeResponse, Error>> {
+        let mut codes = self.0.lock().expect("codes");
+        let code_id = (codes.len() as u64).to_be_bytes().to_vec();
+        codes.insert(code_id.clone(), (issue.secret_hash, issue.user, false));
+        Box::pin(async move {
+            Ok(IssueLoginCodeResponse {
+                cluster_id: vec![1; 16],
+                api_ca_fp: vec![2; 16],
+                code_id,
+                ..IssueLoginCodeResponse::default()
+            })
+        })
+    }
+
+    fn exchange(
+        &self,
+        exchange: Exchange,
+    ) -> BoxFuture<'_, Result<ExchangeLoginCodeResponse, Error>> {
+        let mut codes = self.0.lock().expect("codes");
+        let result = match codes.get_mut(&exchange.code_id) {
+            Some((hash, user, used))
+                if !*used && *hash == alloy_crypto::hash(&exchange.secret[..]) =>
+            {
+                *used = true;
+                Ok(ExchangeLoginCodeResponse {
+                    access_key_id: "AKNEW".to_owned(),
+                    secret: "s".repeat(40),
+                    name: exchange.name,
+                    user: user.clone(),
+                    org: "default".to_owned(),
+                    project: String::new(),
+                })
+            }
+            _ => Err(crate::unauthenticated()),
+        };
+        Box::pin(async move { result })
+    }
+}
+
+/// The first node `ListNodes` returns: one call each test can make.
+trait Probe {
+    async fn probe(&self) -> Result<Node, Error>;
+}
+
+impl Probe for Client {
+    async fn probe(&self) -> Result<Node, Error> {
+        let page = self.list_nodes(ListNodesRequest::default()).await?;
+        page.nodes
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "no node"))
     }
 }
 
@@ -90,6 +158,17 @@ impl Access for Policy {
             ALICE => Ok(Principal::Authenticated("alice".to_owned())),
             BOB => Ok(Principal::Authenticated("bob".to_owned())),
             CAROL => Ok(Principal::Authenticated("carol".to_owned())),
+            _ => Err(AuthnError::Refused),
+        };
+        Box::pin(async move { result })
+    }
+
+    fn access_key<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<KeyHolder, AuthnError>> {
+        let result = match id {
+            ALICE_KEY => Ok(KeyHolder {
+                principal: Principal::Authenticated("alice".to_owned()),
+                secret: Zeroizing::new(ALICE_SECRET.to_owned()),
+            }),
             _ => Err(AuthnError::Refused),
         };
         Box::pin(async move { result })
@@ -260,6 +339,53 @@ impl Stream for Reported {
     }
 }
 
+/// A listener whose connections report the peer user id `.1`.
+#[derive(Debug)]
+struct AsUid(Box<dyn Listener>, u32);
+
+impl Listener for AsUid {
+    fn local_addr(&self) -> StreamAddr {
+        self.0.local_addr()
+    }
+
+    fn accept(&self) -> BoxFuture<'_, Result<Box<dyn Stream>, NetError>> {
+        Box::pin(async move {
+            let inner = self.0.accept().await?;
+            Ok(Box::new(WithUid(inner, self.1)) as Box<dyn Stream>)
+        })
+    }
+}
+
+/// A stream whose peer reports the user id `.1`.
+#[derive(Debug)]
+struct WithUid(Box<dyn Stream>, u32);
+
+impl Stream for WithUid {
+    fn local_addr(&self) -> Option<StreamAddr> {
+        self.0.local_addr()
+    }
+
+    fn peer_addr(&self) -> Option<StreamAddr> {
+        self.0.peer_addr()
+    }
+
+    fn read<'a>(&'a self, buf: &'a mut [u8]) -> BoxFuture<'a, Result<usize, NetError>> {
+        self.0.read(buf)
+    }
+
+    fn write<'a>(&'a self, bufs: &'a [&'a [u8]]) -> BoxFuture<'a, Result<usize, NetError>> {
+        self.0.write(bufs)
+    }
+
+    fn shutdown_write(&self) -> BoxFuture<'_, Result<(), NetError>> {
+        self.0.shutdown_write()
+    }
+
+    fn peer_uid(&self) -> Result<u32, NetError> {
+        Ok(self.1)
+    }
+}
+
 /// The `stream` underlay of the tests: the first bytes it reads stand for
 /// an AL handshake that authenticates the peer, so it proves the connection
 /// and echoes them.
@@ -350,7 +476,12 @@ impl Fixture {
             .map(|n| (n.name.clone(), n))
             .collect();
         let store = Arc::new(Nodes(nodes, setup.hold));
-        let server = ApiServer::new(runtime.clone(), store, Arc::new(Policy));
+        let server = ApiServer::new(
+            runtime.clone(),
+            store,
+            Arc::new(Codes::default()),
+            Arc::new(Policy),
+        );
         let now = runtime.clock().wall().0 / 1_000_000_000;
         let pki = pki(setup.cert_ip, now);
         let tls = server_config(Arc::clone(runtime.clock()), &pki.cert, Protocol::Api)
@@ -412,13 +543,46 @@ impl Fixture {
         addr: SocketAddr,
         token: Option<&str>,
     ) -> Result<Client, ConnectError> {
-        let token = token.map(|t| SessionToken::new(t).expect("token"));
-        connect(
+        let credential = match token {
+            Some(t) => Credential::Token(SessionToken::new(t).expect("token")),
+            None => Credential::None,
+        };
+        self.connect_with(addr, &credential).await
+    }
+
+    async fn connect_with(
+        &self,
+        addr: SocketAddr,
+        credential: &Credential,
+    ) -> Result<Client, ConnectError> {
+        connect(&self.runtime, self.transport, addr, self.pin, credential).await
+    }
+
+    /// Serves the local admin socket on a loopback listener whose
+    /// connections report the peer user id `uid`, and opens a client to it.
+    async fn local_admin(&self, uid: u32) -> Result<Client, ConnectError> {
+        // The socket is a Unix path in production; any stream listener
+        // serves the same protocol.
+        let (listener, addr) = listen(&self.runtime);
+        let listener = Box::new(AsUid(listener, uid));
+        let server = self.server.clone();
+        self.runtime
+            .spawn(crate::io::task_name("test-admin"), async move {
+                server
+                    .serve_local_admin(listener, AdminLimits::LOCAL_ADMIN)
+                    .await;
+            })
+            .expect("spawn");
+        let stream = self
+            .runtime
+            .net()
+            .connect(StreamAddr::Ip(addr), StreamOptions::default())
+            .await?;
+        Client::over(
             &self.runtime,
-            self.transport,
-            addr,
-            self.pin,
-            token.as_ref(),
+            RtIo::new(Arc::from(stream)),
+            "http://localhost",
+            &Credential::None,
         )
         .await
     }
@@ -509,7 +673,7 @@ fn listen(runtime: &Runtime) -> (Box<dyn Listener>, SocketAddr) {
 }
 
 #[test]
-fn list_and_get_over_tls() {
+fn list_over_tls() {
     let f = Fixture::start(5, localhost());
     f.run(async {
         let client = f.client(Some(ALICE)).await;
@@ -541,10 +705,165 @@ fn list_and_get_over_tls() {
         let all = client.list_all_nodes().await.expect("list all");
         assert_eq!(all.len(), 5);
         assert_eq!(all[4], node("node-04"));
-        assert_eq!(
-            client.get_node("node-03").await.expect("get"),
-            node("node-03")
-        );
+    });
+}
+
+#[test]
+fn a_sigv4_call_is_served_and_a_wrong_one_refused() {
+    let f = Fixture::start(2, localhost());
+    f.run(async {
+        let key = AccessKeyCredential::new(ALICE_KEY, Zeroizing::new(ALICE_SECRET.to_owned()));
+        let alice = f
+            .connect_with(f.addr, &Credential::AccessKey(key))
+            .await
+            .expect("connect");
+        assert_eq!(alice.list_all_nodes().await.expect("list").len(), 2);
+
+        let mut seen = Vec::new();
+        for (id, secret) in [(ALICE_KEY, "wrong"), ("AKNOBODY", ALICE_SECRET)] {
+            let key = AccessKeyCredential::new(id, Zeroizing::new(secret.to_owned()));
+            let client = f
+                .connect_with(f.addr, &Credential::AccessKey(key))
+                .await
+                .expect("connect");
+            let refused = client.probe().await.expect_err("refused");
+            assert_eq!(refused.code(), ErrorCode::Unauthenticated);
+            seen.push(refused.encode_to_vec());
+        }
+        // The same error, byte for byte, for a wrong secret and an unknown
+        // key (ARFC 0007 clause 3.9.12).
+        assert_eq!(seen[0], seen[1]);
+    });
+}
+
+#[test]
+fn get_node_and_every_other_method_is_unimplemented() {
+    let f = Fixture::start(1, localhost());
+    f.run(async {
+        // Authenticated or not, on the API port and on the local admin
+        // socket: `UNIMPLEMENTED` with no Alloy trailer (ARFC 0002 section
+        // 3.15).
+        let clients = [
+            f.client(Some(ALICE)).await,
+            f.client(None).await,
+            f.local_admin(0).await.expect("admin"),
+        ];
+        for client in &clients {
+            let status = client
+                .cluster()
+                .get_node(GetNodeRequest {
+                    name: "node-00".to_owned(),
+                })
+                .await
+                .expect_err("not served");
+            assert_eq!(status.code(), tonic::Code::Unimplemented);
+            assert!(status.metadata().get_bin(ERROR_TRAILER).is_none());
+        }
+    });
+}
+
+#[test]
+fn the_api_port_exchanges_codes_and_refuses_to_issue_them() {
+    let f = Fixture::start(1, localhost());
+    f.run(async {
+        let alice = f.client(Some(ALICE)).await;
+        let refused = alice
+            .issue_login_code(IssueLoginCodeRequest {
+                secret_hash: vec![0; 32],
+                ..IssueLoginCodeRequest::default()
+            })
+            .await
+            .expect_err("not on the API port");
+        assert_eq!(refused.code(), ErrorCode::PermissionDenied);
+
+        // A code issued through the local admin socket is exchanged on the
+        // API port by a client with no credential.
+        let admin = f.local_admin(0).await.expect("admin");
+        let secret = [9u8; 16];
+        let issued = admin
+            .issue_login_code(IssueLoginCodeRequest {
+                secret_hash: alloy_crypto::hash(&secret).to_vec(),
+                ..IssueLoginCodeRequest::default()
+            })
+            .await
+            .expect("issued");
+        let anonymous = f.client(None).await;
+        let exchange = ExchangeLoginCodeRequest {
+            code_id: issued.code_id.clone(),
+            secret: secret.to_vec(),
+            name: "laptop".to_owned(),
+            replaces: String::new(),
+        };
+        let key = anonymous
+            .exchange_login_code(exchange.clone())
+            .await
+            .expect("exchanged");
+        assert_eq!(key.user, "admin");
+        assert_eq!(key.org, "default");
+        assert_eq!(key.name, "laptop");
+        let again = anonymous
+            .exchange_login_code(exchange.clone())
+            .await
+            .expect_err("used");
+        assert_eq!(again.code(), ErrorCode::Unauthenticated);
+
+        // The local admin socket does not exchange (ARFC 0007 clause
+        // 3.10.2).
+        let on_admin = admin
+            .exchange_login_code(exchange)
+            .await
+            .expect_err("not on the socket");
+        assert_eq!(on_admin.code(), ErrorCode::PermissionDenied);
+    });
+}
+
+#[test]
+fn a_secret_hash_that_is_not_32_bytes_is_invalid() {
+    let f = Fixture::start(1, localhost());
+    f.run(async {
+        let admin = f.local_admin(0).await.expect("admin");
+        let invalid = admin
+            .issue_login_code(IssueLoginCodeRequest {
+                secret_hash: vec![0; 31],
+                ..IssueLoginCodeRequest::default()
+            })
+            .await
+            .expect_err("invalid");
+        assert_eq!(invalid.code(), ErrorCode::InvalidArgument);
+        assert_eq!(invalid.field_violations[0].field, "secret_hash");
+    });
+}
+
+#[test]
+fn exchanges_from_one_source_are_rate_limited() {
+    let f = Fixture::start(1, localhost());
+    f.run(async {
+        // Each refused exchange counts against its unproven connection, so
+        // each call has a connection of its own.
+        // Within a second only the first 10 are looked up; a slow machine
+        // may spread the calls over more than one window, but not over two.
+        let mut limited = 0;
+        for _ in 0..(2 * crate::EXCHANGES_PER_SOURCE + 1) {
+            let client = f.client(None).await;
+            let result = client
+                .exchange_login_code(ExchangeLoginCodeRequest {
+                    code_id: vec![7; 8],
+                    secret: vec![7; 16],
+                    name: "laptop".to_owned(),
+                    replaces: String::new(),
+                })
+                .await
+                .expect_err("no such code");
+            match result.code() {
+                ErrorCode::Unauthenticated => {}
+                ErrorCode::RateLimited => {
+                    assert!(result.retry_delay().is_some());
+                    limited += 1;
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert!(limited >= 1, "{limited}");
     });
 }
 
@@ -570,15 +889,6 @@ fn errors_carry_their_code_and_trailer() {
     let f = Fixture::start(1, localhost());
     f.run(async {
         let client = f.client(Some(ALICE)).await;
-        let missing = client.get_node("absent").await.expect_err("absent");
-        assert_eq!(missing.code(), ErrorCode::NotFound);
-        assert_eq!(missing.resource, "nodes/absent");
-        assert!(missing.next_step.is_some());
-
-        let invalid = client.get_node("Not-A-Name").await.expect_err("invalid");
-        assert_eq!(invalid.code(), ErrorCode::InvalidArgument);
-        assert_eq!(invalid.field_violations[0].field, "name");
-
         let status = client
             .cluster()
             .list_nodes(ListNodesRequest {
@@ -600,7 +910,7 @@ fn errors_carry_their_code_and_trailer() {
             .collect();
         assert_eq!(fields, ["page_size", "filter", "order_by", "page_token"]);
 
-        let denied = f.client(Some(BOB)).await.get_node("node-00").await;
+        let denied = f.client(Some(BOB)).await.probe().await;
         assert_eq!(
             denied.map_err(|e| e.code()),
             Err(ErrorCode::PermissionDenied)
@@ -663,7 +973,7 @@ fn a_chain_that_fails_the_pin_or_the_address_is_refused() {
     let f = Fixture::start(1, localhost());
     f.run(async {
         let wrong = ApiCaFingerprint([0; 16]);
-        let refused = connect(&f.runtime, f.transport, f.addr, wrong, None).await;
+        let refused = connect(&f.runtime, f.transport, f.addr, wrong, &Credential::None).await;
         assert!(
             matches!(refused, Err(ConnectError::Certificate(_))),
             "{refused:?}"
@@ -712,42 +1022,21 @@ fn a_client_hello_without_h2_gets_no_application_protocol() {
 fn the_local_admin_socket_takes_no_credential() {
     let f = Fixture::start(3, localhost());
     f.run(async {
-        // The socket is a Unix path in production; any stream listener
-        // serves the same protocol.
-        let listener = f
-            .runtime
-            .net()
-            .listen(
-                StreamAddr::Ip(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))),
-                ListenOptions::default(),
-            )
-            .expect("listen");
-        let StreamAddr::Ip(addr) = listener.local_addr() else {
-            panic!("a TCP listener has an IP address");
-        };
-        let server = f.server.clone();
-        f.runtime
-            .spawn(crate::io::task_name("test-admin"), async move {
-                server
-                    .serve_local_admin(listener, AdminLimits::LOCAL_ADMIN)
-                    .await;
-            })
-            .expect("spawn");
-        let stream = f
-            .runtime
-            .net()
-            .connect(StreamAddr::Ip(addr), StreamOptions::default())
-            .await
-            .expect("connect");
-        let client = Client::over(
-            &f.runtime,
-            RtIo::new(Arc::from(stream)),
-            "http://localhost",
-            None,
-        )
-        .await
-        .expect("h2");
+        let client = f.local_admin(0).await.expect("admin");
         assert_eq!(client.list_all_nodes().await.expect("list").len(), 3);
+    });
+}
+
+#[test]
+fn the_local_admin_socket_serves_only_user_id_0() {
+    let f = Fixture::start(3, localhost());
+    f.run(async {
+        // The connection is closed before a byte is read: the HTTP/2
+        // handshake or the first call fails.
+        if let Ok(client) = f.local_admin(1000).await {
+            let refused = client.list_nodes(ListNodesRequest::default()).await;
+            assert!(refused.is_err(), "{refused:?}");
+        }
     });
 }
 
@@ -776,7 +1065,7 @@ fn connections_are_bounded_and_idle_ones_close() {
     });
     f.run(async {
         let alice = f.client(Some(ALICE)).await;
-        assert!(alice.get_node("node-00").await.is_ok());
+        assert!(alice.probe().await.is_ok());
         // Proven, Alice's connection left the unproven count: two silent
         // connections with no credential fill the share of 127.0.0.1.
         let _silent = [f.client(None).await, f.client(None).await];
@@ -791,7 +1080,7 @@ fn connections_are_bounded_and_idle_ones_close() {
         // Alice's idle connection is closed, so her call is not served,
         // whether or not the client has read the GOAWAY; the silent ones
         // still hold their places, which only `prove` ends.
-        assert!(alice.get_node("node-00").await.is_err());
+        assert!(alice.probe().await.is_err());
         assert!(f.try_client(Some(ALICE)).await.is_err());
     });
 }
@@ -807,22 +1096,22 @@ fn a_full_api_count_or_share_refuses_the_proving_call() {
     });
     f.run(async {
         let a = f.client(Some(ALICE)).await;
-        assert!(a.get_node("node-00").await.is_ok());
+        assert!(a.probe().await.is_ok());
         // Alice's share of the API count is 1: her second connection is
         // refused, with a retry delay, and stays unproven.
         let second = f.client(Some(ALICE)).await;
-        let share = second.get_node("node-00").await.expect_err("share full");
+        let share = second.probe().await.expect_err("share full");
         assert_eq!(share.code(), ErrorCode::Unavailable);
         assert!(share.retry_delay().is_some());
         // Bob is authenticated and refused by policy: his connection is
         // proven all the same, and the API count of 2 is full.
         let b = f.client(Some(BOB)).await;
         assert_eq!(
-            b.get_node("node-00").await.map_err(|e| e.code()),
+            b.probe().await.map_err(|e| e.code()),
             Err(ErrorCode::PermissionDenied)
         );
         let carol = f.client(Some(CAROL)).await;
-        let full = carol.get_node("node-00").await.expect_err("api count full");
+        let full = carol.probe().await.expect_err("api count full");
         assert_eq!(full.code(), ErrorCode::Unavailable);
         // Once Bob's connection closes, a new one of Carol's is served. The
         // port sees the close when it reads the end of the stream, so each
@@ -833,7 +1122,7 @@ fn a_full_api_count_or_share_refuses_the_proving_call() {
             attempts += 1;
             assert!(attempts <= 200, "Bob's place never came back");
             if let Ok(carol) = f.try_client(Some(CAROL)).await
-                && let Ok(found) = carol.get_node("node-00").await
+                && let Ok(found) = carol.probe().await
             {
                 assert_eq!(found, node("node-00"));
                 break;
@@ -857,12 +1146,12 @@ fn rejected_calls_do_not_keep_a_connection() {
         // client has read the GOAWAY.
         let caller = f.client(Some("not-a-token")).await;
         for _ in 0..3 {
-            let rejected = caller.get_node("node-00").await.expect_err("rejected");
+            let rejected = caller.probe().await.expect_err("rejected");
             assert_eq!(rejected.code(), ErrorCode::Unauthenticated);
         }
-        let closed = caller.get_node("node-00").await.expect_err("closed");
+        let closed = caller.probe().await.expect_err("closed");
         assert_ne!(closed.code(), ErrorCode::Unauthenticated);
-        assert!(caller.get_node("node-00").await.is_err());
+        assert!(caller.probe().await.is_err());
 
         // A path that names no method is rejected too, and once the bound
         // is reached even a call with a valid token is not served.
@@ -871,7 +1160,7 @@ fn rejected_calls_do_not_keep_a_connection() {
             let status = unimplemented_call(&f, &caller).await;
             assert_eq!(status.code(), tonic::Code::Unimplemented);
         }
-        assert!(caller.get_node("node-00").await.is_err());
+        assert!(caller.probe().await.is_err());
     });
 
     // Rejected calls spaced under any idle time do not keep a connection
@@ -885,9 +1174,7 @@ fn rejected_calls_do_not_keep_a_connection() {
     f.run(async {
         let caller = f.client(None).await;
         let mut answered = 0;
-        while caller.get_node("node-00").await.map_err(|e| e.code())
-            == Err(ErrorCode::Unauthenticated)
-        {
+        while caller.probe().await.map_err(|e| e.code()) == Err(ErrorCode::Unauthenticated) {
             answered += 1;
             assert!(answered <= 2, "a rejected call was answered after `prove`");
             if answered == 2 {
@@ -946,15 +1233,17 @@ fn unauthenticated_callers_do_not_lock_out_clients_or_stream() {
                 (f.addr, f.pin, Arc::clone(&attacking), Arc::clone(&rejected));
             f.runtime
                 .spawn(crate::io::task_name("test-attacker"), async move {
-                    let token = SessionToken::new(&format!("forged-{i}")).expect("token");
+                    let token = Credential::Token(
+                        SessionToken::new(&format!("forged-{i}")).expect("token"),
+                    );
                     while attacking.load(Ordering::Acquire) == 1 {
                         let Ok(client) =
-                            connect(&runtime, Transport::CLEAR, addr, pin, Some(&token)).await
+                            connect(&runtime, Transport::CLEAR, addr, pin, &token).await
                         else {
                             runtime.sleep(Duration::from_millis(5)).await;
                             continue;
                         };
-                        while let Err(e) = client.get_node("node-00").await {
+                        while let Err(e) = client.probe().await {
                             if e.code() != ErrorCode::Unauthenticated {
                                 break;
                             }
@@ -969,10 +1258,7 @@ fn unauthenticated_callers_do_not_lock_out_clients_or_stream() {
         let friend = f.friend.expect("a second source");
         for _ in 0..3 {
             let alice = f.try_client_at(friend, Some(ALICE)).await.expect("connect");
-            assert_eq!(
-                alice.get_node("node-00").await.expect("served"),
-                node("node-00")
-            );
+            assert_eq!(alice.probe().await.expect("served"), node("node-00"));
             let echoed = f.exchange_at(friend, b"AL hello").await.expect("echo");
             assert_eq!(echoed, b"\0AL hello");
             f.runtime.sleep(Duration::from_millis(400)).await;
@@ -1007,7 +1293,7 @@ fn a_call_in_progress_keeps_its_connection() {
             hold.notify_one();
             std::future::pending::<()>().await;
         };
-        let found = crate::server::first(client.get_node("node-00"), release).await;
+        let found = crate::server::first(client.probe(), release).await;
         assert_eq!(found.map(|r| r.expect("served")), Some(node("node-00")));
     });
 }
@@ -1072,10 +1358,7 @@ fn a_stream_flood_from_one_source_takes_no_stream_place() {
             assert_eq!(echoed, b"\x01AL hello");
         }
         let alice = f.try_client_at(friend, Some(ALICE)).await.expect("connect");
-        assert_eq!(
-            alice.get_node("node-00").await.expect("served"),
-            node("node-00")
-        );
+        assert_eq!(alice.probe().await.expect("served"), node("node-00"));
         attacking.store(0, Ordering::Release);
     });
 }
@@ -1142,10 +1425,7 @@ fn silent_connections_from_many_sources_do_not_lock_out_clients_or_stream() {
         let friend = f.friend.expect("a second source");
         for _ in 0..3 {
             let alice = f.try_client_at(friend, Some(ALICE)).await.expect("connect");
-            assert_eq!(
-                alice.get_node("node-00").await.expect("served"),
-                node("node-00")
-            );
+            assert_eq!(alice.probe().await.expect("served"), node("node-00"));
             let echoed = f.stream_at(friend, b"AL hello").await.expect("echo");
             assert_eq!(echoed, b"\x01AL hello");
         }
@@ -1165,26 +1445,17 @@ fn a_response_over_4_mib_is_invalid_argument() {
     });
     f.run(async {
         let client = f.client(Some(ALICE)).await;
-        let get = client
-            .cluster()
-            .get_node(GetNodeRequest {
-                name: "node-00".to_owned(),
-            })
-            .await
-            .expect_err("too large");
-        let list = client
+        let status = client
             .cluster()
             .list_nodes(ListNodesRequest::default())
             .await
             .expect_err("too large");
-        for status in [get, list] {
-            assert_eq!(status.code(), tonic::Code::InvalidArgument);
-            assert!(status.metadata().get_bin(ERROR_TRAILER).is_some());
-            assert_eq!(
-                Error::from_status(&status).code(),
-                ErrorCode::InvalidArgument
-            );
-        }
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert!(status.metadata().get_bin(ERROR_TRAILER).is_some());
+        assert_eq!(
+            Error::from_status(&status).code(),
+            ErrorCode::InvalidArgument
+        );
     });
 }
 
@@ -1195,20 +1466,18 @@ fn no_response_carries_a_date_header() {
         let client = f.client(Some(ALICE)).await;
         let found = client
             .cluster()
-            .get_node(GetNodeRequest {
-                name: "node-00".to_owned(),
-            })
+            .list_nodes(ListNodesRequest::default())
             .await
-            .expect("get");
+            .expect("list");
         assert!(found.metadata().get("date").is_none());
-        let missing = client
-            .cluster()
-            .get_node(GetNodeRequest {
-                name: "absent".to_owned(),
-            })
+        let denied = f
+            .client(Some(BOB))
             .await
-            .expect_err("absent");
-        assert!(missing.metadata().get("date").is_none());
+            .cluster()
+            .list_nodes(ListNodesRequest::default())
+            .await
+            .expect_err("denied");
+        assert!(denied.metadata().get("date").is_none());
     });
 }
 
@@ -1251,7 +1520,7 @@ fn in_the_clear_the_preface_tells_the_api_from_stream() {
             Transport::TLS,
             api_only.addr,
             api_only.pin,
-            None,
+            &Credential::None,
         )
         .await;
         assert!(tls.is_err(), "{tls:?}");

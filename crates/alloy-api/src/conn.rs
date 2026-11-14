@@ -534,7 +534,7 @@ impl Gate {
 
     /// Whether an authenticated call or the underlay has proven the
     /// connection, or it was proven at accept.
-    pub(crate) fn proven(&self) -> bool {
+    pub(crate) fn is_proven(&self) -> bool {
         !matches!(self.state().rule, Rule::Unproven { .. })
     }
 

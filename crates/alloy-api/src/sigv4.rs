@@ -176,8 +176,7 @@ pub(crate) fn parse_amz_date(text: &str) -> Option<i64> {
     };
     let (year, month, day) = (digits(0, 4)?, digits(4, 6)?, digits(6, 8)?);
     let (hour, minute, second) = (digits(9, 11)?, digits(11, 13)?, digits(13, 15)?);
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59
-    {
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 {
         return None;
     }
     if second > 59 {
@@ -288,7 +287,10 @@ pub(crate) fn verify(
         at.abs_diff(now_secs) <= MAX_SKEW.as_secs()
             && signed.amz_date.get(..8) == Some(authorization.date.as_str())
     });
-    let hashed = equal(content_sha256(body).as_bytes(), signed.content_sha256.as_bytes());
+    let hashed = equal(
+        content_sha256(body).as_bytes(),
+        signed.content_sha256.as_bytes(),
+    );
     let expected = signature(secret, signed);
     let signed_ok = equal(expected.as_bytes(), authorization.signature.as_bytes());
     timely & hashed & signed_ok
@@ -372,7 +374,13 @@ mod tests {
         let late = at(1_700_000_000 + 301);
         assert!(!verify("secret", &parsed, &signed(&date, &sha), body, late));
         let skewed = at(1_700_000_000 + 300);
-        assert!(verify("secret", &parsed, &signed(&date, &sha), body, skewed));
+        assert!(verify(
+            "secret",
+            &parsed,
+            &signed(&date, &sha),
+            body,
+            skewed
+        ));
         assert!(format!("{key:?}").contains("AKEXAMPLE"));
         assert!(!format!("{key:?}").contains("secret\""));
     }

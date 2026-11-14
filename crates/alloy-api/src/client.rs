@@ -38,10 +38,10 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tonic::Status;
 
 use crate::access::SessionToken;
-use crate::sigv4::{self, AccessKeyCredential};
 use crate::io::{HyperIo, RtExecutor, RtIo, task_name};
 use crate::page::MAX_PAGE_SIZE;
 use crate::server::MAX_MESSAGE_BYTES;
+use crate::sigv4::{self, AccessKeyCredential};
 use crate::tls::{ALPN_H2, ApiCaFingerprint, TlsError, client_config};
 use crate::transport::Transport;
 
@@ -145,11 +145,7 @@ async fn sign(
     now: WallTime,
 ) -> Result<http::Request<tonic::body::Body>, ChannelError> {
     let (mut parts, body) = request.into_parts();
-    let bytes = body
-        .collect()
-        .await
-        .map_err(ChannelError::Body)?
-        .to_bytes();
+    let bytes = body.collect().await.map_err(ChannelError::Body)?.to_bytes();
     let amz_date = sigv4::amz_date(now);
     let content_sha256 = sigv4::content_sha256(&bytes);
     let content_type = parts

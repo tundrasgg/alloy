@@ -148,13 +148,17 @@ impl IamApi {
             ));
         }
         let r = request.into_inner();
-        let secret_hash: [u8; SECRET_HASH_LEN] = r.secret_hash.as_slice().try_into().map_err(|_| {
-            Error::new(
-                ErrorCode::InvalidArgument,
-                "The secret hash is not 32 bytes, so no login code was issued.",
-            )
-            .with_violation("secret_hash", "must be the 32-byte BLAKE3 hash of the secret")
-        })?;
+        let secret_hash: [u8; SECRET_HASH_LEN] =
+            r.secret_hash.as_slice().try_into().map_err(|_| {
+                Error::new(
+                    ErrorCode::InvalidArgument,
+                    "The secret hash is not 32 bytes, so no login code was issued.",
+                )
+                .with_violation(
+                    "secret_hash",
+                    "must be the 32-byte BLAKE3 hash of the secret",
+                )
+            })?;
         let (user, org) = named(&r.user, &r.org);
         let resource = format!("orgs/{org}/users/{user}");
         self.access
