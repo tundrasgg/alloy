@@ -113,7 +113,10 @@ impl<'r> Two<'r> {
     fn forge(&mut self, v: Vni, frame: &[u8]) -> Result<(), DropReason> {
         let id = self.id(A);
         let mut out = Vec::new();
-        self.links[A].seal(id, v, 0, frame, &mut out).unwrap();
+        let now = self.now;
+        self.links[A]
+            .seal(now, (id, v, 0), frame, &mut out)
+            .unwrap();
         self.pump(A, out)
     }
 }

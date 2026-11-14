@@ -19,10 +19,10 @@ use alloy_wire::{
 use crate::reassembly::{NODE_REASSEMBLY_BYTES, PEER_REASSEMBLY_BYTES, Reassembler, Refused};
 use crate::session::Session;
 use crate::{
-    COOKIE_TIME, COUNTER_BLOCK, Config, Ctx, Destination, DropReason, Event, HOLD_TIME,
-    LOAD_THRESHOLD, MAX_BINDINGS_PER_SESSION, MAX_BLOCKS_PER_SESSION, MAX_HELD_PER_VNI,
-    MAX_SESSIONS_PER_PEER, Outbound, Output, PREVIOUS_RECV_TIME, REJECT_AFTER, REKEY_AFTER,
-    REKEY_AFTER_PACKETS, RETRY_GIVE_UP, RETRY_INTERVAL, Sent,
+    COOKIE_TIME, COUNTER_BLOCK, Config, Ctx, DISCARD_AFTER_FOLLOWED, Destination, DropReason,
+    Event, HOLD_TIME, LOAD_THRESHOLD, MAX_BINDINGS_PER_SESSION, MAX_BLOCKS_PER_SESSION,
+    MAX_HELD_PER_VNI, MAX_SESSIONS_PER_PEER, Outbound, Output, QUALIFY_TIME, REJECT_AFTER,
+    REKEY_AFTER, REKEY_AFTER_PACKETS, RETRY_GIVE_UP, RETRY_INTERVAL, Sent,
 };
 
 /// Indexes per block. This node reserves only blocks whose base is a
@@ -70,6 +70,9 @@ struct Pending {
     started: Instant,
     /// When the latest one was sent.
     sent: Instant,
+    /// The sessions with the peer confirmed here when the latest one was
+    /// sent: the sessions that the session it makes follows (3.3).
+    follows: Vec<u64>,
 }
 
 /// One node's AL state: handshakes, sessions and their transport (ARFC 0003
@@ -239,7 +242,7 @@ impl Link {
             .values()
             .map(|p| p.sent.saturating_add(RETRY_INTERVAL));
         let sessions = self.sessions.values().flat_map(|s| {
-            [Some(s.made.saturating_add(REJECT_AFTER)), s.recv_until]
+            [Some(s.made.saturating_add(REJECT_AFTER)), s.discard_at]
                 .into_iter()
                 .flatten()
         });
@@ -334,11 +337,11 @@ impl Link {
     }
 
     /// Runs the timers due at `cx.now`: initiation retries and give-ups,
-    /// session discard at 180 seconds, the previous receive key's 10
-    /// seconds, cookie and cookie secret lifetimes, held packets and
-    /// reassemblies. Key lifetimes do not depend on it: [`Link::send`],
-    /// [`Link::receive`] and [`Link::connect`] discard a peer's expired keys
-    /// before they use any.
+    /// session discard at 180 seconds or 10 seconds after a packet under a
+    /// session that follows it, cookie and cookie secret lifetimes, held
+    /// packets and reassemblies. Key lifetimes do not depend on it:
+    /// [`Link::send`], [`Link::receive`] and [`Link::connect`] discard a
+    /// peer's expired sessions before they use any.
     pub fn tick(&mut self, cx: Ctx<'_>, out: &mut Vec<Output>) {
         let now = cx.now;
         let due: Vec<(PublicKey, Instant)> = self
@@ -442,6 +445,7 @@ impl Link {
         }
         self.expire_peer(cx.now, peer, out);
         self.make_room(peer, out);
+        let follows = self.confirmed_sessions(peer);
         let base = self.reserve_block(start, BlockUse::Pending(peer))?;
         let payload = InitiationPayload {
             counter: HandshakeCounter(self.counter_next),
@@ -490,6 +494,7 @@ impl Link {
                 mac1: msg.mac1,
                 started,
                 sent: cx.now,
+                follows,
             },
         );
         out.push(Output::Transmit {
@@ -557,6 +562,7 @@ impl Link {
         let ephemeral = EphemeralSecret::from_bytes(secret);
         wipe(&mut secret);
         self.make_room(initiator, out);
+        let follows = self.confirmed_sessions(initiator);
         let id = self.next_session;
         let base = self.reserve_block(start, BlockUse::Session(id, Vni::INFRASTRUCTURE))?;
         let Some(peer) = self.peers.get(&initiator) else {
@@ -596,10 +602,10 @@ impl Link {
             initiator,
             cx.now,
             keys,
-            base,
-            msg.sender_index.0,
+            (base, msg.sender_index.0),
             (self.queues, payload.queues),
             false,
+            follows,
         );
         self.add_session(id, session, false, out);
         self.flush_held(cx.now, initiator, out);
@@ -658,6 +664,7 @@ impl Link {
             mac1,
             started,
             sent,
+            follows,
         } = pending;
         let mut noise = [0u8; RESPONSE_NOISE_LEN];
         noise.copy_from_slice(&bytes[Response::NOISE_RANGE]);
@@ -671,6 +678,7 @@ impl Link {
                     mac1,
                     started,
                     sent,
+                    follows,
                 };
                 self.pending.insert(peer_key, pending);
                 return Err(DropReason::Unauthentic);
@@ -689,14 +697,14 @@ impl Link {
             peer_key,
             cx.now,
             keys,
-            base,
-            msg.sender_index.0,
+            (base, msg.sender_index.0),
             (self.queues, payload.queues),
             true,
+            follows,
         );
         self.add_session(id, session, true, out);
         // An initiator seals a keepalive at once, so the responder confirms.
-        let keepalive = self.seal_internal(id, InnerFrame::Keepalive, out);
+        let keepalive = self.seal_internal(cx.now, id, InnerFrame::Keepalive, out);
         self.note(keepalive);
         self.flush_held(cx.now, peer_key, out);
         Ok(())
@@ -788,8 +796,7 @@ impl Link {
         Ok(base)
     }
 
-    /// Adds a session as the newest with its peer. The older sessions keep
-    /// their receive keys until [`Link::moved_on`] starts their 10 seconds.
+    /// Adds a session as the newest with its peer.
     fn add_session(&mut self, id: u64, session: Session, initiator: bool, out: &mut Vec<Output>) {
         let peer = session.peer;
         self.next_session += 1;
@@ -800,63 +807,59 @@ impl Link {
         out.push(Output::Event(Event::SessionMade { peer, initiator }));
     }
 
-    /// Discards `peer`'s sessions 180 seconds after their handshakes and
-    /// drops the receive keys whose 10 seconds are over (section 3.3). Every
-    /// call that seals or opens under a session runs this first, so no key
-    /// is used past its lifetime whether or not [`Link::tick`] ran at the
-    /// deadline.
+    /// The sessions with `peer` confirmed at this node, which a session
+    /// made by the handshake message this node sends now follows (3.3).
+    fn confirmed_sessions(&self, peer: PublicKey) -> Vec<u64> {
+        self.peers.get(&peer).map_or_else(Vec::new, |p| {
+            p.sessions
+                .iter()
+                .copied()
+                .filter(|id| self.sessions.get(id).is_some_and(|s| s.confirmed))
+                .collect()
+        })
+    }
+
+    /// Discards `peer`'s sessions that are past their lifetime (section
+    /// 3.3): 180 seconds after their handshakes (rule 1), or 10 seconds
+    /// after a packet accepted under a session that follows them (rule 2).
+    /// Every call that seals or opens under a session runs this first, so no
+    /// key is used past its lifetime whether or not [`Link::tick`] ran at
+    /// the deadline.
     fn expire_peer(&mut self, now: Instant, peer: PublicKey, out: &mut Vec<Output>) {
-        let expired = |s: &Session| now >= s.made.saturating_add(REJECT_AFTER);
-        // Sessions are listed oldest first, so the expired ones lead.
         while let Some(id) = self.peers.get(&peer).and_then(|p| {
             p.sessions
-                .first()
+                .iter()
                 .copied()
-                .filter(|id| self.sessions.get(id).is_some_and(expired))
+                .find(|id| self.sessions.get(id).is_some_and(|s| s.expired(now)))
         }) {
             self.discard_session(id, out);
         }
-        if let Some(p) = self.peers.get(&peer) {
-            for id in &p.sessions {
-                if let Some(s) = self.sessions.get_mut(id)
-                    && s.recv_until.is_some_and(|until| now >= until)
-                {
-                    s.drop_recv();
-                }
-            }
-        }
     }
 
-    /// Starts the 10 seconds of section 3.3 on the receive key of each
-    /// session with `peer` older than `newer`, once a transport packet
-    /// accepted under `newer` shows that the peer no longer seals under it.
+    /// Starts rule 2 of section 3.3 for the sessions that session `id`
+    /// follows, on the first transport packet accepted under it: each is
+    /// discarded 10 seconds from `now`, unless an earlier packet started its
+    /// 10 seconds already.
     ///
-    /// The peer seals under the newest session confirmed at the peer, in the
-    /// peer's own order (3.4, 3.6), which can differ from this node's when
-    /// two handshakes cross. Of two sessions, the one the peer made later is
-    /// the one this node made later too, except for one pair: an older
-    /// session the peer initiated and a newer one this node initiated, when
-    /// the peer's response and this node's initiation crossed. For that pair
-    /// only a packet on VNI 0 other than a bind, which the peer seals under
-    /// its newest confirmed session, shows that the peer moved on. A bind is
-    /// sealed under the session its request came under, and a packet for
-    /// another VNI under an older session while the newer one lacks its
-    /// binding, so neither shows it. Until a packet shows it, the older
-    /// receive key is kept, at most until the session's 180 seconds.
-    fn moved_on(&mut self, now: Instant, peer: PublicKey, newer: u64, on_vni_0: bool) {
-        let Some(newer_initiated) = self.sessions.get(&newer).map(|s| s.initiator) else {
+    /// Only a session that follows another proves that the peer moved past
+    /// it, since only then do both nodes order the two the same way. In a
+    /// crossed rekey neither new session follows the other, so a packet
+    /// under one never discards the other, and each node keeps the session
+    /// the peer may still seal under until rule 1, rule 3 or a later session
+    /// that follows it.
+    fn start_followed_discards(&mut self, now: Instant, id: u64) {
+        let Some(session) = self.sessions.get_mut(&id) else {
             return;
         };
-        let Some(p) = self.peers.get(&peer) else {
-            return;
-        };
-        let until = now.saturating_add(PREVIOUS_RECV_TIME);
-        for id in p.sessions.iter().take_while(|id| **id != newer) {
-            if let Some(s) = self.sessions.get_mut(id) {
-                let same_order = s.initiator || !newer_initiated;
-                if (same_order || on_vni_0) && s.recv_until.is_none() {
-                    s.recv_until = Some(until);
-                }
+        let peer = session.peer;
+        let follows = std::mem::take(&mut session.follows);
+        let until = now.saturating_add(DISCARD_AFTER_FOLLOWED);
+        for older in follows {
+            if let Some(s) = self.sessions.get_mut(&older)
+                && s.peer == peer
+                && s.discard_at.is_none()
+            {
+                s.discard_at = Some(until);
             }
         }
     }
@@ -910,9 +913,9 @@ impl Link {
         let Some(session) = self.sessions.get_mut(&id) else {
             return Err(DropReason::UnknownIndex);
         };
-        let (Some(recv), true) = (&session.recv, queue < session.peer_queues.get()) else {
+        if queue >= session.peer_queues.get() {
             return Err(DropReason::UnknownIndex);
-        };
+        }
         let window = usize::from(queue);
         let counter = session.windows[window]
             .check(header.counter)
@@ -920,7 +923,8 @@ impl Link {
         let (head, body) = bytes.split_at_mut(TRANSPORT_HEADER_LEN);
         let mut aad = [0u8; TRANSPORT_HEADER_LEN];
         aad.copy_from_slice(head);
-        let frame = recv
+        let frame = session
+            .recv
             .open_in_place(queue, counter, &aad, body)
             .map_err(|_| DropReason::Unauthentic)?;
         session.windows[window].accept(counter);
@@ -929,8 +933,7 @@ impl Link {
         if confirmed {
             out.push(Output::Event(Event::SessionConfirmed { peer }));
         }
-        let on_vni_0 = vni == Vni::INFRASTRUCTURE && !is_bind(frame);
-        self.moved_on(cx.now, peer, id, on_vni_0);
+        self.start_followed_discards(cx.now, id);
         let result = self.on_frame(cx, (id, index, vni), peer, frame, out);
         if confirmed {
             self.flush_held(cx.now, peer, out);
@@ -1013,7 +1016,7 @@ impl Link {
                     vni,
                     base: SessionIndex(base),
                 };
-                self.seal_internal(id, InnerFrame::Control(bind), out)
+                self.seal_internal(cx.now, id, InnerFrame::Control(bind), out)
             }
             Control::Bind { vni, base } => {
                 let Some(session) = self.sessions.get_mut(&id) else {
@@ -1057,8 +1060,8 @@ impl Link {
         self.expire_peer(cx.now, to.peer, out);
         self.rekey_if_due(cx, to.peer, out);
         self.request_binding(cx.now, to.peer, to.vni, out);
-        if let Some(id) = self.choose(&to.peer, to.vni) {
-            self.seal_frame(id, to.vni, to.queue, packet, to.budget, out)?;
+        if let Some(id) = self.choose(&to.peer, to.vni, cx.now) {
+            self.seal_frame(cx.now, (id, to.vni, to.queue), packet, to.budget, out)?;
             return Ok(Sent::Sealed);
         }
         let Some(p) = self.peers.get_mut(&to.peer) else {
@@ -1101,18 +1104,32 @@ impl Link {
         }
     }
 
-    /// The session section 3.4 seals a packet for `vni` to `peer` under: the
-    /// newest confirmed one that holds a binding for `vni`, or for VNI 0 when
-    /// none is confirmed, the newest.
-    fn choose(&self, peer: &PublicKey, vni: Vni) -> Option<u64> {
+    /// The session section 3.4 seals a packet for `vni` to `peer` under at
+    /// `now`: the newest that qualifies, is confirmed and holds a binding for
+    /// `vni`, or for VNI 0 when none both qualifies and is confirmed, the
+    /// newest.
+    ///
+    /// A session qualifies until 5 seconds after this node first sealed a
+    /// transport packet under a newer session with the peer. Sessions are
+    /// listed oldest first, so walking them newest first carries the
+    /// earliest such seal along.
+    fn choose(&self, peer: &PublicKey, vni: Vni, now: Instant) -> Option<u64> {
         let p = self.peers.get(peer)?;
         let mut any_confirmed = false;
+        let mut newer_sealed: Option<Instant> = None;
         for id in p.sessions.iter().rev() {
             let s = self.sessions.get(id)?;
-            any_confirmed |= s.confirmed;
-            if s.confirmed && s.bindings.contains_key(&vni) {
-                return Some(*id);
+            let qualifies = newer_sealed.is_none_or(|at| now < at.saturating_add(QUALIFY_TIME));
+            if qualifies {
+                any_confirmed |= s.confirmed;
+                if s.confirmed && s.bindings.contains_key(&vni) {
+                    return Some(*id);
+                }
             }
+            newer_sealed = match (newer_sealed, s.first_sealed) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
         }
         (vni == Vni::INFRASTRUCTURE && !any_confirmed)
             .then(|| p.sessions.last().copied())
@@ -1126,7 +1143,7 @@ impl Link {
         if vni == Vni::INFRASTRUCTURE {
             return;
         }
-        let Some(id) = self.choose(&peer, Vni::INFRASTRUCTURE) else {
+        let Some(id) = self.choose(&peer, Vni::INFRASTRUCTURE, now) else {
             return;
         };
         let Some(session) = self.sessions.get_mut(&id) else {
@@ -1142,8 +1159,12 @@ impl Link {
             return;
         }
         session.bind_sent.insert(vni, now);
-        let request =
-            self.seal_internal(id, InnerFrame::Control(Control::BindRequest { vni }), out);
+        let request = self.seal_internal(
+            now,
+            id,
+            InnerFrame::Control(Control::BindRequest { vni }),
+            out,
+        );
         self.note(request);
     }
 
@@ -1156,9 +1177,9 @@ impl Link {
         let held = std::mem::take(&mut p.held);
         let mut waiting = BTreeMap::new();
         for (vni, mut queue) in held {
-            while let (Some(id), Some(_)) = (self.choose(&peer, vni), queue.front()) {
+            while let (Some(id), Some(_)) = (self.choose(&peer, vni, now), queue.front()) {
                 if let Some(h) = queue.pop_front() {
-                    let sealed = self.seal_frame(id, vni, h.queue, &h.packet, h.budget, out);
+                    let sealed = self.seal_frame(now, (id, vni, h.queue), &h.packet, h.budget, out);
                     self.note(sealed);
                 }
             }
@@ -1179,28 +1200,28 @@ impl Link {
     /// are at most 9 bytes and are never fragmented.
     fn seal_internal(
         &mut self,
+        now: Instant,
         id: u64,
         frame: InnerFrame<'_>,
         out: &mut Vec<Output>,
     ) -> Result<(), DropReason> {
         let mut buf = [0u8; 9];
         let len = frame.encode(&mut buf).map_err(|_| DropReason::TooLarge)?;
-        self.seal(id, Vni::INFRASTRUCTURE, 0, &buf[..len], out)
+        self.seal(now, (id, Vni::INFRASTRUCTURE, 0), &buf[..len], out)
     }
 
-    /// Seals an IP or control frame, split into fragments when it is larger
-    /// than `budget` (section 3.5).
+    /// Seals an IP or control frame under session `id` for `vni` on `queue`,
+    /// split into fragments when it is larger than `budget` (section 3.5).
     fn seal_frame(
         &mut self,
-        id: u64,
-        vni: Vni,
-        queue: u16,
+        now: Instant,
+        (id, vni, queue): (u64, Vni, u16),
         frame: &[u8],
         budget: usize,
         out: &mut Vec<Output>,
     ) -> Result<(), DropReason> {
         if frame.len() <= budget {
-            return self.seal(id, vni, queue, frame, out);
+            return self.seal(now, (id, vni, queue), frame, out);
         }
         let piece = budget
             .checked_sub(FRAGMENT_HEADER_LEN)
@@ -1229,18 +1250,17 @@ impl Link {
             fragment
                 .encode(&mut buf)
                 .map_err(|_| DropReason::TooLarge)?;
-            self.seal(id, vni, queue, &buf, out)?;
+            self.seal(now, (id, vni, queue), &buf, out)?;
         }
         Ok(())
     }
 
     /// Seals one transport packet carrying `frame` under session `id` for
-    /// `vni` on `queue`.
+    /// `vni` on `queue`, at `now`.
     fn seal(
         &mut self,
-        id: u64,
-        vni: Vni,
-        queue: u16,
+        now: Instant,
+        (id, vni, queue): (u64, Vni, u16),
         frame: &[u8],
         out: &mut Vec<Output>,
     ) -> Result<(), DropReason> {
@@ -1270,19 +1290,13 @@ impl Link {
                 _ => DropReason::CounterExhausted,
             })?;
         *next += 1;
+        session.first_sealed.get_or_insert(now);
         out.push(Output::Transmit {
             to: Destination::Peer(session.peer),
             datagram,
         });
         Ok(())
     }
-}
-
-/// Whether `frame` is a bind (section 3.4): the one frame on VNI 0 that is
-/// sealed under the session its request came under rather than by session
-/// choice.
-fn is_bind(frame: &[u8]) -> bool {
-    frame.first() == Some(&0x10) && frame.get(1) == Some(&2)
 }
 
 fn deliver(peer: PublicKey, vni: Vni, packet: IpPacket<'_>, out: &mut Vec<Output>) {

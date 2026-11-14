@@ -8,7 +8,7 @@ mod common;
 use std::time::Duration;
 
 use alloy_wire::Vni;
-use common::{A, B, Pair, vni, with_rng};
+use common::{A, B, Pair, SplitMix, vni, with_rng};
 
 /// Seeds run by `cargo test`.
 const SEEDS: u64 = 32;
@@ -16,28 +16,6 @@ const SEEDS: u64 = 32;
 /// Steps of faulty traffic before the faults stop: about 375 seconds, so
 /// sessions rekey about three times.
 const STEPS: usize = 300;
-
-/// The test's own choices, apart from the links' randomness.
-struct SplitMix(u64);
-
-impl SplitMix {
-    fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
-    }
-
-    /// True with probability `percent` in 100.
-    fn chance(&mut self, percent: u64) -> bool {
-        self.next() % 100 < percent
-    }
-
-    fn below(&mut self, n: u64) -> u64 {
-        self.next() % n
-    }
-}
 
 /// An IPv4 packet carrying `id`, so each delivery can be traced to its send.
 fn packet(id: u32) -> Vec<u8> {

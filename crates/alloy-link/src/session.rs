@@ -6,32 +6,40 @@ use alloy_crypto::al::{ProbeKey, PublicKey, RecvKey, SendKey, SessionKeys};
 use alloy_rt::Instant;
 use alloy_wire::{QueueCount, Vni};
 
+use crate::REJECT_AFTER;
 use crate::window::ReplayWindow;
 
 /// A session: its keys, the blocks it holds at this node, the bindings it
 /// holds at the peer, and its counters and replay windows.
 ///
-/// Every key erases itself when it is dropped, so discarding a session, or
-/// dropping its receive key, erases them (section 3.3).
+/// Every key erases itself when it is dropped, so discarding a session
+/// erases all of its keys at once (section 3.3).
 pub(crate) struct Session {
     pub(crate) peer: PublicKey,
     /// When the handshake that made it completed here. Its age is measured
     /// from here and it is discarded 180 seconds later.
     pub(crate) made: Instant,
-    /// Whether this node sent the initiation that made the session.
-    pub(crate) initiator: bool,
     /// Whether this node has seen that the peer holds the session (3.6).
     pub(crate) confirmed: bool,
     pub(crate) send: SendKey,
-    /// `None` once the 10 seconds after the peer moved to a newer session
-    /// are over.
-    pub(crate) recv: Option<RecvKey>,
+    pub(crate) recv: RecvKey,
     /// Held for the session's lifetime: probes (3.6) are out of this crate.
     pub(crate) _probe_send: ProbeKey,
-    pub(crate) _probe_recv: Option<ProbeKey>,
-    /// When `recv` is dropped: 10 seconds after this node first saw that
-    /// the peer seals under a newer session (`Link::moved_on`).
-    pub(crate) recv_until: Option<Instant>,
+    pub(crate) _probe_recv: ProbeKey,
+    /// The sessions with the same peer that this one follows at this node
+    /// (3.3): those confirmed here when this node first sent the handshake
+    /// message that makes this one at the peer. Emptied by the first
+    /// transport packet accepted under this session, which starts their
+    /// 10 seconds, since later packets change nothing.
+    pub(crate) follows: Vec<u64>,
+    /// When this node discards the session by rule 2 of 3.3: 10 seconds
+    /// after it first accepted a transport packet under a session that
+    /// follows this one.
+    pub(crate) discard_at: Option<Instant>,
+    /// When this node first sealed a transport packet under the session.
+    /// Every older session with the peer stops qualifying 5 seconds later
+    /// (3.4).
+    pub(crate) first_sealed: Option<Instant>,
     /// The number of queues the peer sends on: indexes with `q` at or above
     /// it name nothing.
     pub(crate) peer_queues: QueueCount,
@@ -53,28 +61,30 @@ pub(crate) struct Session {
 }
 
 impl Session {
+    /// A session made at `now`, by the initiator when `initiator`, following
+    /// the sessions in `follows`.
     pub(crate) fn new(
         peer: PublicKey,
         now: Instant,
         keys: SessionKeys,
-        local_base: u32,
-        peer_base: u32,
-        queues: (QueueCount, QueueCount),
+        (local_base, peer_base): (u32, u32),
+        (ours, theirs): (QueueCount, QueueCount),
         initiator: bool,
+        follows: Vec<u64>,
     ) -> Self {
-        let (ours, theirs) = queues;
         Self {
             peer,
             made: now,
-            initiator,
             // An initiator has processed the response, so it has seen that
             // the peer holds the session (3.6).
             confirmed: initiator,
             send: keys.send,
-            recv: Some(keys.recv),
+            recv: keys.recv,
             _probe_send: keys.probe_send,
-            _probe_recv: Some(keys.probe_recv),
-            recv_until: None,
+            _probe_recv: keys.probe_recv,
+            follows,
+            discard_at: None,
+            first_sealed: None,
             peer_queues: theirs,
             send_counters: vec![0; usize::from(ours.get())],
             windows: vec![ReplayWindow::default(); usize::from(theirs.get())],
@@ -85,11 +95,11 @@ impl Session {
         }
     }
 
-    /// Drops the receive keys: the 10 seconds after the peer moved on are
-    /// over.
-    pub(crate) fn drop_recv(&mut self) {
-        self.recv = None;
-        self._probe_recv = None;
+    /// Whether the session is past its lifetime at `now`: 180 seconds after
+    /// its handshake (rule 1 of 3.3), or 10 seconds after a packet under a
+    /// session that follows it (rule 2).
+    pub(crate) fn expired(&self, now: Instant) -> bool {
+        now >= self.made.saturating_add(REJECT_AFTER) || self.discard_at.is_some_and(|t| now >= t)
     }
 
     /// The highest next counter over this node's sending queues.
