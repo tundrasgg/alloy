@@ -634,7 +634,7 @@ mod unix {
             }
         }
         // `Default` gives what `open` and `create_dir` give.
-        fs::File::create(s.dir.join("std-file")).unwrap();
+        File::create(s.dir.join("std-file")).unwrap();
         fs::create_dir(s.dir.join("std-dir")).unwrap();
         let mode = |name: &str| fs::metadata(s.dir.join(name)).unwrap().mode() & 0o7777;
         drop(
