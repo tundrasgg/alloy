@@ -12,8 +12,8 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0129 |
-| Decision `D-` | D-0063 |
+| Task `T-` | T-0135 |
+| Decision `D-` | D-0064 |
 | ADR | 0069 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0003 |
@@ -30,13 +30,16 @@ Only tasks that are not done or cancelled. A finished task leaves the board in t
 | T-0077 | build | developer | paused | D-0044 | Build alloy-sim networks, UDP, and the echo scenario |
 | T-0078 | build | developer | paused | D-0044 | Build alloy-sim mem streams |
 | T-0084 | verify | verifier | paused | D-0044 | Run the runtime conformance suites against os |
-| T-0112 | build | developer | queued | T-0126 builds | Add alloy init, join, login, and node list to the CLI |
-| T-0113 | verify | verifier | review | T-0111 | Write the M11 rung 2 join and node list check |
+| T-0112 | build | developer | queued | T-0131, T-0132, T-0133 | Add alloy init, join, login, and node list to the CLI |
+| T-0113 | verify | verifier | review | T-0134 | Write the M11 rung 2 join and node list check |
 | T-0119 | spec | architect | queued | before rung 5 | Keep VNI binds alive across crossed rekeys, record the ADR |
-| T-0121 | build | developer | review | none | Create keys and stores locked down in alloy-id and alloy-state |
-| T-0126 | spec | architect | active | none | Specify what M11 rung 2 builds of init, join, and local admin |
 | T-0127 | build | developer | active | none | Let alloy-link accept unknown initiators and draw counters |
-| T-0128 | verify | verifier | active | none | Expect the native store refusal on unelevated Windows |
+| T-0129 | build | developer | active | none | Build peer_uid and the durable replace in alloy-rt |
+| T-0130 | build | developer | active | none | Add JoinToken, Organization, User, and login codes to alloy-state |
+| T-0131 | build | developer | queued | T-0129, T-0130 | Serve login codes and node list on the API and local admin |
+| T-0132 | build | developer | queued | T-0129, T-0130, T-0131 | Build alloyd init with its listeners |
+| T-0133 | build | developer | queued | T-0132, T-0127 | Build alloyd join, heartbeats, and the node lifecycle |
+| T-0134 | verify | verifier | active | none | Update the rung 2 check for the login flow |
 
 ## Still to cut for M0
 
