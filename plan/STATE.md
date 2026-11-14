@@ -30,7 +30,6 @@ Only tasks that are not done or cancelled. A finished task leaves the board in t
 | T-0077 | build | developer | paused | D-0044 | Build alloy-sim networks, UDP, and the echo scenario |
 | T-0078 | build | developer | paused | D-0044 | Build alloy-sim mem streams |
 | T-0084 | verify | verifier | paused | D-0044 | Run the runtime conformance suites against os |
-| T-0111 | build | developer | review | none | Wire alloyd init, join, node channel, and heartbeats |
 | T-0112 | build | developer | queued | T-0126 builds | Add alloy init, join, login, and node list to the CLI |
 | T-0113 | verify | verifier | review | T-0111 | Write the M11 rung 2 join and node list check |
 | T-0119 | spec | architect | queued | before rung 5 | Keep VNI binds alive across crossed rekeys, record the ADR |
@@ -105,6 +104,8 @@ Only tasks that are not done or cancelled. A finished task leaves the board in t
 - Spec: ARFC 0004 section 8 states the probe reflection bound from section 3.2 (T-0021 follow-up).
 
 ## M11 notes
+
+- From T-0111 review (fold into the `alloyd init` and `alloyd join` builds): F1, `decode` drops messages ARFC 0006 section 4.3 says must be answered or accepted; F2, `Requester::receive` takes a reply after its time limit; F3 to F5 (notes), O(N) expiry per request, a missing data directory logged once instead of every 60 s, and the rest in `plan/reports/T-0111.reviewer.1.md`.
 
 - From T-0111 (D-0061): `alloy_id::proto::JoinRequest` still has the old `secret` field and body layout; the `alloyd join` build fixes it with `crates/alloy-id/**` in its touches. T-0112 folds T-0091 F2 and F3.
 
