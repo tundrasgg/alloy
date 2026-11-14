@@ -10,6 +10,8 @@ use std::process::Command;
 pub(crate) struct Tree {
     root: PathBuf,
     files: BTreeSet<String>,
+    /// The files committed as text with CRLF line ends, [`Tree::has_crlf`].
+    crlf: BTreeSet<String>,
 }
 
 impl Tree {
@@ -29,16 +31,22 @@ impl Tree {
                 "--exclude-standard",
             ],
         )?;
-        let files = listing
+        let files: BTreeSet<String> = listing
             .split('\0')
             .filter(|path| !path.is_empty())
             .filter(|path| !exclude.iter().any(|prefix| path.starts_with(prefix)))
             .filter(|path| root.join(path).is_file())
             .map(str::to_owned)
             .collect();
+        let eol = git(root, &["ls-files", "-z", "--eol", "--cached"])?;
+        let crlf = crlf_in_index(&eol)
+            .filter(|path| files.contains(*path))
+            .map(str::to_owned)
+            .collect();
         Ok(Self {
             root: root.to_path_buf(),
             files,
+            crlf,
         })
     }
 
@@ -49,6 +57,7 @@ impl Tree {
     #[cfg(test)]
     pub(crate) fn from_walk(root: &Path) -> Result<Self, String> {
         let mut files = BTreeSet::new();
+        let mut crlf = BTreeSet::new();
         let mut pending = vec![(root.to_path_buf(), String::new())];
         while let Some((dir, prefix)) = pending.pop() {
             let entries = fs::read_dir(&dir)
@@ -62,6 +71,11 @@ impl Tree {
                 if path.is_dir() {
                     pending.push((path, format!("{rel}/")));
                 } else {
+                    let bytes = fs::read(&path)
+                        .map_err(|err| format!("could not read `{}`: {err}", path.display()))?;
+                    if is_crlf_text(&bytes) {
+                        crlf.insert(rel.clone());
+                    }
                     files.insert(rel);
                 }
             }
@@ -69,7 +83,17 @@ impl Tree {
         Ok(Self {
             root: root.to_path_buf(),
             files,
+            crlf,
         })
+    }
+
+    /// True when `path` is text committed with CRLF line ends, in all or some
+    /// of its lines. For a tree from git this is the copy in the index, as
+    /// `git ls-files --eol` classes it (`i/crlf` or `i/mixed`), whatever the
+    /// working tree holds. For a walked tree it is the file's content, judged
+    /// by [`is_crlf_text`].
+    pub(crate) fn has_crlf(&self, path: &str) -> bool {
+        self.crlf.contains(path)
     }
 
     /// Every file, in byte order of its path.
@@ -102,6 +126,33 @@ impl Tree {
             .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
             .map_err(|err| format!("could not read the file: {err}"))
     }
+}
+
+/// The paths that the output of `git ls-files -z --eol` classes as text with
+/// CRLF line ends in the index. Each record is the index class, the working
+/// tree class, and the attributes, then a tab and the path.
+fn crlf_in_index(listing: &str) -> impl Iterator<Item = &str> {
+    listing.split('\0').filter_map(|record| {
+        let (info, path) = record.split_once('\t')?;
+        let index = info.split_whitespace().next()?;
+        matches!(index, "i/crlf" | "i/mixed").then_some(path)
+    })
+}
+
+/// True when `bytes` hold at least one CRLF and are text by git's test for
+/// `text=auto`: no NUL byte, and no CR that is not followed by LF.
+#[cfg(test)]
+fn is_crlf_text(bytes: &[u8]) -> bool {
+    let mut crlf = false;
+    for (i, &byte) in bytes.iter().enumerate() {
+        match byte {
+            0 => return false,
+            b'\r' if bytes.get(i + 1) == Some(&b'\n') => crlf = true,
+            b'\r' => return false,
+            _ => {}
+        }
+    }
+    crlf
 }
 
 /// Runs git in `root` and returns its standard output.
@@ -144,7 +195,34 @@ mod tests {
         Tree {
             root: PathBuf::new(),
             files: files.iter().map(|f| (*f).to_owned()).collect(),
+            crlf: BTreeSet::new(),
         }
+    }
+
+    #[test]
+    fn crlf_in_index_reads_the_index_class_only() {
+        let listing = concat!(
+            "i/crlf  w/lf    attr/text=auto eol=lf \tCargo.toml\0",
+            "i/mixed w/mixed attr/                 \tdocs/a b.md\0",
+            "i/lf    w/crlf  attr/text=auto eol=lf \tsrc/lib.rs\0",
+            "i/-text w/-text attr/-text            \tseeds/x\0",
+            "i/none  w/none  attr/                 \tempty\0",
+        );
+        assert_eq!(
+            crlf_in_index(listing).collect::<Vec<_>>(),
+            ["Cargo.toml", "docs/a b.md"]
+        );
+    }
+
+    #[test]
+    fn crlf_text_is_text_with_a_crlf() {
+        assert!(is_crlf_text(b"a\r\nb\r\n"));
+        assert!(is_crlf_text(b"a\nb\r\nc\n"));
+        assert!(!is_crlf_text(b"a\nb\n"));
+        assert!(!is_crlf_text(b""));
+        assert!(!is_crlf_text(b"a\r\n\0"));
+        assert!(!is_crlf_text(b"a\r\nb\rc"));
+        assert!(!is_crlf_text(b"a\r"));
     }
 
     #[test]

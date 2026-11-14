@@ -1,0 +1,5 @@
+Cargo.toml crlf
+crates/a/src/lib.rs
+docs/notes.md mixed
+fuzz/seeds/message/initiation binary
+packaging/set-version.sh crlf

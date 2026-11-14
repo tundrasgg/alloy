@@ -11,8 +11,15 @@
 #   sh packaging/collect-licenses.sh <target triple> <out dir> <package>...
 #
 # Run it from the workspace after a build, so the crate sources are in the
-# Cargo registry. A crate with no license file stops it, since the archive must
-# not ship code without its license.
+# Cargo registry.
+#
+# Some crates are published without their license file. For such a crate the
+# license texts come from packaging/licenses/<crate>-<version>/, which holds
+# them unmodified from the crate's upstream repository at the tag of that
+# version, and SOURCES, one line per text: its file name, its git blob id, and
+# the URL it was taken from. A text whose blob id is not the recorded one
+# stops it. A crate with neither a license file nor such texts stops it too,
+# since the archive must not ship code without its license.
 
 set -eu
 if [ $# -lt 3 ]; then
@@ -23,6 +30,30 @@ target=$1
 out=$2
 shift 2
 mkdir -p "$out"
+reviewed="$(cd "$(dirname "$0")" && pwd)/licenses"
+
+# reviewed_texts <crate> <version>: copies the reviewed license texts of the
+# crate, and fails when it has none or one does not match its blob id.
+reviewed_texts() {
+  _dir="$reviewed/$1-$2"
+  [ -f "$_dir/SOURCES" ] || return 1
+  _n=0
+  while read -r _file _blob _url; do
+    [ -n "$_file" ] || continue
+    if [ ! -f "$_dir/$_file" ]; then
+      echo "collect-licenses: $_dir/SOURCES names $_file, which is not there" >&2
+      exit 1
+    fi
+    _have=$(git hash-object --no-filters "$_dir/$_file")
+    if [ "$_have" != "$_blob" ]; then
+      echo "collect-licenses: $_dir/$_file has the blob id $_have, not $_blob from $_url" >&2
+      exit 1
+    fi
+    cp "$_dir/$_file" "$out/$1-$2-$_file"
+    _n=$((_n + 1))
+  done <"$_dir/SOURCES"
+  [ "$_n" -gt 0 ]
+}
 
 packages=''
 for p in "$@"; do
@@ -65,14 +96,14 @@ while IFS='|' read -r pkg license; do
         ;;
     esac
   done
-  if [ "$found" = 0 ]; then
+  if [ "$found" = 0 ] && ! reviewed_texts "$name" "$version"; then
     missing="$missing $name-$version"
   fi
   printf '%s %s: %s\n' "$name" "$version" "${license:-unknown}" >>"$out/crates.txt"
 done <"$out/.tree"
 rm -f "$out/.tree"
 if [ -n "$missing" ]; then
-  echo "collect-licenses: these crates have no license file:$missing" >&2
+  echo "collect-licenses: these crates have no license file, and no reviewed license texts in $reviewed:$missing" >&2
   exit 1
 fi
 

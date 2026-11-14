@@ -12,6 +12,7 @@ pushed.
 | `alloyd.service` | The systemd unit that `install.sh` writes for a node. `check.sh` checks that the copy inside `install.sh` is the same |
 | `set-version.sh` | Sets the version of the `alloy` and `alloyd` crates to the release's version before the build |
 | `collect-licenses.sh` | Gathers the license texts of everything linked into the binaries |
+| `licenses/` | The license texts of crates published without their license file, one directory `<crate>-<version>/` each, taken unmodified from the crate's upstream repository at that version's tag. Its `SOURCES` gives each text's git blob id and URL, and `collect-licenses.sh` checks the blob id |
 | `make-archive.sh` | Assembles one archive in the layout of clause 3.13 |
 | `stamp.sh` | Writes the digests into the install scripts and writes `SHA256SUMS` |
 | `check.sh`, `check.ps1` | Checks the scripts: syntax, shellcheck, the PowerShell parser, that a cut script runs nothing, usage errors |

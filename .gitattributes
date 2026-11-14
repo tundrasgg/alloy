@@ -1,0 +1,23 @@
+# Git stores every text file with LF line ends and checks it out with LF on
+# every platform, whatever core.autocrlf says. The release scripts and the
+# tools read these files byte for byte, and a CR breaks them. `cargo xtask
+# check-repo` rejects a file committed with CRLF line ends (rule line-endings).
+* text=auto eol=lf
+
+# Binary files, stored and checked out byte for byte.
+*.dll binary
+*.exe binary
+*.gif binary
+*.gz binary
+*.ico binary
+*.jpeg binary
+*.jpg binary
+*.otf binary
+*.pdf binary
+*.png binary
+*.tar binary
+*.ttf binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.zip binary

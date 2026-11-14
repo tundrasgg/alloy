@@ -1,0 +1,3 @@
+Cargo.toml: line-endings
+docs/notes.md: line-endings
+packaging/set-version.sh: line-endings

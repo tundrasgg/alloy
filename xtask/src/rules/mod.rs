@@ -7,6 +7,7 @@ mod code;
 mod docs;
 mod front_matter;
 mod instruction;
+mod line_endings;
 mod path_lock;
 
 #[cfg(test)]
@@ -89,11 +90,13 @@ pub(crate) enum Rule {
     Links,
     /// No `YYYY-MM-DD` dates in documents outside code blocks.
     Dates,
+    /// No file committed as text with CRLF line ends.
+    LineEndings,
 }
 
 impl Rule {
     /// Every rule, in the order they run.
-    pub(crate) const ALL: [Self; 8] = [
+    pub(crate) const ALL: [Self; 9] = [
         Self::InstructionFiles,
         Self::BannedPatterns,
         Self::DirectIo,
@@ -102,6 +105,7 @@ impl Rule {
         Self::FrontMatter,
         Self::Links,
         Self::Dates,
+        Self::LineEndings,
     ];
 
     /// The rule's name, as printed in violations and used for fixture directories.
@@ -115,6 +119,7 @@ impl Rule {
             Self::FrontMatter => "front-matter",
             Self::Links => "links",
             Self::Dates => "dates",
+            Self::LineEndings => "line-endings",
         }
     }
 
@@ -130,6 +135,7 @@ impl Rule {
             Self::FrontMatter => front_matter::check(tree),
             Self::Links => docs::check_links(tree),
             Self::Dates => docs::check_dates(tree),
+            Self::LineEndings => line_endings::check(tree),
         }
     }
 }
@@ -155,7 +161,9 @@ mod fixture_tests {
     //!
     //! `files` lists one path per line. The test creates each in a temporary
     //! directory and checks that directory, so that files the repository must
-    //! never hold, such as vendor instruction files, are never committed.
+    //! never hold, such as vendor instruction files or text with CRLF line
+    //! ends, are never committed. A path may be followed by a space and a
+    //! kind of content, [`content`]: `crlf`, `mixed`, or `binary`.
 
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -165,6 +173,20 @@ mod fixture_tests {
 
     /// The text of every file created from a `files` list.
     const CREATED: &str = "Created by the fixture test; never committed.\n";
+
+    /// The content of a file created from a `files` list with `kind`: LF
+    /// text when there is none, CRLF text, text with LF and CRLF lines, or
+    /// bytes with a NUL and a CRLF, which git classes as binary.
+    fn content(kind: Option<&str>) -> Vec<u8> {
+        let crlf = CREATED.replace('\n', "\r\n");
+        match kind {
+            None => CREATED.into(),
+            Some("crlf") => crlf.repeat(2).into(),
+            Some("mixed") => format!("{CREATED}{crlf}").into(),
+            Some("binary") => format!("\0{crlf}").into(),
+            Some(other) => panic!("unknown content kind `{other}` in a `files` list"),
+        }
+    }
 
     fn case_dir(rule: Rule, case: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -189,11 +211,15 @@ mod fixture_tests {
             let repo = Self(root);
             // A directory left by a process with a reused id would add files.
             let _ = fs::remove_dir_all(&repo.0);
-            for path in list.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            for line in list.lines().map(str::trim).filter(|l| !l.is_empty()) {
+                let (path, kind) = match line.split_once(' ') {
+                    Some((path, kind)) => (path, Some(kind)),
+                    None => (line, None),
+                };
                 let file = repo.0.join(path);
                 let parent = file.parent().expect("a listed path names a file");
                 fs::create_dir_all(parent).expect("temporary directory is writable");
-                fs::write(&file, CREATED).expect("temporary file is writable");
+                fs::write(&file, content(kind)).expect("temporary file is writable");
             }
             repo
         }
@@ -206,11 +232,14 @@ mod fixture_tests {
     }
 
     #[test]
-    fn instruction_file_fixtures_are_created_at_test_time() {
-        for case in ["pass", "fail"] {
-            let dir = case_dir(Rule::InstructionFiles, case);
-            assert!(dir.join("files").is_file(), "{case} lists its files");
-            assert!(!dir.join("repo").exists(), "{case} commits no tree");
+    fn instruction_file_and_line_ending_fixtures_are_created_at_test_time() {
+        for rule in [Rule::InstructionFiles, Rule::LineEndings] {
+            for case in ["pass", "fail"] {
+                let dir = case_dir(rule, case);
+                let name = rule.name();
+                assert!(dir.join("files").is_file(), "{name} {case} lists its files");
+                assert!(!dir.join("repo").exists(), "{name} {case} commits no tree");
+            }
         }
     }
 
@@ -292,5 +321,6 @@ mod fixture_tests {
         FrontMatter: front_matter_pass_fixture_passes, front_matter_fail_fixture_fails;
         Links: links_pass_fixture_passes, links_fail_fixture_fails;
         Dates: dates_pass_fixture_passes, dates_fail_fixture_fails;
+        LineEndings: line_endings_pass_fixture_passes, line_endings_fail_fixture_fails;
     }
 }
