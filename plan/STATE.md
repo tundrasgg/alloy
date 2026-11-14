@@ -32,7 +32,6 @@ Only tasks that are not done or cancelled. A finished task leaves the board in t
 | T-0084 | verify | verifier | paused | D-0044 | Run the runtime conformance suites against os |
 | T-0113 | verify | verifier | review | T-0136 | Write the M11 rung 2 join and node list check |
 | T-0119 | spec | architect | queued | before rung 5 | Keep VNI binds alive across crossed rekeys, record the ADR |
-| T-0129 | build | developer | review | none | Build peer_uid and the durable replace in alloy-rt |
 | T-0130 | build | developer | review | none | Add JoinToken, Organization, User, and login codes to alloy-state |
 | T-0135 | build | developer | active | none | Close the replay gap for keys that were once peers |
 | T-0136 | build | developer | active | none | Build M11 rung 2 end to end: API, init, join, and the CLI |
