@@ -57,69 +57,103 @@ impl Transport {
 /// The bounds on the connections of the API port (ARFC 0008 clause 3.8,
 /// I-21), and what happens at each.
 ///
-/// A connection is *unproven* from accept until it is handed to `stream`, or
-/// until a call on it authenticates, which *proves* it as an API
-/// connection. Unproven, proven API, and `stream` connections are counted
-/// apart, so connections with no credential cannot take the places of
-/// authenticated API clients or of `stream` peers. The port holds at most
+/// A connection is *unproven* from accept until a call on it authenticates,
+/// which *proves* it as an API connection, or until the `stream` underlay
+/// authenticates its peer ([`StreamConn::prove`](crate::StreamConn::prove)),
+/// which proves it as a `stream` connection. Unproven, proven API, and
+/// proven `stream` connections are counted apart, so connections with no
+/// credential never hold the places of authenticated API clients or of
+/// `stream` peers. The port holds at most
 /// [`ConnLimits::max_connections`] connections in all.
 ///
-/// A call is *rejected* when it fails authentication or names no method.
-/// A rejected call never counts as activity: it neither proves a connection
-/// nor keeps one open.
+/// A *source* is an IPv4 address or an IPv6 /64, since a host is commonly
+/// given a whole /64, and its *network* is its IPv4 /24 or IPv6 /48. When
+/// every unproven place is taken, a new connection takes the place of the
+/// oldest unproven connection of the source that holds the most unproven
+/// connections, within the network that holds the most, the new connection
+/// counted and ties going to the oldest connection. The new connection is
+/// the newest, so it is always placed, unless its source holds its share.
+/// An unproven connection is closed for a newer one only while its network
+/// holds as many unproven connections as any other network, and its source
+/// as many as any other in that network. So a client with no credential
+/// that holds more unproven connections than it has networks closes only
+/// its own connections, and keeps no other client out: to close a
+/// connection whose network holds no other, it must hold at most one
+/// unproven connection in each of its networks, with every unproven place
+/// taken, which takes up to [`unproven`](ConnLimits::unproven) networks.
 ///
-/// A connection *closed* at one of these bounds takes no new call, answers
-/// the calls it already received, and is dropped once they are answered or
-/// [`CLOSE_GRACE`](crate::CLOSE_GRACE) has passed.
+/// A call is *rejected* when it fails authentication, names no method, or
+/// is refused because its connection cannot be proven. A rejected call
+/// never counts as activity: it neither proves a connection nor keeps one
+/// open.
+///
+/// A connection *closed* at one of these bounds takes no new call: one it
+/// receives from then on fails with `Unavailable` without being
+/// authenticated or served, including a call the client sent before it
+/// read the GOAWAY. The calls already in progress are answered, and the
+/// connection is dropped once they are or [`CLOSE_GRACE`](crate::CLOSE_GRACE)
+/// has passed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ConnLimits {
     /// The most unproven connections at once. A connection accepted while
-    /// this many are open is closed at once, with no byte sent.
+    /// this many are open takes the place of one of them, or is closed at
+    /// once with no byte sent, as the type's documentation says.
     pub unproven: usize,
-    /// The most unproven connections at once from one source: one IPv4
-    /// address, or one IPv6 /64 prefix, since a host is commonly given a
-    /// whole /64. A connection accepted while its source has this many is
-    /// closed at once, with no byte sent.
+    /// The most unproven connections at once from one source. A connection
+    /// accepted while its source has this many is closed at once, with no
+    /// byte sent.
     pub unproven_per_source: usize,
     /// The most proven API connections at once. A call that would prove a
-    /// connection while this many are open fails with `Unavailable` and is
-    /// rejected.
+    /// connection while this many are open fails with `Unavailable` and a
+    /// retry delay, and is rejected.
     pub api: usize,
-    /// The most `stream` connections at once. A connection that chooses
-    /// `stream` while this many are open is closed at the end of its
-    /// handshake, before the underlay sees it.
+    /// The most proven API connections at once whose first authenticated
+    /// call was by one principal. A call that would prove a connection while
+    /// its principal holds this many fails as at [`api`](ConnLimits::api).
+    pub api_per_principal: usize,
+    /// The most proven `stream` connections at once. A connection the
+    /// underlay proves while this many are open is closed.
     pub stream: usize,
     /// The time from accept to the end of the TLS handshake or, in the
     /// clear, to the bytes that tell the API from `stream`. A connection that
     /// takes longer is closed.
     pub handshake: Duration,
-    /// The time from accept within which a call must prove an API
-    /// connection. An unproven connection still open then is closed.
+    /// The time from accept within which an authenticated call or the
+    /// underlay must prove a connection. An unproven connection still open
+    /// then is closed.
     pub prove: Duration,
     /// The most rejected calls on an unproven connection. It is closed once
-    /// this many have been rejected, after they are answered.
+    /// this many have been rejected.
     pub rejected: u32,
-    /// The longest a proven API connection stays open with no authenticated
-    /// call in progress, counted from the moment it was proven or its last
-    /// authenticated call ended. It is then closed. A call is in progress
-    /// from its authentication until its whole response is sent. A `stream`
-    /// connection is the underlay's to close.
+    /// The longest a call counts as in progress: from its authentication
+    /// until its whole response is sent, or this long, whichever is first.
+    /// A call that runs longer, such as one whose request never ends or
+    /// whose response the client never reads, no longer keeps its
+    /// connection open.
+    pub call: Duration,
+    /// The longest a proven API connection stays open with no call in
+    /// progress, counted from the moment it was proven or its last call
+    /// stopped counting as in progress. It is then closed. A proven
+    /// `stream` connection is the underlay's to close.
     pub idle: Duration,
 }
 
 impl ConnLimits {
     /// The API port: 1,024 connections, of which 256 unproven, at most 8 of
-    /// them from one source, 512 proven API connections, and 256 `stream`
-    /// connections; 10 s to hand shake, 20 s to prove, 4 rejected calls, and
-    /// 60 s idle.
+    /// them from one source, 512 proven API connections, at most 32 of them
+    /// for one principal, and 256 proven `stream` connections; 10 s to hand
+    /// shake, 20 s to prove, 4 rejected calls, 60 s for a call, and 60 s
+    /// idle.
     pub const API_PORT: ConnLimits = ConnLimits {
         unproven: 256,
         unproven_per_source: 8,
         api: 512,
+        api_per_principal: 32,
         stream: 256,
         handshake: Duration::from_secs(10),
         prove: Duration::from_secs(20),
         rejected: 4,
+        call: Duration::from_secs(60),
         idle: Duration::from_secs(60),
     };
 
@@ -141,16 +175,20 @@ pub struct AdminLimits {
     /// The most connections open at once. A connection accepted while this
     /// many are open is closed at once, with no byte sent.
     pub max_connections: usize,
+    /// The longest a call counts as in progress, as
+    /// [`ConnLimits::call`] says.
+    pub call: Duration,
     /// The longest a connection stays open with no call in progress, counted
-    /// from accept or the end of its last call. It is then closed, as
-    /// [`ConnLimits`] says.
+    /// from accept or from when its last call stopped counting as in
+    /// progress. It is then closed, as [`ConnLimits`] says.
     pub idle: Duration,
 }
 
 impl AdminLimits {
-    /// The local admin socket: 64 connections, 60 s idle.
+    /// The local admin socket: 64 connections, 60 s for a call, 60 s idle.
     pub const LOCAL_ADMIN: AdminLimits = AdminLimits {
         max_connections: 64,
+        call: Duration::from_secs(60),
         idle: Duration::from_secs(60),
     };
 }

@@ -23,7 +23,7 @@ use tonic::Status;
 use tonic::codegen::Service as _;
 
 use crate::access::{self, Access, AuthnError, Principal};
-use crate::conn::{Gate, InProgress, Place, Pool, Pools, Source};
+use crate::conn::{Gate, InProgress, NotStarted, Place, Pools, Source};
 use crate::io::{HyperIo, RtExecutor, RtIo, task_name};
 use crate::service::ClusterApi;
 use crate::store::NodeStore;
@@ -108,7 +108,8 @@ impl ApiServer {
     /// [`AdminLimits::LOCAL_ADMIN`]: one accepted while
     /// [`max_connections`](AdminLimits::max_connections) are open is closed
     /// at once, and one with no call in progress for
-    /// [`idle`](AdminLimits::idle) is closed. Runs until dropped.
+    /// [`idle`](AdminLimits::idle) is closed, a call counting as in progress
+    /// for at most [`call`](AdminLimits::call). Runs until dropped.
     pub async fn serve_local_admin(&self, listener: Box<dyn Listener>, limits: AdminLimits) {
         let slots = Slots::new(limits.max_connections);
         loop {
@@ -121,7 +122,8 @@ impl ApiServer {
                 continue;
             };
             let server = self.clone();
-            let gate = Arc::new(Gate::proven(Arc::clone(self.runtime.clock()), limits.idle));
+            let clock = Arc::clone(self.runtime.clock());
+            let gate = Arc::new(Gate::proven(clock, limits.idle, limits.call));
             spawn_connection(&self.runtime, async move {
                 let io = RtIo::new(Arc::from(stream));
                 server.serve_h2(io, Caller::LocalAdmin, gate).await;
@@ -154,9 +156,10 @@ impl ApiServer {
             Some(Ok(())) => {}
             None => {
                 tracing::debug!("an API connection was closed at one of its limits");
-                // GOAWAY: no new call, and the calls already received are
-                // answered, for at most `CLOSE_GRACE`. Dropping the
-                // connection then closes it.
+                // GOAWAY, and the calls in progress are answered for at most
+                // `CLOSE_GRACE`. A call the client sent before it read the
+                // GOAWAY is refused by the gate, which is closing. Dropping
+                // the connection then closes it.
                 connection.as_mut().graceful_shutdown();
                 let grace = self.runtime.sleep(CLOSE_GRACE);
                 let _ = first(connection, grace).await;
@@ -164,15 +167,19 @@ impl ApiServer {
         }
     }
 
-    /// Answers one call. A call that names no method or fails
-    /// authentication is rejected ([`ConnLimits`]); every other call is in
-    /// progress until its response is sent.
+    /// Answers one call. A call on a connection that must close is refused
+    /// unread. A call that names no method or fails authentication is
+    /// rejected ([`ConnLimits`]); every other call is in progress until its
+    /// response is sent.
     async fn call(
         self,
         request: http::Request<Incoming>,
         caller: Caller,
         gate: &Arc<Gate>,
     ) -> Response {
+        if !gate.admit() {
+            return respond(closing().into_status().into_http(), None);
+        }
         if !METHODS.contains(&request.uri().path()) {
             gate.reject();
             return respond(Status::unimplemented("").into_http(), None);
@@ -192,9 +199,15 @@ impl ApiServer {
                 }
             }
         };
-        let Some(call) = gate.begin() else {
-            gate.reject();
-            return respond(port_full().into_status().into_http(), None);
+        let call = match gate.begin(&principal) {
+            Ok(call) => call,
+            Err(NotStarted::Full) => {
+                gate.reject();
+                return respond(port_full().into_status().into_http(), None);
+            }
+            Err(NotStarted::Closing) => {
+                return respond(closing().into_status().into_http(), None);
+            }
         };
         let (mut parts, body) = request.into_parts();
         // No method streams from the client, so the body is one message.
@@ -250,9 +263,17 @@ const PORT_FULL_RETRY: Duration = Duration::from_secs(1);
 fn port_full() -> Error {
     Error::new(
         ErrorCode::Unavailable,
-        "The API port is serving as many clients as it can, so the call was refused. Try again shortly.",
+        "The API port is serving as many connections as it can, in all or for this caller, so the \
+         call was refused. Try again shortly, or send calls on a connection already open.",
     )
     .with_retry_delay(PORT_FULL_RETRY)
+}
+
+fn closing() -> Error {
+    Error::new(
+        ErrorCode::Unavailable,
+        "The connection is closing, so the call was not served. Send it again on a new connection.",
+    )
 }
 
 /// `response`, whose body holds `call` in progress until it is sent.
@@ -309,14 +330,14 @@ impl hyper::body::Body for CallBody {
 }
 
 /// The output of `a`, or `None` when `b` completes first. Polls `a` first.
-pub(crate) async fn first<A: Future, B: Future<Output = ()>>(a: A, b: B) -> Option<A::Output> {
+pub(crate) async fn first<A: Future, B: Future>(a: A, b: B) -> Option<A::Output> {
     let mut a = pin!(a);
     let mut b = pin!(b);
     poll_fn(|cx| {
         if let Poll::Ready(output) = a.as_mut().poll(cx) {
             return Poll::Ready(Some(output));
         }
-        b.as_mut().poll(cx).map(|()| None)
+        b.as_mut().poll(cx).map(|_| None)
     })
     .await
 }
@@ -325,16 +346,21 @@ pub(crate) async fn first<A: Future, B: Future<Output = ()>>(a: A, b: B) -> Opti
 /// section 3.6).
 pub trait StreamUnderlay: Send + Sync + fmt::Debug + 'static {
     /// Serves one connection that chose `stream`, until it closes. The
-    /// connection holds its place in the port's
-    /// [`stream`](ConnLimits::stream) count until then, and the underlay
-    /// bounds how long a peer that has not authenticated keeps it.
+    /// returned future must own the connection: the port closes it by
+    /// dropping the future. The connection is unproven until the underlay
+    /// calls [`StreamConn::prove`], and the port closes it if that has not
+    /// happened [`prove`](ConnLimits::prove) after accept, or when its
+    /// unproven place is taken for a newer connection ([`ConnLimits`]).
     fn serve(&self, conn: StreamConn) -> BoxFuture<'static, ()>;
 }
 
 /// A connection on the API port that chose `stream`: by ALPN `alloy-al/1` on
 /// TLS, or by its first bytes in the clear (ARFC 0008 clause 3.8.1).
 #[derive(Debug)]
-pub struct StreamConn(Conn);
+pub struct StreamConn {
+    conn: Conn,
+    gate: Arc<Gate>,
+}
 
 #[derive(Debug)]
 enum Conn {
@@ -346,7 +372,19 @@ impl StreamConn {
     /// Whether the connection runs on TLS.
     #[must_use]
     pub fn is_tls(&self) -> bool {
-        matches!(self.0, Conn::Tls(_))
+        matches!(self.conn, Conn::Tls(_))
+    }
+
+    /// Proves the connection: the underlay calls it once the peer has
+    /// authenticated, by completing its AL handshake (ARFC 0003). Its place
+    /// moves from the port's unproven count to its
+    /// [`stream`](ConnLimits::stream) count, and the port no longer closes
+    /// it. `false` when the `stream` count is full or the connection was
+    /// already closed at a bound: the port then closes it, and the underlay
+    /// should stop serving it. `true` again on a proven connection.
+    #[must_use]
+    pub fn prove(&self) -> bool {
+        self.gate.prove_stream()
     }
 }
 
@@ -356,7 +394,7 @@ impl AsyncRead for StreamConn {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        match &mut self.get_mut().0 {
+        match &mut self.get_mut().conn {
             Conn::Tls(tls) => Pin::new(tls).poll_read(cx, buf),
             Conn::Clear(io) => Pin::new(io).poll_read(cx, buf),
         }
@@ -369,21 +407,21 @@ impl AsyncWrite for StreamConn {
         cx: &mut Context<'_>,
         data: &[u8],
     ) -> Poll<std::io::Result<usize>> {
-        match &mut self.get_mut().0 {
+        match &mut self.get_mut().conn {
             Conn::Tls(tls) => Pin::new(tls).poll_write(cx, data),
             Conn::Clear(io) => Pin::new(io).poll_write(cx, data),
         }
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        match &mut self.get_mut().0 {
+        match &mut self.get_mut().conn {
             Conn::Tls(tls) => Pin::new(tls).poll_flush(cx),
             Conn::Clear(io) => Pin::new(io).poll_flush(cx),
         }
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        match &mut self.get_mut().0 {
+        match &mut self.get_mut().conn {
             Conn::Tls(tls) => Pin::new(tls).poll_shutdown(cx),
             Conn::Clear(io) => Pin::new(io).poll_shutdown(cx),
         }
@@ -478,11 +516,14 @@ impl ApiPort {
     }
 
     /// Serves one connection on TLS. The ClientHello and the handshake share
-    /// one deadline, [`handshake`](ConnLimits::handshake) after accept.
+    /// one deadline, [`handshake`](ConnLimits::handshake) after accept, and
+    /// end early if the connection's place is taken.
     async fn tls_connection(self, stream: Arc<dyn Stream>, place: Place, accepted: Instant) {
         let deadline = accepted.saturating_add(self.limits.handshake);
         let timer = self.runtime.clock().sleep_until(deadline);
-        let Some(Some((protocol, tls))) = first(self.tls_handshake(stream), timer).await else {
+        let evicted = place.evicted();
+        let end = first(timer, evicted.wait());
+        let Some(Some((protocol, tls))) = first(self.tls_handshake(stream), end).await else {
             return;
         };
         self.hand_off(protocol, Conn::Tls(tls), place, accepted)
@@ -521,7 +562,9 @@ impl ApiPort {
     async fn clear_connection(self, stream: Arc<dyn Stream>, place: Place, accepted: Instant) {
         let deadline = accepted.saturating_add(self.limits.handshake);
         let timer = self.runtime.clock().sleep_until(deadline);
-        let Some(Some((chosen, seen))) = first(sniff(&stream), timer).await else {
+        let evicted = place.evicted();
+        let end = first(timer, evicted.wait());
+        let Some(Some((chosen, seen))) = first(sniff(&stream), end).await else {
             return;
         };
         let io = RtIo::with_unread(stream, seen);
@@ -529,28 +572,28 @@ impl ApiPort {
             .await;
     }
 
-    /// Serves a connection whose protocol is chosen: the API as an unproven
-    /// connection, or `stream` once its place moves to the `stream` count.
-    async fn hand_off(self, protocol: Protocol, conn: Conn, mut place: Place, accepted: Instant) {
+    /// Serves a connection whose protocol is chosen, unproven until a call
+    /// or the underlay proves it.
+    async fn hand_off(self, protocol: Protocol, conn: Conn, place: Place, accepted: Instant) {
+        let clock = Arc::clone(self.runtime.clock());
+        let gate = Arc::new(Gate::unproven(clock, place, accepted, &self.limits));
         match (protocol, self.api, self.stream) {
-            (Protocol::Api, Some((server, _)), _) => {
-                let clock = Arc::clone(self.runtime.clock());
-                let gate = Arc::new(Gate::unproven(clock, place, accepted, &self.limits));
-                match conn {
-                    Conn::Tls(tls) => server.serve_h2(tls, Caller::Token, gate).await,
-                    Conn::Clear(io) => server.serve_h2(io, Caller::Token, gate).await,
-                }
-            }
+            (Protocol::Api, Some((server, _)), _) => match conn {
+                Conn::Tls(tls) => server.serve_h2(tls, Caller::Token, gate).await,
+                Conn::Clear(io) => server.serve_h2(io, Caller::Token, gate).await,
+            },
             (Protocol::Stream, _, Some((underlay, _))) => {
-                if !place.promote(Pool::Stream) {
+                let conn = StreamConn {
+                    conn,
+                    gate: Arc::clone(&gate),
+                };
+                if first(underlay.serve(conn), gate.closed()).await.is_none() {
                     tracing::debug!(
                         max = self.limits.stream,
-                        "a stream connection was closed: the port is at its stream bound"
+                        "a stream connection was closed: it was not proven in time, its place was \
+                         taken, or the port is at its stream bound"
                     );
-                    return;
                 }
-                underlay.serve(StreamConn(conn)).await;
-                drop(place);
             }
             _ => {}
         }

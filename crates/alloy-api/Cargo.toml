@@ -24,6 +24,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 alloy-seam = { path = "../alloy-seam" }
+alloy-sim = { path = "../alloy-sim" }
 proptest.workspace = true
 tonic-prost.workspace = true
 

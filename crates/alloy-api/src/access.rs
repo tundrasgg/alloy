@@ -58,7 +58,7 @@ impl fmt::Debug for SessionToken {
 }
 
 /// Who makes a call.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Principal {
     /// The node's local admin, `root@<node name>`, through the local admin
     /// socket (ARFC 0007 clause 3.10).

@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::future::{Future, poll_fn};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -13,7 +13,7 @@ use std::task::Poll;
 use std::time::Duration;
 
 use alloy_crypto::ecdsa::SigningKey;
-use alloy_crypto::tls::{ClientTls, HandshakeError, NO_APPLICATION_PROTOCOL};
+use alloy_crypto::tls::{ALPN_STREAM, ClientTls, HandshakeError, NO_APPLICATION_PROTOCOL};
 use alloy_crypto::x509::{self, CertificateFields};
 use alloy_proto::cluster::v1alpha1::{
     GetNodeRequest, ListNodesRequest, Node, NodeSpec, NodeState, NodeStatus, Role,
@@ -27,6 +27,7 @@ use alloy_rt::{
 use alloy_seam::{Binding, ConfigValue, ImplName, RegistryBuilder};
 use prost::Message;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::sync::Notify;
 
 use crate::client::{Client, ConnectError, RetryPolicy, connect, retry};
 use crate::io::RtIo;
@@ -40,15 +41,23 @@ use crate::{
 
 const ALICE: &str = "alice-token";
 const BOB: &str = "bob-token";
+const CAROL: &str = "carol-token";
 
-/// The nodes of a test cluster, by name.
+/// The nodes of a test cluster, by name. With `hold`, each `get` waits for a
+/// notification first.
 #[derive(Debug, Default)]
-struct Nodes(BTreeMap<String, Node>);
+struct Nodes(BTreeMap<String, Node>, Option<Arc<Notify>>);
 
 impl NodeStore for Nodes {
     fn get<'a>(&'a self, name: &'a NodeName) -> BoxFuture<'a, Result<Option<Node>, Error>> {
         let node = self.0.get(name.as_str()).cloned();
-        Box::pin(async move { Ok(node) })
+        let hold = self.1.clone();
+        Box::pin(async move {
+            if let Some(hold) = hold {
+                hold.notified().await;
+            }
+            Ok(node)
+        })
     }
 
     fn list<'a>(
@@ -67,7 +76,8 @@ impl NodeStore for Nodes {
     }
 }
 
-/// Alice may do anything, Bob nothing; the local admin may do anything.
+/// Alice and Carol may do anything, Bob nothing; the local admin may do
+/// anything.
 #[derive(Debug)]
 struct Policy;
 
@@ -79,6 +89,7 @@ impl Access for Policy {
         let result = match token.expose() {
             ALICE => Ok(Principal::Authenticated("alice".to_owned())),
             BOB => Ok(Principal::Authenticated("bob".to_owned())),
+            CAROL => Ok(Principal::Authenticated("carol".to_owned())),
             _ => Err(AuthnError::Refused),
         };
         Box::pin(async move { result })
@@ -168,13 +179,16 @@ fn pki(ip: IpAddr, now: i64) -> Pki {
     Pki { ca, cert }
 }
 
-/// Two real listeners served as one port, each standing for one source
-/// address: every loopback connection comes from 127.0.0.1, so the
-/// connections of the second listener report the peer [`FRIEND`] instead.
+/// Two real listeners served as one port: every loopback connection comes
+/// from 127.0.0.1, so the connections of the second listener report the peer
+/// [`FRIEND`] instead, and those of the first report each of `sources` in
+/// turn, or 127.0.0.1 when it is empty.
 #[derive(Debug)]
 struct TwoSources {
     first: Box<dyn Listener>,
     second: Box<dyn Listener>,
+    sources: Vec<IpAddr>,
+    next: AtomicUsize,
 }
 
 /// The source the second listener's connections report.
@@ -195,21 +209,28 @@ impl Listener for TwoSources {
             poll_fn(|cx| {
                 if let Poll::Ready(stream) = second.as_mut().poll(cx) {
                     return Poll::Ready(
-                        stream.map(|inner| Box::new(FromFriend(inner)) as Box<dyn Stream>),
+                        stream.map(|inner| Box::new(Reported(inner, FRIEND)) as Box<dyn Stream>),
                     );
                 }
-                first.as_mut().poll(cx)
+                let stream = std::task::ready!(first.as_mut().poll(cx));
+                Poll::Ready(stream.map(|inner| {
+                    if self.sources.is_empty() {
+                        return inner;
+                    }
+                    let n = self.next.fetch_add(1, Ordering::AcqRel) % self.sources.len();
+                    Box::new(Reported(inner, self.sources[n])) as Box<dyn Stream>
+                }))
             })
             .await
         })
     }
 }
 
-/// A stream whose peer reports [`FRIEND`].
+/// A stream whose peer reports the given address.
 #[derive(Debug)]
-struct FromFriend(Box<dyn Stream>);
+struct Reported(Box<dyn Stream>, IpAddr);
 
-impl Stream for FromFriend {
+impl Stream for Reported {
     fn local_addr(&self) -> Option<StreamAddr> {
         self.0.local_addr()
     }
@@ -219,7 +240,7 @@ impl Stream for FromFriend {
             Some(StreamAddr::Ip(addr)) => addr.port(),
             _ => 0,
         };
-        Some(StreamAddr::Ip(SocketAddr::new(FRIEND, port)))
+        Some(StreamAddr::Ip(SocketAddr::new(self.1, port)))
     }
 
     fn read<'a>(&'a self, buf: &'a mut [u8]) -> BoxFuture<'a, Result<usize, NetError>> {
@@ -235,7 +256,9 @@ impl Stream for FromFriend {
     }
 }
 
-/// The `stream` underlay of the tests: echoes the first bytes it reads.
+/// The `stream` underlay of the tests: the first bytes it reads stand for
+/// an AL handshake that authenticates the peer, so it proves the connection
+/// and echoes them.
 #[derive(Debug)]
 struct Echo;
 
@@ -247,6 +270,9 @@ impl StreamUnderlay for Echo {
             let Ok(()) = poll_fn(|cx| Pin::new(&mut conn).poll_read(cx, &mut read)).await else {
                 return;
             };
+            if read.filled().is_empty() || !conn.prove() {
+                return;
+            }
             let mut echo = read.filled().to_vec();
             echo.insert(0, u8::from(conn.is_tls()));
             let mut at = 0;
@@ -270,6 +296,11 @@ struct Setup {
     stream: bool,
     /// A second listener whose connections come from [`FRIEND`].
     friend: bool,
+    /// The sources the first listener's connections report in turn, with
+    /// `friend`.
+    sources: Vec<IpAddr>,
+    /// Makes each `get` wait for a notification.
+    hold: Option<Arc<Notify>>,
 }
 
 impl Setup {
@@ -283,6 +314,8 @@ impl Setup {
             limits: ConnLimits::API_PORT,
             stream: false,
             friend: false,
+            sources: Vec::new(),
+            hold: None,
         }
     }
 }
@@ -312,7 +345,8 @@ impl Fixture {
             .into_iter()
             .map(|n| (n.name.clone(), n))
             .collect();
-        let server = ApiServer::new(runtime.clone(), Arc::new(Nodes(nodes)), Arc::new(Policy));
+        let store = Arc::new(Nodes(nodes, setup.hold));
+        let server = ApiServer::new(runtime.clone(), store, Arc::new(Policy));
         let now = runtime.clock().wall().0 / 1_000_000_000;
         let pki = pki(setup.cert_ip, now);
         let tls = server_config(Arc::clone(runtime.clock()), &pki.cert, Protocol::Api)
@@ -331,6 +365,8 @@ impl Fixture {
             let both = TwoSources {
                 first: listener,
                 second,
+                sources: setup.sources,
+                next: AtomicUsize::new(0),
             };
             (Box::new(both), Some(friend))
         } else {
@@ -387,6 +423,43 @@ impl Fixture {
     /// `None` when the port closes it with an error.
     async fn exchange(&self, bytes: &[u8]) -> Option<Vec<u8>> {
         self.exchange_at(self.addr, bytes).await
+    }
+
+    /// Opens a `stream` connection on TLS to `addr`, writes `bytes`, and
+    /// reads to its end. `None` when the handshake fails or the port closes
+    /// it with an error.
+    async fn stream_at(&self, addr: SocketAddr, bytes: &[u8]) -> Option<Vec<u8>> {
+        let wall = Arc::new(RtWall(Arc::clone(self.runtime.clock())));
+        let config = ClientTls::pinned(wall, self.pin, &[ALPN_STREAM]).expect("config");
+        let stream = self
+            .runtime
+            .net()
+            .connect(StreamAddr::Ip(addr), StreamOptions::default())
+            .await
+            .ok()?;
+        let mut tls = config
+            .connect(localhost(), RtIo::new(Arc::from(stream)))
+            .await
+            .ok()?;
+        let mut at = 0;
+        while at < bytes.len() {
+            at += poll_fn(|cx| Pin::new(&mut tls).poll_write(cx, &bytes[at..]))
+                .await
+                .ok()?;
+        }
+        poll_fn(|cx| Pin::new(&mut tls).poll_flush(cx)).await.ok()?;
+        let mut got = Vec::new();
+        loop {
+            let mut buf = [0; 256];
+            let mut read = ReadBuf::new(&mut buf);
+            poll_fn(|cx| Pin::new(&mut tls).poll_read(cx, &mut read))
+                .await
+                .ok()?;
+            if read.filled().is_empty() {
+                return Some(got);
+            }
+            got.extend_from_slice(read.filled());
+        }
     }
 
     async fn exchange_at(&self, addr: SocketAddr, bytes: &[u8]) -> Option<Vec<u8>> {
@@ -680,10 +753,12 @@ fn small(prove: Duration, idle: Duration) -> ConnLimits {
         unproven: 4,
         unproven_per_source: 2,
         api: 2,
+        api_per_principal: 1,
         stream: 1,
         handshake: Duration::from_secs(10),
         prove,
         rejected: 3,
+        call: Duration::from_secs(60),
         idle,
     }
 }
@@ -709,54 +784,73 @@ fn connections_are_bounded_and_idle_ones_close() {
         );
 
         f.runtime.sleep(idle * 3).await;
-        // Alice's idle connection was closed; the silent ones still hold
-        // their places, which only `prove` ends.
+        // Alice's idle connection is closed, so her call is not served,
+        // whether or not the client has read the GOAWAY; the silent ones
+        // still hold their places, which only `prove` ends.
         assert!(alice.get_node("node-00").await.is_err());
         assert!(f.try_client(Some(ALICE)).await.is_err());
     });
 }
 
 #[test]
-fn a_full_api_count_refuses_the_proving_call() {
+fn a_full_api_count_or_share_refuses_the_proving_call() {
     let f = Fixture::with(Setup {
-        limits: small(Duration::from_secs(10), Duration::from_secs(10)),
+        limits: ConnLimits {
+            unproven_per_source: 4,
+            ..small(Duration::from_secs(10), Duration::from_secs(10))
+        },
         ..Setup::new(1, localhost())
     });
     f.run(async {
         let a = f.client(Some(ALICE)).await;
-        let b = f.client(Some(BOB)).await;
         assert!(a.get_node("node-00").await.is_ok());
+        // Alice's share of the API count is 1: her second connection is
+        // refused, with a retry delay, and stays unproven.
+        let second = f.client(Some(ALICE)).await;
+        let share = second.get_node("node-00").await.expect_err("share full");
+        assert_eq!(share.code(), ErrorCode::Unavailable);
+        assert!(share.retry_delay().is_some());
         // Bob is authenticated and refused by policy: his connection is
-        // proven all the same.
+        // proven all the same, and the API count of 2 is full.
+        let b = f.client(Some(BOB)).await;
         assert_eq!(
             b.get_node("node-00").await.map_err(|e| e.code()),
             Err(ErrorCode::PermissionDenied)
         );
-        let c = f.client(Some(ALICE)).await;
-        let full = c.get_node("node-00").await.expect_err("api count full");
+        let carol = f.client(Some(CAROL)).await;
+        let full = carol.get_node("node-00").await.expect_err("api count full");
         assert_eq!(full.code(), ErrorCode::Unavailable);
-        assert!(full.retry_delay().is_some());
-        // The refusal was rejected, and the connection stays unproven: once
-        // a proven connection closes, its next call proves it.
-        drop((a, b));
-        f.runtime.sleep(Duration::from_millis(300)).await;
-        assert_eq!(
-            c.get_node("node-00").await.expect("served"),
-            node("node-00")
-        );
+        // Once Bob's connection closes, a new one of Carol's is served. The
+        // port sees the close when it reads the end of the stream, so each
+        // attempt is a new connection, and refusals are not counted on it.
+        drop(b);
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            assert!(attempts <= 200, "Bob's place never came back");
+            if let Ok(carol) = f.try_client(Some(CAROL)).await
+                && let Ok(found) = carol.get_node("node-00").await
+            {
+                assert_eq!(found, node("node-00"));
+                break;
+            }
+            f.runtime.sleep(Duration::from_millis(50)).await;
+        }
+        drop((a, second, carol));
     });
 }
 
 #[test]
 fn rejected_calls_do_not_keep_a_connection() {
-    let prove = Duration::from_millis(600);
+    // `prove` is far longer than the test, except where it is checked.
     let f = Fixture::with(Setup {
-        limits: small(prove, Duration::from_secs(10)),
+        limits: small(Duration::from_secs(60), Duration::from_secs(10)),
         ..Setup::new(1, localhost())
     });
     f.run(async {
-        // At most 3 rejected calls are answered; the fourth closes the
-        // connection unanswered.
+        // At most 3 rejected calls are answered; after the third the
+        // connection is closing and serves no call, whether or not the
+        // client has read the GOAWAY.
         let caller = f.client(Some("not-a-token")).await;
         for _ in 0..3 {
             let rejected = caller.get_node("node-00").await.expect_err("rejected");
@@ -766,32 +860,37 @@ fn rejected_calls_do_not_keep_a_connection() {
         assert_ne!(closed.code(), ErrorCode::Unauthenticated);
         assert!(caller.get_node("node-00").await.is_err());
 
-        // Rejected calls spaced under any idle time do not keep a
-        // connection past `prove` from accept.
-        let caller = f.client(None).await;
-        let started = f.runtime.clock().now();
-        let mut answered = 0;
-        while caller.get_node("node-00").await.map_err(|e| e.code())
-            == Err(ErrorCode::Unauthenticated)
-        {
-            answered += 1;
-            if answered == 2 {
-                // Stay under the rejected bound: wait out the rest.
-                f.runtime.sleep(prove).await;
-            }
-        }
-        let held = f.runtime.clock().now().saturating_duration_since(started);
-        assert!(answered <= 2, "{answered}");
-        assert!(held < prove * 3, "{held:?}");
-
-        // A path that names no method is rejected too.
+        // A path that names no method is rejected too, and once the bound
+        // is reached even a call with a valid token is not served.
         let caller = f.client(Some(ALICE)).await;
         for _ in 0..3 {
             let status = unimplemented_call(&f, &caller).await;
             assert_eq!(status.code(), tonic::Code::Unimplemented);
         }
-        let status = unimplemented_call(&f, &caller).await;
-        assert_ne!(status.code(), tonic::Code::Unimplemented);
+        assert!(caller.get_node("node-00").await.is_err());
+    });
+
+    // Rejected calls spaced under any idle time do not keep a connection
+    // past `prove` from accept. On a slow machine fewer calls are answered
+    // before `prove`; none is answered after it.
+    let prove = Duration::from_millis(600);
+    let f = Fixture::with(Setup {
+        limits: small(prove, Duration::from_secs(10)),
+        ..Setup::new(1, localhost())
+    });
+    f.run(async {
+        let caller = f.client(None).await;
+        let mut answered = 0;
+        while caller.get_node("node-00").await.map_err(|e| e.code())
+            == Err(ErrorCode::Unauthenticated)
+        {
+            answered += 1;
+            assert!(answered <= 2, "a rejected call was answered after `prove`");
+            if answered == 2 {
+                // Stay under the rejected bound: wait out the rest.
+                f.runtime.sleep(prove).await;
+            }
+        }
     });
 }
 
@@ -826,6 +925,9 @@ fn unauthenticated_callers_do_not_lock_out_clients_or_stream() {
         friend: true,
         limits: ConnLimits {
             api: 4,
+            // Each round connects anew, before the port has seen the last
+            // connection close.
+            api_per_principal: 4,
             stream: 2,
             ..small(Duration::from_millis(500), Duration::from_secs(10))
         },
@@ -879,22 +981,171 @@ fn unauthenticated_callers_do_not_lock_out_clients_or_stream() {
 
 #[test]
 fn a_call_in_progress_keeps_its_connection() {
+    // The store holds the call for four times `idle`. The connection is
+    // proven when the call starts, and the call is in progress until its
+    // response is sent, so no timing makes the connection close under it.
+    // The other timing rules of the gate are checked on the simulator's
+    // clock in `conn`.
     let idle = Duration::from_millis(300);
+    let hold = Arc::new(Notify::new());
     let f = Fixture::with(Setup {
         limits: ConnLimits {
             idle,
             ..ConnLimits::API_PORT
         },
+        hold: Some(Arc::clone(&hold)),
         ..Setup::new(1, localhost())
     });
     f.run(async {
         let client = f.client(Some(ALICE)).await;
-        // Calls closer together than `idle` keep the connection open well
-        // past it.
+        let release = async {
+            f.runtime.sleep(idle * 4).await;
+            hold.notify_one();
+            std::future::pending::<()>().await;
+        };
+        let found = crate::server::first(client.get_node("node-00"), release).await;
+        assert_eq!(found.map(|r| r.expect("served")), Some(node("node-00")));
+    });
+}
+
+#[test]
+fn a_stream_flood_from_one_source_takes_no_stream_place() {
+    // F2 of the T-0118 review: one source with no credential completes TLS
+    // with `alloy-al/1` again and again and sends nothing. Its connections
+    // stay unproven, within its share of 2, so the `stream` places stay
+    // free for peers the underlay authenticates.
+    let f = Fixture::with(Setup {
+        stream: true,
+        friend: true,
+        limits: ConnLimits {
+            unproven: 8,
+            stream: 2,
+            ..small(Duration::from_secs(20), Duration::from_secs(10))
+        },
+        ..Setup::new(1, localhost())
+    });
+    f.run(async {
+        let handshakes = Arc::new(AtomicUsize::new(0));
+        let attacking = Arc::new(AtomicUsize::new(1));
         for _ in 0..6 {
-            assert!(client.get_node("node-00").await.is_ok());
-            f.runtime.sleep(idle / 3).await;
+            let (runtime, addr, pin) = (f.runtime.clone(), f.addr, f.pin);
+            let (handshakes, attacking) = (Arc::clone(&handshakes), Arc::clone(&attacking));
+            f.runtime
+                .spawn(crate::io::task_name("test-attacker"), async move {
+                    let wall = Arc::new(RtWall(Arc::clone(runtime.clock())));
+                    let config = ClientTls::pinned(wall, pin, &[ALPN_STREAM]).expect("config");
+                    while attacking.load(Ordering::Acquire) == 1 {
+                        let opened = runtime
+                            .net()
+                            .connect(StreamAddr::Ip(addr), StreamOptions::default())
+                            .await;
+                        if let Ok(stream) = opened
+                            && let Ok(mut tls) = config
+                                .connect(localhost(), RtIo::new(Arc::from(stream)))
+                                .await
+                        {
+                            handshakes.fetch_add(1, Ordering::AcqRel);
+                            // Silent until the port closes it.
+                            let mut buf = [0; 16];
+                            let mut read = ReadBuf::new(&mut buf);
+                            let _ = poll_fn(|cx| Pin::new(&mut tls).poll_read(cx, &mut read)).await;
+                        }
+                        runtime.sleep(Duration::from_millis(5)).await;
+                    }
+                })
+                .expect("spawn");
         }
+        for _ in 0..1_000 {
+            if handshakes.load(Ordering::Acquire) >= 2 {
+                break;
+            }
+            f.runtime.sleep(Duration::from_millis(20)).await;
+        }
+        assert!(handshakes.load(Ordering::Acquire) >= 2, "{handshakes:?}");
+        let friend = f.friend.expect("a second source");
+        for _ in 0..3 {
+            let echoed = f.stream_at(friend, b"AL hello").await.expect("echo");
+            assert_eq!(echoed, b"\x01AL hello");
+        }
+        let alice = f.try_client_at(friend, Some(ALICE)).await.expect("connect");
+        assert_eq!(
+            alice.get_node("node-00").await.expect("served"),
+            node("node-00")
+        );
+        attacking.store(0, Ordering::Release);
+    });
+}
+
+#[test]
+fn silent_connections_from_many_sources_do_not_lock_out_clients_or_stream() {
+    // F3 of the T-0118 review: silent TCP connections from 32 IPv6 /64s of
+    // one /48 and 8 addresses of one IPv4 /24, renewed as soon as they are
+    // closed, keep every unproven place taken. A client and a `stream` peer
+    // from another network still get places, which the flood's own
+    // networks give up.
+    let mut sources: Vec<IpAddr> = (0..32u16)
+        .map(|i| IpAddr::from(Ipv6Addr::new(0x2001, 0xdb8, 0, i, 0, 0, 0, 1)))
+        .collect();
+    sources.extend((1..=8).map(|i| IpAddr::from(Ipv4Addr::new(198, 51, 100, i))));
+    let f = Fixture::with(Setup {
+        stream: true,
+        friend: true,
+        sources,
+        limits: ConnLimits {
+            unproven: 16,
+            api: 4,
+            // Each round connects anew, before the port has seen the last
+            // connection close.
+            api_per_principal: 4,
+            stream: 2,
+            ..small(Duration::from_secs(20), Duration::from_secs(10))
+        },
+        ..Setup::new(1, localhost())
+    });
+    f.run(async {
+        let closed = Arc::new(AtomicUsize::new(0));
+        let attacking = Arc::new(AtomicUsize::new(1));
+        for _ in 0..40 {
+            let (runtime, addr) = (f.runtime.clone(), f.addr);
+            let (closed, attacking) = (Arc::clone(&closed), Arc::clone(&attacking));
+            f.runtime
+                .spawn(crate::io::task_name("test-attacker"), async move {
+                    while attacking.load(Ordering::Acquire) == 1 {
+                        let opened = runtime
+                            .net()
+                            .connect(StreamAddr::Ip(addr), StreamOptions::default())
+                            .await;
+                        if let Ok(stream) = opened {
+                            // Silent until the port closes it.
+                            let mut buf = [0; 16];
+                            let _ = stream.read(&mut buf).await;
+                            closed.fetch_add(1, Ordering::AcqRel);
+                        }
+                        runtime.sleep(Duration::from_millis(5)).await;
+                    }
+                })
+                .expect("spawn");
+        }
+        // Every unproven place is taken, and more connections are waiting:
+        // some have already been closed for the bound.
+        for _ in 0..1_000 {
+            if closed.load(Ordering::Acquire) >= 40 {
+                break;
+            }
+            f.runtime.sleep(Duration::from_millis(20)).await;
+        }
+        assert!(closed.load(Ordering::Acquire) >= 40, "{closed:?}");
+        let friend = f.friend.expect("a second source");
+        for _ in 0..3 {
+            let alice = f.try_client_at(friend, Some(ALICE)).await.expect("connect");
+            assert_eq!(
+                alice.get_node("node-00").await.expect("served"),
+                node("node-00")
+            );
+            let echoed = f.stream_at(friend, b"AL hello").await.expect("echo");
+            assert_eq!(echoed, b"\x01AL hello");
+        }
+        attacking.store(0, Ordering::Release);
     });
 }
 
