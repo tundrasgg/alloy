@@ -13,7 +13,9 @@ members = [
     "crates/alloy-state",
     "crates/alloy-wire",
     "crates/alloyd",
+    "tests/conformance/log-store",
     "tests/conformance/rt",
+    "tests/conformance/state-store",
     "tests/conformance/wire",
     "xtask",
 ]
