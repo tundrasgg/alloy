@@ -1,12 +1,12 @@
 //! The files a node keeps in its data directory (ARFC 0002 section 3.14),
 //! through the `alloy-rt` `disk-io` seam.
 //!
-//! Every file is written whole: `<name>.new` is written and synced, renamed
-//! over `<name>`, and the rename is made durable by syncing the directory,
-//! before the call returns and so before any other file is written. After a
-//! crash each file holds its last durable content or the content before that
-//! write, and writes reach the disk in the order they were made. Readers
-//! ignore `.new` files.
+//! Every file is written whole: `<name>.new` is written and synced, then
+//! renamed over `<name>` with the seam's `replace`, which returns once the
+//! rename is durable (ARFC 0005 clause 3.1.16), so before the call returns
+//! and before any other file is written. After a crash each file holds its
+//! last durable content or the content before that write, and writes reach
+//! the disk in the order they were made. Readers ignore `.new` files.
 //!
 //! [`DataDir::create`] creates the data directory with
 //! `Protection::PrivateRoot`, and every file is created with
@@ -149,9 +149,13 @@ impl DataDir {
     /// and on Windows owner `Administrators` and the list it inherits from
     /// the data directory. The rename carries that protection to `<name>`.
     ///
-    /// On Windows section 3.14 makes the rename durable by `MoveFileExW` with
-    /// `MOVEFILE_WRITE_THROUGH`, which the `disk-io` seam does not offer; the
-    /// rename is made durable by its `sync_dir`, as on Linux.
+    /// The rename is [`DiskIo::replace`], durable when it returns: by `fsync`
+    /// of the data directory on Linux, and on Windows by `MoveFileExW` with
+    /// `MOVEFILE_WRITE_THROUGH` (ARFC 0005 clause 3.1.16, ARFC 0002 section
+    /// 3.14). `replace` makes only its own rename and the create of
+    /// `<name>.new` durable, so the removal of a stale `<name>.new` is made
+    /// durable by `sync_dir` first: else a crash could undo that removal,
+    /// and with it the create and the rename that depend on the name.
     ///
     /// # Errors
     ///
@@ -160,7 +164,8 @@ impl DataDir {
         let path = self.dir.join(name)?;
         let temp = self.dir.join(&format!("{name}.new"))?;
         match self.disk.remove(&temp).await {
-            Ok(()) | Err(DiskError::NotFound) => {}
+            Ok(()) => self.disk.sync_dir(&self.dir).await?,
+            Err(DiskError::NotFound) => {}
             Err(e) => return Err(e.into()),
         }
         let file = self.disk.create_file(&temp, Protection::Private).await?;
@@ -172,8 +177,7 @@ impl DataDir {
         }
         file.sync(SyncKind::All).await?;
         drop(file);
-        self.disk.rename(&temp, &path).await?;
-        self.disk.sync_dir(&self.dir).await?;
+        self.disk.replace(&temp, &path).await?;
         Ok(())
     }
 

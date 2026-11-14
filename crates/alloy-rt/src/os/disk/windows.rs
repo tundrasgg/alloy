@@ -1,5 +1,5 @@
 //! Ownership and access control lists of the `os` disk-io on Windows (ARFC
-//! 0005 clause 3.1.15).
+//! 0005 clause 3.1.15), and its write-through `replace` (clause 3.1.16).
 //!
 //! `Private` and `PrivateRoot` pass a security descriptor to the call that
 //! creates the entry, so the entry never exists without it. `security` reads
@@ -32,7 +32,8 @@ use windows_sys::Win32::Security::{
 use windows_sys::Win32::Storage::FileSystem::{
     CREATE_NEW, CreateDirectoryW, CreateFileW, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
-    FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, READ_CONTROL,
+    FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, READ_CONTROL,
 };
 
 use super::{errors, invalid};
@@ -253,6 +254,29 @@ pub(super) fn create_dir_owned(
     let ok = unsafe { CreateDirectoryW(name.as_ptr(), &raw const attributes) };
     if ok == 0 {
         return Err(create_error(&io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+/// Moves the file `source` over `target` with one `MoveFileExW` and the
+/// flags `MOVEFILE_REPLACE_EXISTING` and `MOVEFILE_WRITE_THROUGH`, which
+/// returns only once the file is moved on the disk (ARFC 0005 clause
+/// 3.1.16, <https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw>).
+#[allow(unsafe_code, reason = "MoveFileExW has no safe binding")]
+pub(super) fn replace(source: &Path, target: &Path) -> Result<(), DiskError> {
+    let from = wide(source)?;
+    let to = wide(target)?;
+    // SAFETY: `from` and `to` are NUL-terminated and outlive the call, which
+    // reads them only.
+    let moved = unsafe {
+        MoveFileExW(
+            from.as_ptr(),
+            to.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        return Err(errors::disk(&io::Error::last_os_error()));
     }
     Ok(())
 }
