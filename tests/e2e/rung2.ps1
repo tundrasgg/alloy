@@ -1,6 +1,6 @@
-# M11 rung 2: join and node list (ARFC 0002 sections 3.1, 3.3, 3.9, 3.11;
-# ARFC 0006 clause 3.15; ARFC 0019 clause 3.1.15; ARFC 0017 clauses 3.16 and
-# 3.17.6).
+# M11 rung 2: join, login, and node list, in the rung 2 profile of ARFC 0002
+# section 3.15 (ARFC 0002 sections 3.1, 3.3, 3.7, 3.11; ARFC 0006 clause 3.15;
+# ARFC 0019 clauses 3.1.11 to 3.1.15; ARFC 0017 clauses 3.16 and 3.17.6).
 #
 # Run it on the Windows client, from an elevated PowerShell (Windows PowerShell
 # 5.1 or PowerShell 7, 64-bit), with the OpenSSH client (`ssh.exe`) able to log
@@ -9,23 +9,28 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tests\e2e\rung2.ps1 `
 #       -Version <version> -LinuxNode root@<node-a>, root@<node-b> -ProxmoxNode root@<node-b>
 #
-# Every machine must start clean: no Alloy install and no Alloy data directory.
-# It takes a host snapshot of each machine (clause 3.17.6) and installs the
-# release on each. It runs `alloy init` on the first -LinuxNode, takes the join
-# token and login code from its output, logs in there, and issues one login
-# code for each other machine. It joins every other Linux node, then this
-# Windows machine as a client node, and logs each in. Then `alloy node list`
-# on each machine must show every node `active` with its roles, within
-# -TimeoutSeconds. While joined, each snapshot may differ from the first only
-# in reserved objects (clause 3.17.6). Last it uninstalls with --purge, this
-# machine and the joined Linux nodes first (clause 3.16), and checks that each
-# snapshot equals the first.
+# Every machine must start clean: no Alloy install and no Alloy data directory,
+# and on a Linux node no `alloy` CLI configuration for root. It takes a host
+# snapshot of each machine (clause 3.17.6) and installs the release on each. It
+# runs `alloy init` on the first -LinuxNode and takes the join token and login
+# code from its output. Root there, with no context yet, issues one login code
+# for each other machine with `alloy login --issue-code` through the local
+# admin socket. It joins every other Linux node, then this Windows machine as a
+# client node. Each machine, the init node included, runs `alloy login <code>`
+# once. Then `alloy node list` on each machine must show every node `active`
+# with its roles, within -TimeoutSeconds. While joined, each snapshot may differ
+# from the first only in reserved objects (clause 3.17.6). Last it uninstalls
+# every machine with --purge --force, since rung 2 builds no `leave` (ARFC 0002
+# section 3.15), this machine and the joined Linux nodes first, and checks that
+# each snapshot equals the first. It then removes the CLI configuration that
+# the run made for root on each Linux node, which the uninstall keeps.
 #
-# On a remote machine it runs only the snapshot and probe scripts, sent on the
-# standard input of ssh.exe to `sh -s`, the install, the uninstall, and the
-# `alloy` CLI. It prints one PASS or FAIL line per check, then a summary, and
-# exits 0 when every check passed, 1 when any failed, and 2 on a usage error.
-# No join token or login code appears in its output.
+# On a remote machine it runs only the snapshot, probe, and CLI configuration
+# removal scripts, sent on the standard input of ssh.exe to `sh -s`, the
+# install, the uninstall, and the `alloy` CLI. It prints one PASS or FAIL line
+# per check, then a summary, and exits 0 when every check passed, 1 when any
+# failed, and 2 on a usage error. No join token or login code appears in its
+# output.
 
 [CmdletBinding()]
 param(
@@ -41,8 +46,7 @@ param(
     # hosts.
     [string[]]$ProxmoxNode = @(),
 
-    # How long each machine's node list has to reach the expected state, and
-    # how long a node removed by its uninstall has to leave the list.
+    # How long each machine's node list has to reach the expected state.
     [int]$TimeoutSeconds = 30
 )
 
@@ -173,15 +177,10 @@ function Wait-NodeList {
 }
 
 # The conditions Wait-NodeList waits for: the named node is listed `active`;
-# the named node is not listed; the list is exactly the expected nodes, each
-# with its roles and `active`.
+# the list is exactly the expected nodes, each with its roles and `active`.
 $UntilActive = {
     param($Nodes, $Name)
     return @($Nodes | Where-Object { $_.Name -ceq $Name -and $_.State -ceq 'active' }).Count -eq 1
-}
-$UntilAbsent = {
-    param($Nodes, $Name)
-    return @($Nodes | Where-Object { $_.Name -ceq $Name }).Count -eq 0
 }
 $UntilExpected = {
     param($Nodes, $Expected)
@@ -223,6 +222,94 @@ function Get-CorruptToken {
     $index = [Math]::Min(75, $Token.Length - 2)
     $replacement = if ($Token[$index] -ceq [char]'a') { 'b' } else { 'a' }
     return $Token.Substring(0, $index) + $replacement + $Token.Substring($index + 1)
+}
+
+# The warning lines of a run: a line starting `Warning:` (ARFC 0019 clause
+# 3.1.8), on either stream. Rung 2 reports no standing warning (ARFC 0002
+# section 3.15).
+function Find-Warning {
+    param($Run)
+    return @(@($Run.Err) + @($Run.Out) | Where-Object { $_ -cmatch '^Warning:' })
+}
+
+# Whether a line of the output names $Word as a whole word, not as part of a
+# longer name such as `cloud-admin`.
+function Test-NamesWord {
+    param(
+        [string[]]$Lines,
+        [string]$Word
+    )
+    $pattern = '(^|[^A-Za-z0-9_.-])' + [regex]::Escape($Word) + '($|[^A-Za-z0-9_.-])'
+    return @(@($Lines) | Where-Object { $_ -cmatch $pattern }).Count -gt 0
+}
+
+# `alloy login <code>` on a machine, and its checks: it exits 0 and prints the
+# user and the organization the exchange returned, `admin` in `default`
+# (ARFC 0019 clause 3.1.11, ARFC 0002 section 3.15).
+function Invoke-Login {
+    param(
+        $Machine,
+        [string]$Code,
+        [string]$Check
+    )
+    $name = $Machine.Name
+    $login = Invoke-Alloy $Machine @('login', $Code)
+    Write-Check $name $Check ($login.Exit -eq 0) (Get-ProcessDetail $login)
+    $Machine.LoggedIn = ($login.Exit -eq 0)
+    if (-not $Machine.LoggedIn) { return }
+    $named = (Test-NamesWord $login.Out 'admin') -and (Test-NamesWord $login.Out 'default')
+    Write-Check $name 'alloy login prints the user admin and the organization default' $named (Get-ProcessDetail $login)
+}
+
+# Checks that a run that must not issue a login code exits $Exit and prints
+# none.
+function Write-NoCodeCheck {
+    param(
+        [string]$Machine,
+        [string]$Name,
+        $Run,
+        [int]$Exit
+    )
+    $codes = @(Find-Secret $Run.Out 'alyc_') + @(Find-Secret $Run.Err 'alyc_')
+    Write-Check $Machine $Name (($Run.Exit -eq $Exit) -and $codes.Count -eq 0) (
+        @("login codes printed: $($codes.Count)") + @(Get-ProcessDetail $Run))
+}
+
+# ---------------------------------------------------------------- CLI configuration
+
+# The CLI configuration directory of root on a Linux node (ARFC 0019 clause
+# 3.1.9), and whether it exists, from rung2-probe.sh.
+function Get-CliConfig {
+    param($Machine)
+    $result = Invoke-RemoteScript -Destination $Machine.Name -ScriptName 'rung2-probe.sh'
+    foreach ($line in $result.Lines) {
+        if ($line -cmatch '^cliconfig (yes|no) (.+)$') {
+            return [pscustomobject]@{ Ok = ($result.Exit -eq 0); State = $Matches[1]; Path = $Matches[2] }
+        }
+    }
+    return [pscustomobject]@{ Ok = $false; State = ''; Path = '' }
+}
+
+# After the uninstall of a Linux node: the CLI configuration of a machine that
+# logged in is still there, since an uninstall never removes it (ARFC 0017
+# clause 3.16). Then, when the run made it, the driver removes it, so that a
+# rerun starts with no current context.
+function Clear-CliConfig {
+    param(
+        $Machine,
+        [bool]$Expected
+    )
+    if ($Machine.Kind -ne 'linux' -or $Machine.CliConfig -ne 'no') { return }
+    $name = $Machine.Name
+    $config = Get-CliConfig $Machine
+    if ($Expected) {
+        Write-Check $name 'uninstall --purge leaves the CLI configuration of root in place' (
+            $config.Ok -and $config.State -eq 'yes') @("$($config.Path) exists: $($config.State)")
+    }
+    if ($config.State -ne 'yes') { return }
+    $result = Invoke-RemoteScript -Destination $name -ScriptName 'rung2-cli-remove.sh'
+    Write-Check $name 'the driver removes the CLI configuration this run made for root' ($result.Exit -eq 0) (
+        @("exit code $($result.Exit)") + @($result.Lines))
 }
 
 # ---------------------------------------------------------------- uninstall
@@ -295,6 +382,7 @@ foreach ($destination in $LinuxNode) {
         Joined    = $false
         LoginCode = ''
         LoggedIn  = $false
+        CliConfig = ''
     }
     $first = $false
 }
@@ -315,6 +403,7 @@ $windows = [pscustomobject]@{
     Joined       = $false
     LoginCode    = ''
     LoggedIn     = $false
+    CliConfig    = ''
 }
 $machines += $windows
 $initNode = $machines[0]
@@ -347,18 +436,26 @@ function Invoke-Preflight {
             $machine.HostName = [System.Net.Dns]::GetHostName()
         } else {
             $result = Invoke-RemoteScript -Destination $name -ScriptName 'rung2-probe.sh'
+            $configPath = ''
             foreach ($line in $result.Lines) {
                 $word, $rest = $line -split ' ', 2
                 if ($null -eq $rest) { $rest = '' }
                 switch -CaseSensitive ($word) {
                     'hostname' { $machine.HostName = $rest }
                     'kvm' { $machine.Kvm = $rest }
+                    'cliconfig' { $machine.CliConfig, $configPath = $rest -split ' ', 2 }
                 }
             }
-            $ok = ($result.Exit -eq 0) -and ($machine.HostName -ne '') -and ($machine.Kvm -ne '')
-            Write-Check $name 'rung 2 probe reads the hostname and the virtualization check' $ok (
+            $ok = ($result.Exit -eq 0) -and ($machine.HostName -ne '') -and ($machine.Kvm -ne '') -and
+                ($machine.CliConfig -eq 'yes' -or $machine.CliConfig -eq 'no')
+            Write-Check $name 'rung 2 probe reads the hostname, the virtualization check, and the CLI configuration' $ok (
                 @("exit code $($result.Exit)") + @($result.Lines | Select-Object -Last 10))
             if (-not $ok) { $ready = $false; continue }
+            # A current context would send `alloy login --issue-code` to the API
+            # instead of the local admin socket (ARFC 0019 clause 3.1.14).
+            Write-Check $name 'starts with no alloy CLI configuration for root' ($machine.CliConfig -eq 'no') @(
+                "exists: $configPath", 'remove it before the run')
+            if ($machine.CliConfig -ne 'no') { $ready = $false; continue }
         }
         $p0 = Get-Probe $machine
         $privilege = if ($machine.Kind -eq 'windows') { 'runs elevated' } else { 'probe runs as root' }
@@ -439,12 +536,43 @@ function Invoke-Init {
         "login codes on standard output: $($codes.Count)", "on standard error: $(@(Find-Secret $run.Err 'alyc_').Count)")
     Write-Check $name 'init prints no join token or login code on standard error' ($leaked.Count -eq 0) @(
         "found $($leaked.Count)")
+    $warnings = @(Find-Warning $run)
+    Write-Check $name 'init prints no standing warning' ($warnings.Count -eq 0) $warnings
     if ($run.Exit -ne 0 -or $tokens.Count -lt 1 -or $codes.Count -lt 1) { return }
 
-    $login = Invoke-Alloy $machine @('login', $codes[0])
-    Write-Check $name 'alloy login with the login code from init exits 0' ($login.Exit -eq 0) (Get-ProcessDetail $login)
-    if ($login.Exit -ne 0) { return }
-    $machine.LoggedIn = $true
+    # Rung 2 makes no pool, so no `disks` directory (ARFC 0002 section 3.15).
+    $probe = Get-Probe $machine @('/var/lib/alloyd/disks')
+    Write-Check $name 'init makes no disks directory in the data directory' (
+        $probe.Paths.Contains('/var/lib/alloyd/disks') -and $probe.Paths['/var/lib/alloyd/disks'] -eq 'no') @(
+        "/var/lib/alloyd/disks exists: $($probe.Paths['/var/lib/alloyd/disks'])")
+
+    # Login codes, with no current context yet, through the local admin socket
+    # (ARFC 0019 clause 3.1.14). A login code on JSON output is a usage error
+    # (clause 3.1.13), and another user than root gets no local admin.
+    $json = Invoke-Alloy $machine @('login', '--issue-code', '--output', 'json')
+    Write-NoCodeCheck $name 'alloy login --issue-code --output json is a usage error: exit 2, no login code' $json 2
+    $nobody = Invoke-SshProcess -Destination $name -Command "runuser -u nobody -- $AlloyLinux login --issue-code"
+    Write-NoCodeCheck $name 'alloy login --issue-code run by user nobody exits 4 and prints no login code' $nobody 4
+
+    $all = @($codes[0])
+    foreach ($other in @($machines | Where-Object { $_.Role -ne 'init' })) {
+        # The client's code names the user and organization, the others take
+        # the defaults, `admin` in `default`.
+        $arguments = @('login', '--issue-code')
+        if ($other.Kind -eq 'windows') { $arguments += @('--user', 'admin', '--org', 'default') }
+        $issue = Invoke-Alloy $machine $arguments
+        $issued = @(Find-Secret $issue.Out 'alyc_')
+        $onErr = @(Find-Secret $issue.Err 'alyc_')
+        Write-Check $name "alloy login $(@($arguments | Select-Object -Skip 1) -join ' ') as root prints one login code for $($other.Name), on standard output" (
+            ($issue.Exit -eq 0) -and ($issued.Count -eq 1) -and ($onErr.Count -eq 0) -and ($issued[0].Length -le 226)) (
+            @("login codes on standard output: $($issued.Count)", "on standard error: $($onErr.Count)") + @(Get-ProcessDetail $issue))
+        if ($issued.Count -eq 1) { $other.LoginCode = $issued[0]; $all += $issued[0] }
+    }
+    Write-Check $name 'every login code differs from the others' (@($all | Select-Object -Unique).Count -eq $all.Count) @(
+        "codes: $($all.Count), distinct: $(@($all | Select-Object -Unique).Count)")
+
+    Invoke-Login $machine $codes[0] 'alloy login with the login code from init exits 0'
+    if (-not $machine.LoggedIn) { return }
 
     # init waits until its node is active (section 3.1 step 4).
     $list = Get-NodeList $machine
@@ -453,16 +581,25 @@ function Invoke-Init {
     Write-Check $name "right after init, node list shows only $($machine.NodeName), active, roles $(Format-RolesColumn $machine.Roles)" $ok (
         @($problems.Members) + @($problems.Roles) + @($problems.States) + @(Get-ListDetail $list))
 
+    # A code works once (ARFC 0002 section 3.7). The failed exchange leaves the
+    # context's key as it was (ARFC 0007 clause 3.9.10), which the node lists
+    # below then use.
+    $reuse = Invoke-Alloy $machine @('login', $codes[0])
+    Write-Check $name 'alloy login with the spent login code from init is refused: nonzero exit' ($reuse.Exit -ne 0) (
+        Get-ProcessDetail $reuse)
+
+    # With a current context, `--issue-code` goes to the API port, which answers
+    # IssueLoginCode with PermissionDenied (ARFC 0002 section 3.15, ARFC 0019
+    # clause 3.1.7), and `--user` is a usage error off the local admin path
+    # (clause 3.1.14).
+    $api = Invoke-Alloy $machine @('login', '--issue-code')
+    Write-NoCodeCheck $name 'with a context, alloy login --issue-code is denied by the API port: exit 4, no login code' $api 4
+    $user = Invoke-Alloy $machine @('login', '--issue-code', '--user', 'admin')
+    Write-NoCodeCheck $name 'with a context, alloy login --issue-code --user is a usage error: exit 2, no login code' $user 2
+
     $again = Invoke-Alloy $machine @('init')
     Write-Check $name 'a second init is refused with Conflict: exit 5' ($again.Exit -eq 5) (Get-ProcessDetail $again)
 
-    foreach ($other in @($machines | Where-Object { $_.Role -ne 'init' })) {
-        $issue = Invoke-Alloy $machine @('login', '--issue-code')
-        $issued = @(Find-Secret $issue.Out 'alyc_')
-        Write-Check $name "alloy login --issue-code prints one login code for $($other.Name)" (
-            ($issue.Exit -eq 0) -and ($issued.Count -eq 1)) (@("login codes on standard output: $($issued.Count)") + @(Get-ProcessDetail $issue))
-        if ($issued.Count -eq 1) { $other.LoginCode = $issued[0] }
-    }
     $script:Token = $tokens[0]
 }
 
@@ -489,13 +626,25 @@ function Invoke-Join {
     $again = Invoke-Alloy $Machine @('join', $Token)
     Write-Check $name 'a second join is refused with Conflict: exit 5' ($again.Exit -eq 5) (Get-ProcessDetail $again)
 
+    if ($Machine.Kind -eq 'linux') {
+        # No disk joins a pool in rung 2 (ARFC 0002 section 3.15).
+        $probe = Get-Probe $Machine @('/var/lib/alloyd/disks/0')
+        Write-Check $name 'join makes no disks/0 in the data directory' (
+            $probe.Paths.Contains('/var/lib/alloyd/disks/0') -and $probe.Paths['/var/lib/alloyd/disks/0'] -eq 'no') @(
+            "/var/lib/alloyd/disks/0 exists: $($probe.Paths['/var/lib/alloyd/disks/0'])")
+        # Only a control node has the local admin socket (ARFC 0007 clause
+        # 3.10.3), so root here, with no context, is not logged in (ARFC 0019
+        # clause 3.1.14). The driver knows this machine has no context only on
+        # Linux, where the preflight found no CLI configuration.
+        $issue = Invoke-Alloy $Machine @('login', '--issue-code')
+        Write-NoCodeCheck $name 'alloy login --issue-code with no context on a node without the control role exits 4, no login code' $issue 4
+    }
+
     if ($Machine.LoginCode -eq '') {
         Write-Check $name 'alloy login with an issued login code exits 0' $false @('no login code was issued for this machine')
         return
     }
-    $login = Invoke-Alloy $Machine @('login', $Machine.LoginCode)
-    Write-Check $name 'alloy login with an issued login code exits 0' ($login.Exit -eq 0) (Get-ProcessDetail $login)
-    $Machine.LoggedIn = ($login.Exit -eq 0)
+    Invoke-Login $Machine $Machine.LoginCode 'alloy login with an issued login code exits 0'
 }
 
 # Every machine's node list shows every node, active, with its roles.
@@ -525,6 +674,10 @@ function Test-NodeLists {
         Write-Check $name 'node list prints the table of ARFC 0019 clause 3.1.15' (
             ($table.Exit -eq 0) -and $tableProblems.Count -eq 0) (
             $tableProblems + @($table.Out | ForEach-Object { "| $_" }) + @("exit code $($table.Exit)"))
+        # Rung 2 reports no standing warning (ARFC 0002 section 3.15), and JSON
+        # output never carries one (ARFC 0019 clause 3.1.15).
+        $warnings = @(Find-Warning $table) + @(Find-Warning $list.Run)
+        Write-Check $name 'node list prints no standing warning' ($warnings.Count -eq 0) $warnings
     }
 }
 
@@ -538,53 +691,23 @@ function Test-JoinedSnapshots {
     }
 }
 
-# Uninstalls with --purge, the client node and the joined Linux nodes first,
-# when every node joined: the client leaves and drops out of the list; a node
-# whose `leave` the control plane refuses (ARFC 0002 section 3.9: the last
-# control node, or a node with a disk in a pool, as each joined Linux node's
-# `file` disk is in pool `default` by section 3.3 step 7) makes the uninstall
-# exit 5 and change nothing, and `--force` then completes it (clause 3.16 step
-# 4). Otherwise each machine that the install was tried on is uninstalled with
-# --force from the install script.
+# Uninstalls every machine that the install was tried on with --purge --force,
+# the client node and the joined Linux nodes first. Rung 2 builds no `leave`
+# (ARFC 0002 section 3.15), so the uninstall's `alloy node leave` fails and
+# --force goes on (ARFC 0017 clause 3.16 step 4). When every node joined, it
+# runs the installed uninstall script, and otherwise the install script's
+# uninstall form, which needs no installed file. Then it removes the CLI
+# configuration the run made for root on each Linux node.
 function Invoke-UninstallAll {
     param([bool]$AllJoined)
     $order = @($windows) + @($joinNodes) + @($initNode)
     foreach ($machine in $order) {
         if (-not $machine.Tried) { continue }
         $name = $machine.Name
-        if (-not $AllJoined) {
-            $run = Invoke-PurgeUninstall $machine -Force -FromScript
-            Write-Check $name 'uninstall --purge --force exits 0' ($run.Exit -eq 0) (Get-ProcessDetail $run)
-            Test-Removed $machine
-            continue
-        }
-        if ($machine.Role -eq 'client') {
-            $run = Invoke-PurgeUninstall $machine
-            Write-Check $name 'uninstall --purge of the client node exits 0' ($run.Exit -eq 0) (Get-ProcessDetail $run)
-            if ($run.Exit -ne 0) {
-                $run = Invoke-PurgeUninstall $machine -Force
-                Write-Check $name 'uninstall --purge --force exits 0' ($run.Exit -eq 0) (Get-ProcessDetail $run)
-            } else {
-                $node = $machine.NodeName
-                $wait = Wait-NodeList $initNode $TimeoutSeconds $UntilAbsent $node
-                Write-Check $name "after it leaves, node list on $($initNode.Name) no longer shows $node" $wait.Met (Get-ListDetail $wait.List)
-            }
-            Test-Removed $machine
-            continue
-        }
-        $why = if ($machine.Role -eq 'init') { 'it is the last control node' } else { 'its disk is in pool default' }
-        $run = Invoke-PurgeUninstall $machine
-        Write-Check $name "uninstall --purge without --force exits 5: leave is refused, $why" ($run.Exit -eq 5) (Get-ProcessDetail $run)
-        if ($run.Exit -ne 0) {
-            $node = $machine.NodeName
-            $list = Get-NodeList $initNode
-            $still = @($list.Nodes | Where-Object { $_.Name -ceq $node }).Count -eq 1
-            Write-Check $name "after the refused uninstall, node list on $($initNode.Name) still shows $node" ($list.Ok -and $still) (
-                Get-ListDetail $list)
-            $run = Invoke-PurgeUninstall $machine -Force
-            Write-Check $name 'uninstall --purge --force exits 0' ($run.Exit -eq 0) (Get-ProcessDetail $run)
-        }
+        $run = Invoke-PurgeUninstall $machine -Force -FromScript:(-not $AllJoined)
+        Write-Check $name 'uninstall --purge --force exits 0' ($run.Exit -eq 0) (Get-ProcessDetail $run)
         Test-Removed $machine
+        Clear-CliConfig $machine ($AllJoined -and $machine.LoggedIn)
     }
 }
 
