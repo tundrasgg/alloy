@@ -258,6 +258,8 @@ pub struct ControlNode {
     runtime: Runtime,
     plane: Arc<ControlPlane>,
     name: String,
+    /// Whether the node serves the local admin socket.
+    local_admin: bool,
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -327,6 +329,7 @@ impl ControlNode {
             runtime: runtime.clone(),
             plane: control,
             name: name.clone(),
+            local_admin: listeners.admin.is_some(),
             tasks: Vec::new(),
         };
         let tls = server_config(Arc::clone(runtime.clock()), &stored.server, Protocol::Api)
@@ -383,6 +386,13 @@ impl ControlNode {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Whether the node serves the local admin socket: whether the
+    /// listeners it started with held one.
+    #[must_use]
+    pub fn serves_local_admin(&self) -> bool {
+        self.local_admin
     }
 
     /// Stops serving and shuts the global group down, releasing its stores.

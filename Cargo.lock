@@ -189,6 +189,7 @@ dependencies = [
  "alloy-proto",
  "alloy-rt",
  "alloy-seam",
+ "alloy-sim",
  "alloy-state",
  "alloy-wire",
  "prost",

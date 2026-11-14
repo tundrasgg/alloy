@@ -23,6 +23,9 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["signal", "sync"] }
 tracing.workspace = true
 
+[dev-dependencies]
+alloy-sim = { path = "../alloy-sim" }
+
 [target.'cfg(windows)'.dependencies]
 windows-service.workspace = true
 
