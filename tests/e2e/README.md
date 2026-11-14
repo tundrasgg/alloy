@@ -21,11 +21,15 @@ found and not expected.
 | File | What |
 |---|---|
 | `rung1.ps1` | Rung 1 driver: install and uninstall on every machine |
+| `rung2.ps1` | Rung 2 driver: init, join, login, node list, and uninstall with `--purge --force` |
+| `e2e-lib.ps1` | The functions the drivers share: checks, SSH, snapshots and their comparison, probes, the reserved objects of ARFC 0017 clause 3.17, and node lists |
 | `host-snapshot.sh` | The host snapshot of a Linux machine (ARFC 0017 clause 3.17.6), and its stability self-check |
 | `host-snapshot.ps1` | The host snapshot of a Windows machine (same clause) |
-| `rung1-probe.sh` | Reads the install state of a Linux node for rung 1 |
+| `rung1-probe.sh` | Reads the install state of a Linux node. Rung 2 uses it too |
+| `rung2-probe.sh` | Reads the hostname of a Linux node and its hardware virtualization check, from which rung 2 expects the node's name and roles, and whether root has an `alloy` CLI configuration |
+| `rung2-cli-remove.sh` | Removes root's `alloy` CLI configuration directory on a Linux node, which an uninstall keeps. Rung 2 runs it only where the run made the directory |
 
-The snapshot scripts only read. Later rungs reuse them.
+The snapshot and probe scripts only read. Later rungs reuse them.
 
 ## Rung 1: install and uninstall
 
@@ -84,6 +88,109 @@ elevated PowerShell for the Windows client:
 ssh root@<node-b> sh -s -- --proxmox < tests/e2e/host-snapshot.sh
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\e2e\host-snapshot.ps1
 ```
+
+## Rung 2: join, login, and node list
+
+Checks the rung 2 profile of ARFC 0002 section 3.15: sections 3.1 (init), 3.2
+(join token), 3.3 (join), 3.7 (login code), and 3.11 (client nodes), ARFC 0006
+clause 3.15 (node state), ARFC 0019 clauses 3.1.11 to 3.1.15 (login, local
+admin, node list), and ARFC 0017 clauses 3.16 (uninstall) and 3.17.6 (host
+snapshot), on the same machines as rung 1. Before you start, every machine is
+clean, as for rung 1, and root on each Linux node has no `alloy` CLI
+configuration (`$XDG_CONFIG_HOME/alloy`, by default `~/.config/alloy`). With
+a current context there, `alloy login --issue-code` would go to the API
+instead of the local admin socket (ARFC 0019 clause 3.1.14). Then, from an
+elevated 64-bit PowerShell on the Windows client, at the repository root:
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\e2e\rung2.ps1 -Version <version> -LinuxNode root@<node-a>, root@<node-b> -ProxmoxNode root@<node-b>
+```
+
+`init` runs on the first `-LinuxNode`. `-TimeoutSeconds` (default 30) bounds
+each wait for a node list to reach the expected state. The driver:
+
+1. Reads each machine's hostname and, on Linux, whether `/dev/kvm` opens for
+   reading and writing and whether root has a CLI configuration. From these it
+   expects each node's name (the default name of ARFC 0002 section 3.3) and
+   roles: every role on `<node-a>`, `compute,storage` on each other Linux
+   node, each without `compute` when `/dev/kvm` does not open, and none on the
+   Windows client. It checks that each machine is clean, with no CLI
+   configuration for root on Linux, and takes a host snapshot.
+2. Installs the release on every machine, as rung 1 does.
+3. Runs `alloy init` on the Windows client, which must exit 1 at its host
+   check and create no data directory.
+4. Runs `alloy init` on `<node-a>`. It must exit 0 within 30 seconds, print
+   one join token and one login code, once each, on standard output only, and
+   print no standing warning. The data directory has no `disks` directory,
+   since rung 2 makes no pool.
+5. Root on `<node-a>`, with no context yet, issues the login codes through
+   the local admin socket. `alloy login --issue-code --output json` must exit
+   2, and `alloy login --issue-code` run as user `nobody` must exit 4, each
+   printing no login code. Then `alloy login --issue-code` prints one login
+   code for `<node-b>`, and `alloy login --issue-code --user admin --org
+   default` one for the Windows client. All three codes differ.
+6. On `<node-a>`, `alloy login <login code from init>` must exit 0 and print
+   the user `admin` and the organization `default`. The node list then shows
+   `<node-a>` alone and `active`. The same code again must be refused, since a
+   code works once. With the context now current, `alloy login --issue-code`
+   must exit 4, since the API port denies `IssueLoginCode` in rung 2, and
+   `alloy login --issue-code --user admin` must exit 2. A second `init` must
+   exit 5.
+7. On each other Linux node, `alloy join` with a token changed in one
+   character must exit 2 and create no data directory. Then, on each other
+   Linux node and then on the Windows client, `alloy join <join token>` must
+   exit 0, and the node must show `active` in the node list of `<node-a>` less
+   than 10 seconds after the join started. This time includes SSH and the
+   polling. A second `join` must exit 5. On a Linux node the data directory
+   has no `disks/0`, and `alloy login --issue-code` must exit 4 and print no
+   code, since a node without the `control` role has no local admin socket.
+   Then `alloy login <login code>` with that machine's code must exit 0 and
+   print `admin` and `default`.
+8. On every machine, `alloy node list --output json` must show exactly the
+   three nodes, each with its roles and `active`, which is how the node list
+   of rung 2 shows a node healthy (ARFC 0006 clause 3.15). The table of
+   `alloy node list` must have the columns, widths, order, and values of ARFC
+   0019 clause 3.1.15. Neither prints a standing warning.
+9. Takes a snapshot of each machine. It must differ from the one taken before
+   the install only in the reserved objects of clause 3.17, those named below.
+10. Uninstalls each machine with `--purge --yes --force`, the Windows client
+    first, then the other Linux nodes, then `<node-a>`. Rung 2 builds no
+    `leave`, so the uninstall's `alloy node leave` fails and `--force` goes on
+    (ARFC 0017 clause 3.16 step 4). After each uninstall no installed path,
+    data directory, or service remains, and the snapshot equals the first one.
+    On a Linux node the CLI configuration of root is still there, since an
+    uninstall never removes it, and the driver then removes it with
+    `rung2-cli-remove.sh`, so that a rerun starts with no context. It leaves
+    the Windows client's CLI configuration and stored keys alone: a rerun
+    replaces that context when it logs in again.
+
+When a step that later steps need fails, the driver skips them, and then
+uninstalls with `--purge --yes --force` from the install script every machine
+it installed on, and removes the CLI configuration the run made, so that a
+rerun starts clean.
+
+Every join token and login code in the output is shown as `alyt_(hidden)` or
+`alyc_(hidden)`.
+
+### Reserved objects in a joined node's snapshot
+
+To compare a joined node's snapshot with the one taken before the install, the
+driver removes these objects from the joined node's snapshot only. A clean
+machine holds none of them, so one found before the install shows as a
+difference:
+
+| Section | Removed |
+|---|---|
+| `ip -d link show`, `ip address show` | The block of each interface named `al` or `alv` then a digit |
+| `ip route show table all`, `ip -6 route show table all` | Each route whose every device is such an interface, in the table `main`, or in the table `local` with `proto kernel`, which the kernel adds for an address on the interface |
+| `nft list ruleset` | Each table named `alloy` or starting with `alloy_` |
+| `sysctl -a (net.)` | The parameters under `net.ipv4.conf.<interface>`, `net.ipv6.conf.<interface>`, `net.ipv4.neigh.<interface>`, and `net.ipv6.neigh.<interface>` of such an interface. The kernel makes the `neigh` ones with the interface |
+| `systemctl list-unit-files` | `alloyd.service` and units whose names start with `alloyd-` |
+| `Get-NetAdapter`, `Get-NetIPAddress`, `Get-NetRoute` | Each adapter named `al` then a digit, and the addresses and routes on it |
+| `Get-Service` | The service `alloyd` |
+| `machine PATH` | The entry `%ProgramFiles%\Alloy`, when appended as clause 3.15 step 6 appends it |
+
+Every other section, the Proxmox VE sections included, must be unchanged.
 
 ## What a comparison ignores
 
