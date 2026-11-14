@@ -37,7 +37,7 @@ Only tasks that are not done or cancelled. A finished task leaves the board in t
 | T-0138 | build | developer | active | none | Build the alloy-path path manager for direct paths |
 | T-0140 | build | developer | review | none | Build the console shell and first screens on fixture data |
 | T-0142 | spec | architect | review | none | Close the session and bridge gaps of the T-0139 re-review |
-| T-0143 | spec | architect | active | none | Close the al0 gaps of the T-0137 re-review |
+| T-0143 | spec | architect | review | none | Close the al0 gaps of the T-0137 re-review |
 | T-0134 | verify | verifier | review | T-0136 | Update the rung 2 check for the login flow |
 
 ## Still to cut for M0
