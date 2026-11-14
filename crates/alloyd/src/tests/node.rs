@@ -359,6 +359,7 @@ fn options(api_port: u16) -> InitOptions {
         mesh_port: 7476,
         api_port,
         compute: true,
+        cluster_id: None,
     }
 }
 
@@ -375,11 +376,17 @@ fn exchange(code: &LoginCode, name: &str) -> ExchangeLoginCodeRequest {
 fn init_serves_both_listeners_restarts_and_refuses_a_second_init() {
     Machine::new("init").run(async |m| {
         let (api, addr) = listen(&m.runtime, 0);
-        let done = init(&m.runtime, &m.paths(), &options(addr.port()))
+        // The cluster id the CLI drew for its addresses check is the one
+        // `init` uses.
+        let drawn = alloy_id::ClusterId::from_bytes([7; 16]);
+        let mut init_options = options(addr.port());
+        init_options.cluster_id = Some(drawn);
+        let done = init(&m.runtime, &m.paths(), &init_options)
             .await
             .expect("init");
         assert_eq!(done.node, "linux-1");
         let token = JoinToken::decode(&done.join_token).expect("token");
+        assert_eq!(token.cluster_id, drawn);
         assert_eq!(token.anchors.len(), 1);
         assert_eq!(token.anchors[0].addresses[0].stream_port, addr.port());
         let code = LoginCode::decode(&done.login_code).expect("code");
@@ -753,7 +760,7 @@ fn three_nodes_on_loopback_are_healthy_and_heal_after_a_control_node_restart() {
         let options = join_options(
             &done.join_token,
             "laptop",
-            "windows",
+            "windows 10.0.26100",
             free_udp_port(&m.runtime),
         );
         let joined = join(&m.runtime, &laptop.paths(m), &options)
@@ -933,6 +940,15 @@ fn joins_are_refused_by_name_and_compute_and_a_refused_joiner_retries_with_its_k
             .await
             .expect("list");
         assert!(listed.is_empty(), "{listed:?}");
+
+        // A client node, by the section 3.3 facts, takes no role.
+        let mut client = join_options(token, "laptop-2", "windows 10.0.22631", 0);
+        client.roles = Some(alloy_id::Roles::of(&[alloy_id::Role::Storage]));
+        let refused = join(&m.runtime, &third.paths(m), &client)
+            .await
+            .expect_err("a role on Windows");
+        assert!(matches!(refused, JoinError::Usage(_)), "{refused:?}");
+
         // A token that does not decode is a usage error, before anything is
         // written.
         let usage = join(

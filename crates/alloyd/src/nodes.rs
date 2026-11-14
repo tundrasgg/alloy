@@ -73,9 +73,13 @@ pub(crate) const JOINING_DELETE_AFTER_SECS: i64 = 50;
 /// one (ARFC 0002 section 3.3).
 pub(crate) const DEFAULT_ZONE: &str = "default";
 
-/// The value of `Facts.os` on a Windows machine, where every node is a
-/// client node (ARFC 0002 section 3.11).
-pub(crate) const WINDOWS_OS: &str = "windows";
+/// Whether `Facts.os` names a Windows machine, where every node is a client
+/// node (ARFC 0002 section 3.11): `windows ` followed by the version, as
+/// section 3.3 step 6 gives it, or `windows` alone.
+#[must_use]
+pub(crate) fn is_windows(os: &str) -> bool {
+    os == "windows" || os.starts_with("windows ")
+}
 
 /// The most records a bootstrap view holds.
 const MAX_VIEW: usize = 16;
@@ -159,7 +163,7 @@ pub(crate) fn default_roles(facts: Option<&Facts>) -> Roles {
     let Some(facts) = facts else {
         return Roles::of(&[Role::Storage]);
     };
-    if facts.os == WINDOWS_OS {
+    if is_windows(&facts.os) {
         return Roles::NONE;
     }
     if facts.virtualization {
@@ -1097,7 +1101,11 @@ mod tests {
         );
         facts.virtualization = false;
         assert_eq!(default_roles(Some(&facts)), Roles::of(&[Role::Storage]));
-        facts.os = WINDOWS_OS.to_owned();
+        facts.os = "windows 10.0.26100".to_owned();
         assert_eq!(default_roles(Some(&facts)), Roles::NONE);
+        facts.os = "windows".to_owned();
+        assert_eq!(default_roles(Some(&facts)), Roles::NONE);
+        facts.os = "windowsxp".to_owned();
+        assert_eq!(default_roles(Some(&facts)), Roles::of(&[Role::Storage]));
     }
 }

@@ -70,6 +70,10 @@ pub struct InitOptions {
     /// Whether the node takes `compute`: false when the virtualization check
     /// of section 3.8 is `warn`.
     pub compute: bool,
+    /// The `cluster_id` the CLI drew for the addresses check of section
+    /// 3.8, whose prefix overlaps no route and no address. `None` draws one
+    /// here.
+    pub cluster_id: Option<ClusterId>,
 }
 
 /// What `init` made that step 5 prints, once each. Neither is written to
@@ -207,7 +211,10 @@ async fn create(
     let now = runtime.clock().wall();
     let cluster_key = generate_ed25519(rng)?;
     let cluster_pub = cluster_key.verifying_key();
-    let cluster_id = ClusterId::generate(rng)?;
+    let cluster_id = match options.cluster_id {
+        Some(id) => id,
+        None => ClusterId::generate(rng)?,
+    };
     let api_ca = ApiCa::generate(rng, &cluster_id, now)?;
     let identity = generate_ed25519(rng)?;
     let mesh = generate_x25519(rng)?;

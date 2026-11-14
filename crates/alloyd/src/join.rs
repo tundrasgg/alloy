@@ -84,8 +84,9 @@ pub struct JoinOptions {
     /// The TCP port of the API, used only while the node holds `anchor` or
     /// `control`.
     pub api_port: u16,
-    /// The machine's facts: `os` is `linux` or `windows`, `arch`, cores,
-    /// memory, the virtualization check of section 3.8, and the disks.
+    /// The machine's facts: `os` is `linux ` or `windows ` and the version
+    /// (section 3.3 step 6), `arch`, cores, memory, the virtualization check
+    /// of section 3.8, and the disks.
     pub facts: Facts,
 }
 
@@ -396,7 +397,7 @@ fn check_options(options: &JoinOptions, token: &JoinToken) -> Result<(), JoinErr
                 .to_owned(),
         ));
     }
-    if options.facts.os == crate::nodes::WINDOWS_OS
+    if crate::nodes::is_windows(&options.facts.os)
         && (options.roles.is_some_and(|r| !r.is_empty()) || !token.preset_roles.is_empty())
     {
         return Err(JoinError::Usage(
