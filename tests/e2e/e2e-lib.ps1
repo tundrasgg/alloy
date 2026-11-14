@@ -913,11 +913,34 @@ function Get-JsonField {
     return $null
 }
 
+# The lowercase `<x>` of an enum value `<Prefix><X>` as the JSON mapping writes
+# it (ARFC 0008 section 2), or null for a value of any other form.
+function ConvertFrom-EnumName {
+    param(
+        $Value,
+        [string]$Prefix
+    )
+    if ($Value -is [string] -and $Value -cmatch ('^' + $Prefix + '([A-Z][A-Z0-9_]*)$')) {
+        return $Matches[1].ToLowerInvariant()
+    }
+    return $null
+}
+
+# A JSON value as a problem message quotes it.
+function Format-JsonValue {
+    param($Value)
+    if ($Value -is [string]) { return "'$Value'" }
+    return (ConvertTo-Json -InputObject $Value -Compress)
+}
+
 # Parses the standard output of `alloy node list --output json`: one JSON
 # array of Node objects (ARFC 0019 clause 3.1.15). Returns Ok, Error, and the
 # nodes, each with Name (without a leading `nodes/`), State, and Roles. A Node
 # with no roles field has no roles, as the JSON form of an empty list may leave
-# the field out.
+# the field out. The JSON mapping (ARFC 0008 section 2) writes an enum by name,
+# so a state `NODE_STATE_<X>` becomes `<x>` and a role `ROLE_<X>` becomes
+# `<x>`, the spellings of the table (ARFC 0019 clause 3.1.15). A state or role
+# of any other form, a number included, is a parse problem naming the value.
 function ConvertFrom-NodeListJson {
     param([string[]]$Lines)
     $result = [pscustomobject]@{ Ok = $false; Error = ''; Nodes = @() }
@@ -942,10 +965,27 @@ function ConvertFrom-NodeListJson {
         }
         $name = [string](Get-JsonField $item 'name' 'metadata')
         if ($name.StartsWith('nodes/')) { $name = $name.Substring('nodes/'.Length) }
-        $roles = @(@(Get-JsonField $item 'roles' 'spec') | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ })
+        $roles = @()
+        foreach ($value in @(@(Get-JsonField $item 'roles' 'spec') | Where-Object { $null -ne $_ })) {
+            $role = ConvertFrom-EnumName $value 'ROLE_'
+            if ($null -eq $role) {
+                $result.Error = "node '$name': role $(Format-JsonValue $value) is not of the form ROLE_<NAME>"
+                return $result
+            }
+            $roles += $role
+        }
+        $state = ''
+        $value = Get-JsonField $item 'state' 'status'
+        if ($null -ne $value) {
+            $state = ConvertFrom-EnumName $value 'NODE_STATE_'
+            if ($null -eq $state) {
+                $result.Error = "node '$name': state $(Format-JsonValue $value) is not of the form NODE_STATE_<NAME>"
+                return $result
+            }
+        }
         $nodes += [pscustomobject]@{
             Name  = $name
-            State = [string](Get-JsonField $item 'state' 'status')
+            State = $state
             Roles = $roles
         }
     }
