@@ -3,7 +3,7 @@
 - Status: accepted
 - Depends on: 0001
 - Crates: alloy-rt, alloy-sim, alloy-natlab
-- Decisions: 0008, 0036, 0039, 0045, 0054, 0068
+- Decisions: 0008, 0036, 0039, 0045, 0054, 0068, 0069
 
 ## 1. Purpose
 
@@ -19,7 +19,7 @@ before anything else.
 | Seam | Trait | Gives |
 |---|---|---|
 | `clock` | `Clock` | Monotonic now, wall now, sleep until, timers |
-| `net` | `Net` | Datagram and stream sockets, interface list, batch send and receive, the user id of a Unix socket's peer |
+| `net` | `Net` | Datagram and stream sockets, interface list, batch send and receive, the user id of a Unix socket's peer, layer 3 virtual interfaces (TUN on Linux, Wintun on Windows) |
 | `disk-io` | `DiskIo` | Open, read at, write at, sync, truncate, list, direct block access, owner and permissions, durable replace |
 | `rng` | `Rng` | Random bytes |
 | `spawn` | `Spawn` | Start a task, join it, cancel it |
@@ -196,6 +196,10 @@ pub trait Net: Send + Sync + fmt::Debug + 'static {
         -> BoxFuture<'_, Result<Box<dyn Stream>, NetError>>;
     fn listen(&self, local: StreamAddr, options: ListenOptions)
         -> Result<Box<dyn Listener>, NetError>;
+    /// Creates a layer 3 virtual interface: a TUN device on Linux, a
+    /// Wintun adapter on Windows (clause 3.1.17).
+    fn create_tun(&self, name: &str, options: TunOptions)
+        -> BoxFuture<'_, Result<Box<dyn Tun>, NetError>>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -372,9 +376,53 @@ pub enum NetError {
     Unsupported,
     #[error("closed")]
     Closed,
+    /// An interface name, address, or route conflicts with another object
+    /// of the host, which the detail names (clause 3.1.17).
+    #[error("conflict: {0}")]
+    Conflict(Detail),
     /// An operating system error with no variant above. `os` only.
     #[error("operating system error {code}")]
     Os { code: i32 },
+}
+
+/// The longest IP packet a `Tun` reads or writes, in bytes.
+pub const MAX_TUN_PACKET: usize = 65_535;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TunOptions {
+    /// 1,280 to 65,535 bytes.
+    pub mtu: u32,
+    /// The interface GUID of the Wintun adapter, in the byte order of
+    /// the Windows `GUID` structure. Required on Windows, ignored elsewhere.
+    pub guid: Option<[u8; 16]>,
+}
+
+/// An IP prefix: `len` at most 32 for IPv4 and 128 for IPv6, and no bit
+/// of `addr` set after the first `len`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct IpPrefix {
+    pub addr: IpAddr,
+    pub len: u8,
+}
+
+/// A layer 3 virtual interface (clause 3.1.17). Dropping it removes the
+/// interface without waiting.
+pub trait Tun: Send + Sync + fmt::Debug {
+    /// The interface's `index` in `interfaces`.
+    fn index(&self) -> u32;
+    fn name(&self) -> &str;
+    fn set_mtu(&self, mtu: u32) -> BoxFuture<'_, Result<(), NetError>>;
+    fn add_addr(&self, addr: InterfaceAddr) -> BoxFuture<'_, Result<(), NetError>>;
+    fn add_route(&self, prefix: IpPrefix) -> BoxFuture<'_, Result<(), NetError>>;
+    fn remove_route(&self, prefix: IpPrefix) -> BoxFuture<'_, Result<(), NetError>>;
+    /// Waits for the next packet the host sends through the interface,
+    /// copies it to the front of `buf`, and returns its length.
+    fn read<'a>(&'a self, buf: &'a mut [u8]) -> BoxFuture<'a, Result<usize, NetError>>;
+    /// Hands one IP packet to the host as if it arrived on the interface.
+    fn write<'a>(&'a self, packet: &'a [u8]) -> BoxFuture<'a, Result<(), NetError>>;
+    /// Removes the interface, with its addresses and routes, and completes
+    /// once `interfaces` no longer lists it.
+    fn remove(self: Box<Self>) -> BoxFuture<'static, Result<(), NetError>>;
 }
 ```
 
@@ -1333,8 +1381,8 @@ never return an `Os` error.
   Otherwise it sends the datagrams in order and stops at the first that fails.
   It may wait while the send buffer is full and does not drop a datagram for that
   reason. Completion means handed to the network, not delivered.
-- `mem` send buffer. A datagram sent through an interface other than `lo` is
-  **in flight** from the instant `send` hands it to the network until it and
+- `mem` send buffer. A datagram sent through an interface other than `lo` and
+  tun interfaces (clause 3.1.17.3) is **in flight** from the instant `send` hands it to the network until it and
   every copy made of it (clause 3.3.2) have been delivered or dropped. Each
   packet in flight, original or copy, counts its packet size (clause 3.3.2)
   against two bounds: the `send_buffer` of the socket that sent it, while that
@@ -1342,8 +1390,8 @@ never return an `Os` error.
   crashes, and restarts. A packet fits a bound when nothing counts against the
   bound, or when the bytes counted plus its size are at most the bound. `send`
   waits until its next datagram fits both bounds, and a copy that does not fit
-  both is not made. A datagram sent over `lo` is delivered at once and never
-  waits. A datagram in flight when its socket is dropped or its host crashes
+  both is not made. A datagram sent over `lo` is delivered at once, and one
+  sent through a tun interface queued at once, and neither waits. A datagram in flight when its socket is dropped or its host crashes
   still travels.
 - No datagram is ever fragmented by IP (I-10): IPv4 datagrams carry the don't
   fragment flag and IPv6 datagrams no fragment header. A datagram whose IP packet
@@ -1792,6 +1840,192 @@ the old one with it in one call that returns once the replacement is durable.
   directory as if it had not been called.
 - Its trace record is `disk-op` with operation 17 and handle 0 (section 4.1).
 
+3.1.17 Layer 3 virtual interfaces. A **tun interface** is an interface made by
+`create_tun`. Each IP packet the host sends through it is read by the holder of
+its `Tun`, and each packet the holder writes the host receives as if it had
+arrived on it. It carries bare IPv4 and IPv6 packets, with no link layer
+header. ARFC 0002 section 3.4 uses one, `al0`, and ADR 0069 records the
+choice.
+
+- `create_tun(name, options)` creates the interface `name`, up, with MTU
+  `options.mtu`, no address, and no route, and completes once `interfaces`
+  lists it so. It fails with `InvalidInput` for a name that is not 1 to 15
+  bytes of ASCII letters, digits, `-`, and `_`, for an MTU outside 1,280 to
+  65,535, and on Windows for a `guid` of `None`; with `Conflict` when the host
+  has an interface of that name, other than a Windows adapter that clause
+  3.1.17.2 takes over; with `PermissionDenied` when the process
+  lacks the privilege, `CAP_NET_ADMIN` on Linux and an elevated member of
+  `Administrators` on Windows; with `TooManyOpen` when the instance holds 16
+  tun interfaces; and with `Unsupported` on a platform other than Linux and
+  Windows. A dropped `create_tun` future leaves behind no interface it created.
+- The interface lasts until `remove` completes, its `Tun` is dropped, or, under
+  `os`, the process ends, except a Windows adapter taken over, which clause
+  3.1.17.2 says how long lasts. While it lasts, `interfaces` lists it with its
+  `index`, `name`, and MTU, `up` true, `loopback` false, and the addresses
+  `add_addr` gave it and no other, and each change to those is a change of the
+  list (clause 3.1.7). Once it is gone, by these means or by another
+  program's, pending and later calls on its `Tun` fail with `Closed`.
+- `set_mtu` sets the MTU, and fails with `InvalidInput` outside 1,280 to
+  65,535.
+- A prefix **conflicts** with the host when it contains, or is contained by,
+  the prefix of a route of prefix length 1 or more, in any routing table of the
+  host, that does not go through this interface, or an address of another
+  interface, taken as a prefix of length 32 or 128. `add_addr` and `add_route`
+  check this at the call, which is the check of ARFC 0017 clause 3.17.3, and
+  fail with `Conflict` naming one such route or address. The check and the
+  change are not atomic against other programs.
+- `add_addr(a)` adds the unicast address `a.ip` with prefix length
+  `a.prefix_len`, and with it a route of that prefix through the interface,
+  without duplicate address detection. It fails with `InvalidInput` for a
+  prefix length above 32 for IPv4 or 128 for IPv6, for an unspecified,
+  loopback, multicast, or link-local address, and when the interface holds 16
+  addresses, and with `Conflict` when the prefix of `a` conflicts. Adding an
+  address the interface holds, with the same prefix length, changes nothing
+  and returns `Ok`.
+- `add_route(p)` adds a route of `p` through the interface with no gateway.
+  It fails with `InvalidInput` for a prefix that breaks the rules of
+  `IpPrefix`, for a prefix length of 0, since Alloy never takes the default
+  route, and when the interface holds 1,024 routes from `add_route`, and with
+  `Conflict` when `p` conflicts. A route the interface holds already changes
+  nothing and returns `Ok`. `remove_route(p)` removes a route that
+  `add_route(p)` added, and fails with `InvalidInput` when the interface holds
+  none. The route of an address is not removed this way.
+- `read(buf)` fails with `InvalidInput` when `buf` is shorter than
+  `MAX_TUN_PACKET`. Otherwise it waits for a packet the host sent through the
+  interface, copies the whole packet, from its IP header on, to the front of
+  `buf`, and returns its length. Packets are read in the order the host sent
+  them. The host queues them up to a bound and drops a packet that arrives
+  beyond it: 1,024 packets under `mem`, the platform's queue under `os`.
+- `write(packet)` fails with `InvalidInput` when `packet` is empty, is longer
+  than `MAX_TUN_PACKET`, or has first 4 bits other than 4 and 6, and with
+  `MessageTooLong`, whose `max_payload` is the interface's MTU, when it is
+  longer than that MTU. Otherwise it hands the packet to the host, which treats
+  it as any packet arriving on an interface and may drop it, and completes
+  without waiting for the host. Under `os` a packet that finds the platform's
+  queue full is dropped and the call still returns `Ok`.
+- At most one `read` and one `write` may be pending on a `Tun`. Another fails
+  at once with `Busy`. A dropped `read` future has taken no packet, and a
+  dropped `write` future has handed its packet or nothing.
+- A dropped `set_mtu`, `add_addr`, `add_route`, or `remove_route` future has
+  made its whole change or none of it.
+- `remove` removes the interface and every address and route on it, and
+  completes once `interfaces` no longer lists it, except as clause 3.1.17.2
+  says for a Windows adapter taken over. A dropped `remove` future
+  still removes the interface, without waiting, as dropping the `Tun` does.
+
+3.1.17.1 Tun interfaces under `os` on Linux.
+
+- `create_tun` opens `/dev/net/tun` with `O_RDWR | O_CLOEXEC`, so no program
+  that the process runs inherits the descriptor
+  (<https://man7.org/linux/man-pages/man2/open.2.html>), and registers the
+  device with the `TUNSETIFF` ioctl and the flags
+  `IFF_TUN | IFF_NO_PI | IFF_TUN_EXCL`, so each read and each write is one IP
+  packet with no packet information header. It uses one queue and does not
+  make the device persistent. When the descriptor is closed the kernel removes
+  the device and all its routes
+  (<https://docs.kernel.org/networking/tuntap.html>), so the interface never
+  outlives its process.
+- Without `IFF_TUN_EXCL`, `TUNSETIFF` attaches to an existing TUN device of
+  that name. With it, the kernel refuses any existing device of that name with
+  `EBUSY`, and it checks the name and registers the device under one lock,
+  `rtnl_lock`, which every registration of a network device holds, so no other
+  program creates a device of that name in between (`__tun_chr_ioctl` and
+  `tun_set_iff` in
+  <https://github.com/torvalds/linux/blob/master/drivers/net/tun.c>, and the
+  `ASSERT_RTNL` of `register_netdevice` in
+  <https://github.com/torvalds/linux/blob/master/net/core/dev.c>).
+  `create_tun` returns `EBUSY` as `Conflict`, naming the interface, and so
+  never takes over, changes, or removes a device it did not create.
+- Before the device is up, it sets `net.ipv6.conf.<name>.addr_gen_mode` to 1,
+  so the kernel generates no link-local address for it
+  (<https://docs.kernel.org/networking/ip-sysctl.html>). It changes no other
+  kernel parameter.
+- Addresses are added with the `nodad` flag, which skips duplicate address
+  detection (<https://man7.org/linux/man-pages/man8/ip-address.8.html>).
+  Routes go in the table `main` (ARFC 0017 clause 3.17). The conflict check
+  reads every routing table of both families.
+
+3.1.17.2 Tun interfaces under `os` on Windows.
+
+- The implementation loads `wintun.dll` with `LoadLibraryExW` by the full path
+  of that file in the directory of the running executable, from nowhere else,
+  and resolves only functions that `wintun.h` declares
+  (<https://git.zx2c4.com/wintun/about/>, ADR 0062). When the file is missing
+  or does not load, `create_tun` fails with `Unsupported`.
+- `create_tun` first calls `WintunOpenAdapter` with `name`. When that opens an
+  adapter, it reads the adapter's interface GUID by `WintunGetAdapterLuid` and
+  `ConvertInterfaceLuidToGuid`
+  (<https://learn.microsoft.com/en-us/windows/win32/api/netioapi/nf-netioapi-convertinterfaceluidtoguid>).
+  When that GUID is `options.guid`, the adapter is one that a `create_tun` with
+  that GUID made and that outlived its holder (section 9), and `create_tun`
+  **takes it over**: it goes on as below from `WintunStartSession`, and once
+  the session has started it removes every unicast address and every route on
+  the adapter. When the GUID
+  differs, it calls `WintunCloseAdapter` on the handle, which leaves an opened
+  adapter in place (same source), and fails with `Conflict`, naming the
+  adapter.
+- Otherwise, when the host has an interface of that name, it fails with
+  `Conflict`, naming it. Else it calls `WintunCreateAdapter` with `name`, the
+  tunnel type `Alloy`, and `options.guid`. These checks and the creation are
+  not atomic against other programs. Then it calls `WintunStartSession` with a
+  ring capacity of 4,194,304 bytes, a power of two within Wintun's bounds of
+  131,072 and 67,108,864, and fails with `Conflict`, closing what it opened,
+  when that call fails on an adapter taken over.
+- `WintunCloseAdapter` removes an adapter that `WintunCreateAdapter` made and
+  leaves one that `WintunOpenAdapter` opened (same source). `remove` and the
+  drop of the `Tun` end the session and call it. For an adapter taken over,
+  they first remove every address and route on it, and the adapter then stays
+  on the host, with no address and no route, until a later `create_tun` with
+  its GUID takes it over again or something other than the `net` seam removes
+  it (ARFC 0017 clause 3.16 step 6). `remove` of such an adapter completes once
+  `interfaces` lists it with no address, and later calls on its `Tun` fail
+  with `Closed`.
+- Before the adapter carries a packet, it sets on the adapter's IPv6 and IPv4
+  interface entries, by `SetIpInterfaceEntry`: `NlMtu` to the MTU,
+  `RouterDiscoveryBehavior` to `RouterDiscoveryDisabled`, `DadTransmits` to 0,
+  and `LinkLocalAddressBehavior` to `LinkLocalAlwaysOff`, so it holds no
+  link-local address
+  (<https://learn.microsoft.com/en-us/windows/win32/api/netioapi/ns-netioapi-mib_ipinterface_row>).
+  `set_mtu` sets `NlMtu` on both.
+- Addresses are added by `CreateUnicastIpAddressEntry` with
+  `OnLinkPrefixLength` set to the prefix length, and routes by
+  `CreateIpForwardEntry2` on the adapter with an unspecified next hop. The
+  conflict check reads `GetIpForwardTable2` and `GetUnicastIpAddressTable` for
+  both families.
+- `read` waits on the event of `WintunGetReadWaitEvent` while
+  `WintunReceivePacket` has no packet. `write` copies the packet into a buffer
+  from `WintunAllocateSendPacket` and sends it with `WintunSendPacket`. A full
+  ring is the platform's full queue of `write`.
+
+3.1.17.3 Tun interfaces under `mem`.
+
+- A tun interface takes the host's next interface index (clause 3.3.1) and the
+  given name, and attaches to no network. A host crash removes every tun
+  interface of the host with the packets queued on it, and a restart does not
+  bring them back.
+- The host's routing table holds the prefix of each address of each of its
+  interfaces, through that interface, and the routes its tun interfaces hold.
+  The conflict check reads it, and clause 3.3.1 chooses among its routes.
+- A datagram the host sends through a tun interface is queued for `read` at
+  the instant of `send` as one IP packet, and is never in flight (clause
+  3.1.8). Over IPv6 the packet is a 40-byte header with version 6, traffic
+  class 0, flow label 0, next header 17, hop limit 64, and no extension header
+  (RFC 8200); over IPv4 a 20-byte header with IHL 5, type of service 0,
+  identification 0, the don't fragment flag, fragment offset 0, time to live
+  64, protocol 17, and its header checksum (RFC 791). Then come the 8-byte UDP
+  header with its checksum (RFC 768, RFC 8200 section 8.1) and the payload. A
+  packet that finds 1,024 packets queued is dropped with reason 6. A
+  connection request through a tun interface fails with `Unsupported`: `mem`
+  carries no stream over one.
+- A packet written to a tun interface is handled at the instant of `write`.
+  One that is not a single IPv4 or IPv6 packet whose length fields and IPv4
+  header checksum agree with its bytes, or that carries UDP whose checksum does
+  not verify (a zero checksum over IPv4 verifies), is dropped with reason 9.
+  One addressed to no address of an up interface of the host is dropped with
+  reason 8, since a `mem` host forwards nothing, and one addressed to the host
+  that is not UDP with reason 5. Any other is delivered as a datagram, by
+  clause 3.3.1's delivery rule, with `src` and `dst_ip` taken from its headers.
+
 ### 3.2 Determinism
 
 3.2.1 A scenario run is a pure function of `(binary, seed)`. Two runs with the
@@ -1940,13 +2174,15 @@ random choice below is an independent draw from a stream fixed by the seed.
   interface's addresses carry the prefix length of their network's prefix.
   `attach` returns `Invalid` for an address outside the network's prefixes or
   already held by an interface or router on that network. Interfaces, their
-  addresses, and their up state persist across crashes. `attach`, `detach`, and
+  addresses, and their up state persist across crashes, except tun interfaces
+  (clause 3.1.17.3). `attach`, `detach`, and
   `set_up` change the host's interface list at that instant (clause 3.1.7).
 - A host sends a datagram, or a connection request, through: the interface that
   holds the source address when one is given or bound; else its lowest-indexed
   up interface with an address of the destination's family whose prefix
-  contains the destination; else its lowest-indexed up interface other than
-  `lo` with an address of the destination's family. With none, the datagram
+  contains the destination, or that is a tun interface holding a route that
+  contains it (clause 3.1.17); else its lowest-indexed up interface other than
+  `lo` and tun interfaces with an address of the destination's family. With none, the datagram
   fails with `NetworkUnreachable`.
   A source address on no interface of the host fails with `AddrNotAvailable`, and
   one on a down interface with `NetworkUnreachable`. A destination in `127.0.0.0/8`,
@@ -2285,6 +2521,9 @@ Body fields used below, in order of appearance in each body:
 | `0031` | `udp-deliver` | u64 receiving socket, `addr` source, `addr` destination, u32 payload length, `digest` of the payload |
 | `0032` | `packet-drop` | u8 reason, `addr` source, `addr` destination, u32 payload length |
 | `0033` | `packet-fault` | u8 fault: 1 duplicated, 2 corrupted, 3 delayed; `addr` source, `addr` destination, u64 added delay in ns |
+| `0034` | `tun-read` | u32 interface index, u32 packet length, `digest` of the packet |
+| `0035` | `tun-write` | u32 interface index, u32 packet length, `digest` of the packet |
+| `0036` | `tun-change` | u32 interface index, u8 change: 1 created, 2 MTU set, 3 address added, 4 route added, 5 route removed, 6 removed |
 | `0040` | `stream-open` | u64 connection, `saddr` local, `saddr` peer |
 | `0041` | `stream-data` | u64 connection, u8 direction: 0 written by this host, 1 read by this host; u32 length, `digest` of the bytes |
 | `0042` | `stream-close` | u64 connection, u8 how: 0 write side shut down by this host, 1 reset, 2 dropped by this host, 3 dropped by a host crash |
@@ -2296,7 +2535,8 @@ Body fields used below, in order of appearance in each body:
 
 Packet drop reasons: 1 loss fault, 2 partition, 3 larger than a link MTU, 4 link
 queue full, 5 no socket bound at the destination, 6 receive queue full, 7
-filtered by a NAT device, 8 no route.
+filtered by a NAT device, 8 no route, 9 malformed packet written to a tun
+interface.
 
 Disk operations: 1 open, 2 read, 3 write, 4 sync, 5 truncate, 6 metadata, 7 list,
 8 create-dir, 9 remove, 10 rename, 11 sync-dir, 12 info, 13 create-file, 14
@@ -2307,7 +2547,8 @@ Which event writes each record, and its field values:
 
 - `host` is the host the event happened on. It is `FFFFFFFF` for events on links,
   routers, and NAT devices, which are `packet-drop` with reasons 1, 2, 3, 4, 7,
-  and 8, every `packet-fault`, and a `fault` applied to a link, router, or NAT
+  and 8, other than a drop of a packet written to a tun interface (the bullet
+  Tun interfaces below), every `packet-fault`, and a `fault` applied to a link, router, or NAT
   device, and for `note` and `run-end`. `packet-drop` with reasons 5 and 6
   carries the destination host, or `FFFFFFFF` when a router drops a packet sent
   to its own address (clause 3.3.1). A `fault` or `clock-fault` applied to one
@@ -2371,6 +2612,23 @@ Which event writes each record, and its field values:
   none; 8 zero bytes for every failed operation and every other operation.
 - `rng`: one record for every `fill` call, also with an empty `dest`, with the
   number of bytes filled.
+- Tun interfaces. `tun-read` is written when `read` returns a packet, and
+  `tun-write` when `write` hands one to the host, before any record of its
+  delivery or drop. A datagram sent through a tun interface writes `udp-send`
+  as any other, and its drop for a full queue writes `packet-drop` with reason
+  6, carrying the sending host. A packet that `write` hands to the host and
+  that the host then drops writes `packet-drop` carrying the writing host,
+  with reason 9, 8, or 5 as clause 3.1.17.3 says, or with the reason of clause
+  3.3.1's delivery. In that record each `addr` has as family the packet's first
+  4 bits and as address the source or destination field of its fixed IP
+  header, bytes 12 to 15 and 16 to 19 for IPv4 and 8 to 23 and 24 to 39 for
+  IPv6, or all zero bytes when the packet is shorter than 20 or 40 bytes. When
+  the packet passed the checks of reason 9 and carries UDP, the ports and the
+  payload length are those of its UDP header and payload; otherwise both ports
+  are 0 and the payload length is the length of the whole packet. `tun-change` is written at the instant the
+  interface list changes by a call that succeeds, and with change 6 for each
+  tun interface a crash removes, after that crash's `stream-close` records, in
+  ascending index.
 
 When a scenario asks for a trace file, the simulator streams the trace to it until
 the next record would take the file past the cap (section 7). It writes no record
@@ -2406,7 +2664,18 @@ the field `root`.
 
 All five have swap class `restart` and context `()`. Each suite runs against
 `mem` on the simulator and against `os` on the CI host. A clause that names one
-implementation is tested on that implementation only.
+implementation is tested on that implementation only. The `os` tests of clause
+3.1.17 need the privilege that `create_tun` names. `cargo xtask ci` runs them
+with it on the CI hosts, one Linux and one Windows: as root by the runner's
+passwordless `sudo` on Linux, and on Windows in the runner's account, an
+administrator with User Account Control off
+(<https://docs.github.com/en/actions/reference/runners/github-hosted-runners#administrative-privileges>,
+ADR 0037). There, where the environment variable `GITHUB_ACTIONS` is `true`
+(<https://docs.github.com/en/actions/reference/workflows-and-actions/variables>), a
+test that meets `PermissionDenied` fails, and so does a run that skips clause
+3.1.17.1 on Linux or clause 3.1.17.2 on Windows. Elsewhere a harness that
+lacks the privilege checks the `PermissionDenied` refusal and says in its
+output that it did so.
 
 The simulator itself is not a seam. Its own suite, `tests/conformance/sim/`,
 tests through section 2.7 the trace format and the summary line of clauses 3.2.4
@@ -2454,6 +2723,12 @@ streamed to disk and capped at 1 GiB unless a scenario raises the cap.
 | UDP receive and send buffer | 65,536 to 67,108,864 bytes, default 4,194,304 | `InvalidInput`; arrivals beyond the receive buffer dropped |
 | Listen backlog | 1 to 65,535, default 1,024 | `InvalidInput` |
 | Interfaces listed | 1,024, 64 addresses each | The rest are left out |
+| Tun interfaces per `net` instance | 16 | `TooManyOpen` |
+| Tun interface MTU | 1,280 to 65,535 bytes | `InvalidInput` |
+| Packet read from or written to a tun interface | 65,535 bytes | `InvalidInput` |
+| Addresses per tun interface | 16 | `InvalidInput` |
+| Routes per tun interface, from `add_route` | 1,024 | `InvalidInput` |
+| `mem` packets queued for `read` per tun interface | 1,024 | Dropped with reason 6 |
 | Unix socket path | 107 bytes | `InvalidInput` |
 | Operations per disk batch | 256 | `BatchTooLarge` |
 | `IoBuf` length | 67,108,864 bytes | `InvalidInput` |
@@ -2504,3 +2779,8 @@ error holds them.
 ## 9. Open questions
 
 - Parameters and real-world frequencies of NAT presets. Task T-0005.
+- Whether a Wintun adapter outlives a process that ends without calling
+  `WintunCloseAdapter` is not documented (<https://git.zx2c4.com/wintun/about/>).
+  Clause 3.1.17.2 holds either way: if it does, the next `create_tun` with the
+  adapter's GUID takes it over, and the adapter stays on the host after that
+  `Tun` is removed, until the uninstall removes it.

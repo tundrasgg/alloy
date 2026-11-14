@@ -3,7 +3,7 @@
 - Status: accepted
 - Depends on: 0000, 0003, 0007, 0009, 0017
 - Crates: alloy-id, alloy-crypto
-- Decisions: 0012, 0015, 0018, 0040, 0041, 0042, 0048, 0053, 0062, 0065, 0068
+- Decisions: 0012, 0015, 0018, 0040, 0041, 0042, 0048, 0053, 0062, 0065, 0068, 0069
 
 ## 1. Purpose
 
@@ -351,7 +351,94 @@ migration traffic use these addresses over the mesh interface `al0`. Every node,
 a client node included, holds its infrastructure address on `al0` with prefix
 length 64, so the cluster's zero subnet is reached through `al0`, and holds no
 other address there. On Windows `al0` is a Wintun adapter (ADR 0062). The
-address and its route follow ARFC 0017 clause 3.17.
+address and its route follow ARFC 0017 clause 3.17. The rest of this section
+is how a node runs `al0` (ADR 0069).
+
+**The interface.** In this version `alloyd` holds `al0`, as it holds the
+node's AL sessions. Nothing in this section binds `alloy-net` (ARFC 0000
+section 2.3). The spec task that moves AL sessions into `alloy-net` adds to
+this section how `al0` passes to it and how `al0` lasts across its handover
+(ARFC 0017 clauses 3.5 and 3.6). While the local join state is `joined`,
+`alloyd` keeps `al0` as follows.
+
+- It writes the host file line of `al0` (ARFC 0017 section 4.2) before it
+  creates it: `link <boot id> al0` on Linux, and on Windows `adapter <guid>
+  al0`, with the GUID of an existing `adapter` line for `al0`, or else 16
+  bytes from the `alloy-rt` randomness trait.
+- It creates `al0` by `create_tun` (ARFC 0005 clause 3.1.17) with MTU 1,395
+  and, on Windows, that GUID, then adds the infrastructure address with prefix
+  length 64 by `add_addr`. It adds no other address and, in this version, no
+  route.
+- When either call fails, it removes what it created, leaves any other object
+  as ARFC 0017 clause 3.17.2 says, reports the failure in the node's status,
+  naming the object of a `Conflict`, runs on with no `al0`, and tries again
+  every 10 seconds.
+- It removes `al0` by `remove` before it stops and before the local join state
+  leaves `joined` (section 3.9). The kernel removes it on Linux when the
+  process ends however it ends (ARFC 0005 clause 3.1.17.1).
+- It removes the host file line once `al0` is gone (ARFC 0017 section 4.2). On
+  Windows an adapter that `create_tun` took over, because it held the GUID of
+  the `adapter` line, stays after `remove` (ARFC 0005 clause 3.1.17.2). Its
+  line then stays too, so the next creation takes it over again with that
+  GUID, and the uninstall removes it (ARFC 0017 clause 3.16 step 6).
+
+The MTU is 1,500 less the 48 bytes of an IPv6 and UDP header, the 25 bytes of a
+transport packet, and the 32 of a relay envelope (ARFC 0003 sections 3.4 and
+3.7). So a path of MTU 1,500 carries each packet of `al0` in one transport
+packet, direct or relayed, over either IP family, and AL splits it on a path
+with a smaller payload budget (ARFC 0003 section 3.5).
+
+**Outbound.** The node reads every packet from `al0` and handles each in turn.
+It drops the packet, and counts the drop, when:
+
+1. it is not an IPv6 packet of at least 40 bytes whose length is its payload
+   length field plus 40;
+2. its source address is not the node's infrastructure address;
+3. its destination is outside the cluster's zero subnet or is the node's own
+   infrastructure address;
+4. its next header is 17 and either UDP port is 7477, the ports of the node
+   channel (section 3.13), whose messages only the node itself makes; or
+5. no valid record in the node's view has its destination as `infra_addr`.
+
+Otherwise the node of that record is the packet's peer. The node seals the
+packet's bytes, unchanged, as an IPv6 frame on VNI 0 to the peer, under the
+session that the session choice of ARFC 0003 section 3.4 picks. A packet for
+which none is picked is held and dropped as that section says, and is traffic
+for the peer, for which ARFC 0004 sections 3.2 and 3.8 open a session. No drop
+sends an ICMP message: the node writes to `al0` only packets it receives.
+
+**Reach in this version.** Rule 5 and the inbound check below take records
+from the node's view. Until views are built (ARFC 0006 section 2.8), a node's
+view is its own record and the records of its latest bootstrap view, the
+cluster's anchors and control nodes, at most 16 (section 3.13), and a client
+node's view holds no more (section 3.11). So `al0` carries packets only
+between two anchors or control nodes whose records are in each other's views.
+A node that holds
+neither, a client node included, reaches no node over `al0`, and none reaches
+it, until views give its peers its record. The spec task that builds views
+(ARFC 0006 section 2.5) extends this paragraph.
+
+**Inbound.** For an IPv6 frame that the node accepts on VNI 0 of a session,
+after any reassembly (ARFC 0003 section 3.5):
+
+- When its next header is 17 and either UDP port is 7477, it goes to the node
+  channel, which accepts or drops it (section 3.13), and never to `al0`.
+- Otherwise the node writes it to `al0` by `write` when its source address is
+  the `infra_addr` of the valid record that holds the mesh key the session
+  authenticated, its destination is the node's infrastructure address, and
+  `al0` exists. It drops and counts every other such frame, and one that
+  `write` refuses.
+
+An IPv4 frame on VNI 0 is dropped and counted.
+
+**Local senders.** Any program on a node can send through `al0`, and any node
+of the cluster can reach what listens on a node's infrastructure address. So
+the node never takes a node message from `al0` and never writes one to it,
+and every other service on the
+infrastructure network authenticates its peer by its own means, never by the
+source address alone. Alloy adds no firewall state for `al0` (ARFC 0017 clause
+3.17.4). A client node routes VPC prefixes through `al0` only as ARFC 0009
+clause 3.13 says.
 
 ### 3.5 Validity, renewal, revocation
 
@@ -598,8 +685,7 @@ set are not watched.
 ### 3.11 Client nodes
 
 A **client node** is a node with no roles. It lets a person's computer take part
-in the mesh and reach VPC addresses by ARFC 0009 clause 3.13, which the spec
-task of M11 rung 6 adds. It is a node in
+in the mesh and reach VPC addresses by ARFC 0009 clause 3.13. It is a node in
 every other sense: a cloud admin's join token admits it (ADR 0018), it holds a
 node record, and `alloy node list` shows it with its state and mesh path.
 
@@ -993,10 +1079,10 @@ whose homes holds `control` cannot reach the control plane. M11 rung 2 runs
 with every anchor holding `control`, and needs no forwarding. Relay envelopes, signaling, probe sets and direct paths between nodes,
 `al0` with the infrastructure address on hosts (section 3.4), and every other
 use of the infrastructure network wait for the mesh. The API is never reached
-over the mesh (ARFC 0008 section 3.8). Once `al0` exists, node messages to and
-from a node's own infrastructure address travel through it like any other
-packet on VNI 0, with the same bytes, on the AL session that the mesh holds
-with the peer, over a direct or a relayed path (ARFC 0004). From then on a node
+over the mesh (ARFC 0008 section 3.8). Once the mesh runs, node messages
+travel as packets on VNI 0 with the same bytes, beside `al0` and never through
+it (section 3.4), on the AL session that the mesh holds with the peer, over a
+direct or a relayed path (ARFC 0004). From then on a node
 reaches every control node of its view, and an anchor without `control` the
 control node it forwards to, that way, and the bytes and rules of this section
 do not change.
@@ -1163,7 +1249,8 @@ and ARFC 0004 clause 3.1.2 apply as written.
   deletion 7 days after expiry, are not built, so the token that `init`
   creates is the cluster's only one.
 - Section 3.4: the infrastructure address is computed as written and used as
-  the source address of audit records. `al0` waits for rung 3 (section 3.13).
+  the source address of audit records. `al0` and the rest of section 3.4 wait
+  for rung 3, in which `alloyd` holds `al0`.
 - Section 3.5: as written, except the grace statement.
 - Section 3.6 and the at-rest key rotation of section 3.14: not built, and
   neither is `alloy node rotate`.

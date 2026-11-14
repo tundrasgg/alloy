@@ -97,6 +97,7 @@ or supersede it.
 | [0048](0048-the-api-ca-and-api-server-certificates-use-ecdsa-p-256.md) | The API CA and API server certificates use ECDSA P-256 |
 | [0053](0053-p-256-signs-through-rustcrypto-and-rustls-uses-aws-lc-rs.md) | P-256 signs through RustCrypto, and rustls uses aws-lc-rs |
 | [0065](0065-node-requests-are-keyed-by-mesh-key-and-act-only-on-the-requ.md) | Node requests are keyed by mesh key and act only on the requester's proof |
+| [0070](0070-the-console-is-preact-on-vite-and-calls-the-connect-form.md) | The console is Preact on Vite and calls the Connect form |
 
 ## Network
 
@@ -104,6 +105,7 @@ or supersede it.
 |---|---|
 | [0020](0020-vpcs-are-layer-3-only-and-dual-stack.md) | VPCs are layer 3 only and dual stack |
 | [0021](0021-public-addresses-attach-by-mode-and-are-independent-of-place.md) | Public addresses attach by mode and are independent of placement |
+| [0069](0069-al0-is-a-tun-interface-of-the-net-seam-and-node-messages-nev.md) | al0 is a tun interface of the net seam, and node messages never pass through it |
 
 ## Compute
 
