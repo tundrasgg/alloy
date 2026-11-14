@@ -37,7 +37,7 @@ Only tasks that are not done or cancelled. A finished task leaves the board in t
 | T-0137 | spec | architect | fix | none | Specify the al0 host interface on Linux and Windows |
 | T-0138 | build | developer | active | none | Build the alloy-path path manager for direct paths |
 | T-0139 | spec | architect | fix | none | Specify the console's browser API, serving, and toolchain |
-| T-0140 | build | developer | active | none | Build the console shell and first screens on fixture data |
+| T-0140 | build | developer | fix | none | Build the console shell and first screens on fixture data |
 | T-0134 | verify | verifier | review | T-0136 | Update the rung 2 check for the login flow |
 
 ## Still to cut for M0
