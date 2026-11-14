@@ -508,3 +508,56 @@ fn unknown_replay_entries_are_bounded() {
     );
     assert!(a.highest.contains_key(&key(0)));
 }
+
+/// A key that was a peer, was removed, and then had an unknown initiation
+/// accepted keeps its replay entry through a flood of unknown keys past
+/// [`UNKNOWN_REPLAY_ENTRIES`]: initiations accepted from it stay replays.
+#[test]
+fn a_key_once_a_peer_keeps_its_replay_entry() {
+    with_rng(7, |rng| {
+        let mut a = link(1);
+        let mut k = link(3);
+        let (ak, kk) = (a.public_key(), k.public_key());
+        k.add_peer(ak, PresharedKey::none());
+        a.add_peer(kk, PresharedKey::none());
+        a.set_accept_unknown(true);
+        let cx = Ctx {
+            now: Instant::from_nanos(1),
+            rng,
+        };
+        let initiation = |k: &mut Link| {
+            let mut out = Vec::new();
+            k.remove_peer(&ak, &mut out);
+            k.add_peer(ak, PresharedKey::none());
+            k.connect(cx, ak, &mut out).unwrap();
+            out.into_iter()
+                .find_map(|o| match o {
+                    Output::Transmit { datagram, .. } => Some(datagram),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let offer = |a: &mut Link, mut datagram: Vec<u8>| {
+            a.receive(cx, &[], &mut datagram, &mut Vec::new())
+        };
+        let first = initiation(&mut k);
+        assert_eq!(offer(&mut a, first.clone()), Ok(()));
+        a.remove_peer(&kk, &mut Vec::new());
+        let second = initiation(&mut k);
+        assert_eq!(offer(&mut a, second.clone()), Ok(()));
+        assert!(a.is_unknown(&kk));
+
+        // Accepted unknown initiations from fresh keys, as `on_initiation`
+        // records them, until every older transient entry is evicted.
+        for n in 0..=UNKNOWN_REPLAY_ENTRIES as u32 {
+            let mut bytes = [0xee; 32];
+            bytes[..4].copy_from_slice(&n.to_le_bytes());
+            let fresh = PublicKey::from_bytes(bytes);
+            a.highest.insert(fresh, u64::from(n));
+            a.note_transient(fresh);
+        }
+        assert_eq!(a.transient.len(), UNKNOWN_REPLAY_ENTRIES);
+        assert_eq!(offer(&mut a, first), Err(DropReason::Replay));
+        assert_eq!(offer(&mut a, second), Err(DropReason::Replay));
+    });
+}
