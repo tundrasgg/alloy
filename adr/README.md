@@ -93,7 +93,7 @@ or supersede it.
 | ADR | Decision |
 |---|---|
 | [0026](0026-the-native-api-is-the-source-of-truth-ec2-and-s3-are-compati.md) | The native API is the source of truth, EC2 and S3 are compatibility surfaces |
-| [0042](0042-nodes-talk-to-the-control-plane-over-al-clients-to-the-api-o.md) | Nodes talk to the control plane over AL, clients to the API over gRPC (superseded by 0065, which keeps every bullet but the node channel) |
+| [0042](0042-nodes-talk-to-the-control-plane-over-al-clients-to-the-api-o.md) | Nodes talk to the control plane over AL, clients to the API over gRPC (superseded by 0065, which keeps every bullet but the node channel; 0068 replaces its rung 2 reflection consequence) |
 | [0048](0048-the-api-ca-and-api-server-certificates-use-ecdsa-p-256.md) | The API CA and API server certificates use ECDSA P-256 |
 | [0053](0053-p-256-signs-through-rustcrypto-and-rustls-uses-aws-lc-rs.md) | P-256 signs through RustCrypto, and rustls uses aws-lc-rs |
 | [0065](0065-node-requests-are-keyed-by-mesh-key-and-act-only-on-the-requ.md) | Node requests are keyed by mesh key and act only on the requester's proof |
@@ -129,3 +129,4 @@ or supersede it.
 | [0040](0040-init-and-join-need-no-flags-and-a-one-use-login-code-carries.md) | Init and join need no flags, and a one-use login code carries the first credential |
 | [0056](0056-finalizing-an-upgrade-rewrites-stored-seam-bindings.md) | Finalizing an upgrade rewrites stored seam bindings |
 | [0059](0059-finalization-covers-new-groups-running-releases-and-re-encoding.md) | Finalization covers new groups, running releases, and re-encoding |
+| [0068](0068-m11-rung-2-builds-join-and-login-and-defers-pools-and-reflec.md) | M11 rung 2 builds join and login, and defers pools and reflection |

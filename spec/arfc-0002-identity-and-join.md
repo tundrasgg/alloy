@@ -3,7 +3,7 @@
 - Status: accepted
 - Depends on: 0000, 0003, 0007, 0009, 0017
 - Crates: alloy-id, alloy-crypto
-- Decisions: 0012, 0015, 0018, 0040, 0041, 0042, 0048, 0053, 0062, 0065
+- Decisions: 0012, 0015, 0018, 0040, 0041, 0042, 0048, 0053, 0062, 0065, 0068
 
 ## 1. Purpose
 
@@ -1004,11 +1004,13 @@ do not change.
 ### 3.14 Stored data
 
 Each node keeps these files in its data directory (section 3.12), each written
-whole: Alloy writes `<name>.new`, flushes it to disk, renames it over `<name>`,
-and makes the rename durable before it writes any other file: on Linux by
-`fsync` of the data directory, since `fsync` of a file "does not necessarily
-ensure that the entry in the directory containing the file has also reached
-disk" (https://man7.org/linux/man-pages/man2/fsync.2.html), and on Windows by
+whole: Alloy writes `<name>.new`, flushes it to disk, and renames it over
+`<name>` with `replace` of the `disk-io` seam (ARFC 0005 clause 3.1.16), which
+returns once the rename is durable, before it writes any other file. `replace`
+makes the rename durable on Linux by `fsync` of the data directory, since
+`fsync` of a file "does not necessarily ensure that the entry in the directory
+containing the file has also reached disk"
+(https://man7.org/linux/man-pages/man2/fsync.2.html), and on Windows by
 renaming with `MoveFileExW` and the flags `MOVEFILE_REPLACE_EXISTING` and
 `MOVEFILE_WRITE_THROUGH`, which returns only once the file is moved on the disk
 (https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw).
@@ -1097,9 +1099,98 @@ the mesh key and source address it came from; each join token as `token_id`,
 `token_pub`, `cluster_key_fp`, expiry time, use limit, uses, preset roles
 and zone, and whether it is revoked; each login code as `code_id`,
 `BLAKE3(secret)`, its user, `issued_by`, expiry time, and whether it is spent or
-voided; and the API CA certificate. No token, code, or access key secret is kept
-in clear. A client node keeps the files of the table and nothing of the control
-plane's.
+voided; and the API CA certificate. Join tokens are resources of kind
+`JoinToken` (ARFC 0006 section 2.9), and login codes of kind `LoginCode` (ARFC
+0007 section 2.5). No token, code, or access key secret is kept in clear. A
+client node keeps the files of the table and nothing of the control plane's.
+
+### 3.15 First deployment
+
+M11 rung 2 (ADR 0068) builds this ARFC except what this section leaves out.
+Rung 2 is released only as preview releases, and a cluster on a preview never
+changes release (ARFC 0017 clause 3.13), so what a later rung adds needs no
+change to a cluster that rung 2 made: that rung's release runs `init` and
+`join` on clean machines.
+
+**Init.** Steps 1, 2, 4, and 5 as written. Step 3 generates and stores every
+key and certificate it names, as written, and creates of its objects:
+
+| Object | In rung 2 |
+|---|---|
+| node, control plane, join token, login code | As step 3 says. The token is a `JoinToken` (ARFC 0006 section 2.9) |
+| organization | `default`, enabled (ARFC 0007 section 2.5) |
+| user | `admin`, enabled, in `default`, with the cluster role `cloud-admin` and no role of `default` |
+| project | None |
+| pool | None, and no `disks` directory or `disks/0` in the data directory |
+
+The node holds every role step 3 names, `storage` included, though rung 2 runs
+no compute or storage service. Nothing `init` prints names a project or a
+pool: step 5 prints the join token, the login code, and the standing warnings,
+and rung 2 reports no standing warning, so `init` prints none. The exchange of
+the login code returns an empty `project`, since `default` holds no project
+named `default` (section 3.7), and `alloy login` then makes a context with no
+default project (ARFC 0019 clause 3.1.11).
+
+**Join.** Steps 1, 2, and 4 to 8 as written, except that in step 7 no disk
+joins a pool, since there is none. There is no approval: rung 2 has no setting
+`join_approval`, every request that passes the checks of step 6 is admitted,
+no control node answers `pending`, and no joiner sends `join_state`. The refusals
+`busy` and `rejected` therefore never occur.
+
+Step 3 opens the AL session as written, but no node of rung 2 sends or answers
+a reflection request, on that session or on any home session (ARFC 0004 clause
+3.1.2). In place of the current endpoint that an echo sets, an anchor sends on a
+session over UDP only to the source endpoint of the handshake initiation it
+answered to make that session, and only from the moment it accepts, from that
+same endpoint, a transport packet or probe message under the session, which
+confirms the session (ARFC 0003 section 3.6). The initiator seals a keepalive
+as soon as it makes the session (ARFC 0003 section 3.4), so this takes one
+round trip after the response. A session that the anchor itself initiates
+with the node, at a rekey, takes the endpoint of the session it rekeys. No
+packet changes a session's endpoint later, and it never lapses. A session
+confirmed by a packet from another endpoint gets nothing from the anchor, and
+a node whose endpoint changes is reached again only on a session it opens from
+its new endpoint. Only the initiator that received the response can make a
+packet that authenticates under the session, so a party that cannot read the
+node's packets moves nothing. A session over `stream` follows ARFC
+0004 section 3.6 as written. From rung 3, which builds `alloy-relay`, step 3
+and ARFC 0004 clause 3.1.2 apply as written.
+
+**Other sections.**
+
+- Section 3.2: the token string, its checks, and the token key as written. The
+  methods `CreateJoinToken`, `ListJoinTokens`, and `RevokeJoinToken`, and the
+  deletion 7 days after expiry, are not built, so the token that `init`
+  creates is the cluster's only one.
+- Section 3.4: the infrastructure address is computed as written and used as
+  the source address of audit records. `al0` waits for rung 3 (section 3.13).
+- Section 3.5: as written, except the grace statement.
+- Section 3.6 and the at-rest key rotation of section 3.14: not built, and
+  neither is `alloy node rotate`.
+- Section 3.7: as written, except that a login code is issued only by `init`
+  and through the local admin socket, never on the API port (below).
+- Section 3.9: not built, nor `withdraw`. The rung 2 check clears a machine by
+  an uninstall with `--purge --force` (ARFC 0017 clause 3.16 step 4), which goes
+  on when `alloy node leave` fails.
+- Section 3.10: advertise addresses are set by `init` and `join` only. The watch
+  of addresses that are gone and its warning are not built.
+- Sections 3.8, 3.11 to 3.14: as written, without `disks/0`.
+
+**API and CLI.** The API port serves `ListNodes` and `ExchangeLoginCode`, and
+answers `IssueLoginCode` with `PermissionDenied`. The local admin socket serves
+`ListNodes` and `IssueLoginCode`, and answers `ExchangeLoginCode` with
+`PermissionDenied` (ARFC 0007 clause 3.10.2). Each serves by the rules of its
+listener (ARFC 0008 clauses 3.7 and 3.7.2). A call of any other method, on
+either, ends with gRPC status `UNIMPLEMENTED` (12), which gRPC gives a method
+the server does not implement
+(<https://grpc.github.io/grpc/core/md_doc_statuscodes.html>), and no
+`alloy-error-bin` trailer. No standing warning is reported (ARFC 0019 clause
+3.2.5). Of the CLI (ARFC 0019), rung 2 builds `init`, `join`, `alloy login
+<login code>`, `alloy login --issue-code` through the local admin socket (clause
+3.1.14), and `alloy node list`. On a new cluster, `init` prints one login code,
+user id 0 on the control node issues one for each other machine with `alloy
+login --issue-code`, and each machine, the control node included, runs `alloy
+login <code>` once and can then run `alloy node list` (section 3.7).
 
 ## 6. Failure behavior
 
