@@ -1,0 +1,23 @@
+[package]
+name = "conformance-state-store"
+version = "0.0.0"
+description = "Conformance suite for the state-store seam (ARFC 0006 sections 4.1, 5.2, 5.4, and 5.5)."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+alloy-crypto = { path = "../../../crates/alloy-crypto" }
+alloy-rt = { path = "../../../crates/alloy-rt" }
+alloy-seam = { path = "../../../crates/alloy-seam" }
+alloy-state = { path = "../../../crates/alloy-state" }
+
+[dev-dependencies]
+alloy-sim = { path = "../../../crates/alloy-sim" }
+
+[lints]
+workspace = true

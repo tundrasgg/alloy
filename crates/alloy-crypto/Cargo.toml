@@ -1,7 +1,7 @@
 [package]
 name = "alloy-crypto"
 version = "0.0.0"
-description = "The only crate that depends on cryptographic crates: BLAKE3, the AL handshake and transport, Ed25519, ECDSA P-256 and X.509 certificates, and sealing at rest."
+description = "The only crate that depends on cryptographic crates: BLAKE3, the AL handshake and transport, Ed25519, ECDSA P-256 and X.509 certificates, sealing at rest, and TLS 1.3 for the API."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -30,6 +30,19 @@ rcgen = { version = "=0.14.10", default-features = false }
 sha2 = { version = "=0.11.1", default-features = false }
 # The validity times `rcgen` takes, built from seconds since 1970.
 time = { version = "=0.3.55", default-features = false }
+# TLS 1.3 for the API endpoints (agent/eng/crypto.md, ADR 0042, ADR 0053).
+# Only the `aws-lc-rs` provider and `std`: no TLS 1.2 and no logging. The key
+# exchange groups are set in `tls`, and no Alloy key reaches the provider.
+rustls = { version = "=0.23.46", default-features = false, features = ["aws_lc_rs", "std"] }
+# `rustls` over the I/O traits of `tokio`, which the API's adapters give
+# `alloy-rt` streams. No feature: the provider comes from `rustls` above.
+tokio-rustls = { version = "=0.26.6", default-features = false }
+# Only the `AsyncRead` and `AsyncWrite` traits the TLS streams implement.
+tokio = { version = "=1.54.1", default-features = false }
+# The certificate parser `rustls` verifies with, to read the
+# SubjectPublicKeyInfo of a presented CA certificate for `api_ca_fp` (ARFC
+# 0002 section 3.7).
+webpki = { package = "rustls-webpki", version = "=0.103.17", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 hkdf.workspace = true

@@ -1,6 +1,7 @@
 //! The `mem` disk of a host: its file namespace and block devices (ARFC 0005
-//! clauses 3.1.10 to 3.1.12), what a crash keeps of them (clause 3.3.4), and
-//! the capacity and read faults of clause 3.3.7.
+//! clauses 3.1.10 to 3.1.12), their owners and modes (clause 3.1.15), what a
+//! crash keeps of them (clause 3.3.4), and the capacity and read faults of
+//! clause 3.3.7.
 //!
 //! Every disk call completes when it is made, at the current world instant,
 //! and writes its `disk-op` records then. A host's disk holds two trees: the
@@ -10,7 +11,8 @@
 //! replays the log on the base: it keeps each durable change, and keeps or
 //! drops each unsynced one as the crash's `Unsynced` mode says. A change whose
 //! target the replay does not hold (a write to a file whose create was
-//! dropped, a rename of a missing entry) is dropped with it.
+//! dropped, a rename of a missing entry, a `set_mode` of an entry whose
+//! create was dropped) is dropped with it.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
@@ -20,7 +22,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use alloy_rt::{
     Access, BoxFuture, Create, DirEntry, DiskError, DiskFile, DiskIo, EntryKind, FileInfo,
-    MAX_DISK_BATCH, Metadata, OpenOptions, ReadDone, ReadOp, RtPath, SyncKind, WriteDone, WriteOp,
+    MAX_DISK_BATCH, Metadata, OpenOptions, Protection, ReadDone, ReadOp, RtPath, Security,
+    SyncKind, WriteDone, WriteOp,
 };
 use alloy_seam::Detail;
 
@@ -45,6 +48,19 @@ const MAX_DEVICE_LEN: u64 = 1 << 40;
 const MAX_FILE_LEN: u64 = i64::MAX as u64;
 /// The inode of the root directory.
 const ROOT: u64 = 0;
+/// The mode of the root and of a directory `create_dir` creates (clause
+/// 3.1.15).
+const DIR_MODE: u32 = 0o755;
+/// The mode of a file `open` creates.
+const FILE_MODE: u32 = 0o644;
+/// The mode of a block device the scenario attaches.
+const DEVICE_MODE: u32 = 0o660;
+/// The mode of a `Private` or `PrivateRoot` directory.
+const PRIVATE_DIR_MODE: u32 = 0o700;
+/// The mode of a `Private` or `PrivateRoot` file.
+const PRIVATE_FILE_MODE: u32 = 0o600;
+/// The permission bits `set_mode` sets.
+const PERMISSION_BITS: u32 = 0o7777;
 
 /// The operation numbers of `disk-op` records (section 4.1).
 const OP_OPEN: u8 = 1;
@@ -59,6 +75,10 @@ const OP_REMOVE: u8 = 9;
 const OP_RENAME: u8 = 10;
 const OP_SYNC_DIR: u8 = 11;
 const OP_INFO: u8 = 12;
+const OP_CREATE_FILE: u8 = 13;
+const OP_CREATE_DIR_PROTECTED: u8 = 14;
+const OP_SECURITY: u8 = 15;
+const OP_SET_MODE: u8 = 16;
 
 fn invalid(text: &str) -> DiskError {
     DiskError::InvalidInput(Detail::new(text))
@@ -136,11 +156,14 @@ enum Body {
 }
 
 /// One file, directory, or block device. `parent` is `None` for the root
-/// and for a file whose name has been removed while a handle holds it.
+/// and for a file whose name has been removed while a handle holds it. Every
+/// node is owned by user id 0.
 #[derive(Clone, Debug)]
 struct Node {
     body: Body,
     parent: Option<u64>,
+    /// The permission bits, `st_mode & 0o7777`.
+    mode: u32,
 }
 
 impl Node {
@@ -172,6 +195,7 @@ enum Op {
         name: String,
         ino: u64,
         dir: bool,
+        mode: u32,
     },
     Remove {
         parent: u64,
@@ -194,6 +218,12 @@ enum Op {
         ino: u64,
         len: u64,
     },
+    /// A `set_mode`, of a directory when `dir`.
+    SetMode {
+        ino: u64,
+        dir: bool,
+        mode: u32,
+    },
 }
 
 /// The components of `path`, from the root down.
@@ -215,6 +245,7 @@ impl Tree {
         let root = Node {
             body: Body::Dir(BTreeMap::new()),
             parent: None,
+            mode: DIR_MODE,
         };
         Tree {
             nodes: BTreeMap::from([(ROOT, root)]),
@@ -295,6 +326,7 @@ impl Tree {
                 name,
                 ino,
                 dir,
+                mode,
             } => {
                 let entries = self.entries_mut(*parent)?;
                 if entries.contains_key(name) {
@@ -306,8 +338,12 @@ impl Tree {
                 } else {
                     Body::File(Data::default())
                 };
-                let parent = Some(*parent);
-                self.nodes.insert(*ino, Node { body, parent });
+                let node = Node {
+                    body,
+                    parent: Some(*parent),
+                    mode: *mode,
+                };
+                self.nodes.insert(*ino, node);
                 Some(None)
             }
             Op::Remove { parent, name, ino } => {
@@ -353,6 +389,10 @@ impl Tree {
                 }
                 _ => None,
             },
+            Op::SetMode { ino, mode, .. } => {
+                self.nodes.get_mut(ino)?.mode = *mode;
+                Some(None)
+            }
         }
     }
 }
@@ -393,6 +433,9 @@ pub(crate) struct Disk {
     seq: u64,
     /// Per inode, the sequence number of the last completed sync of it.
     synced: BTreeMap<u64, u64>,
+    /// Per inode, the sequence number of the last completed `sync(All)` of
+    /// it, which alone makes a `set_mode` of a file durable.
+    synced_all: BTreeMap<u64, u64>,
     /// Per directory, the sequence number of its last completed `sync_dir`.
     dir_synced: BTreeMap<u64, u64>,
     next_ino: u64,
@@ -473,6 +516,7 @@ impl Disk {
                             name,
                             ino,
                             dir: true,
+                            mode: DIR_MODE,
                         });
                         ino
                     }
@@ -492,8 +536,12 @@ impl Disk {
                 data,
                 block_size: device.block_size,
             };
-            let parent = Some(at);
-            tree.nodes.insert(next_ino, Node { body, parent });
+            let node = Node {
+                body,
+                parent: Some(at),
+                mode: DEVICE_MODE,
+            };
+            tree.nodes.insert(next_ino, node);
             paths.insert(device.path.clone(), next_ino);
             next_ino += 1;
         }
@@ -506,6 +554,7 @@ impl Disk {
             log: VecDeque::new(),
             seq: 0,
             synced: BTreeMap::new(),
+            synced_all: BTreeMap::new(),
             dir_synced: BTreeMap::new(),
             next_ino,
             next_handle: 1,
@@ -554,6 +603,12 @@ impl Disk {
                 after(&self.dir_synced, from) && after(&self.dir_synced, to)
             }
             Op::Write { ino, .. } | Op::Truncate { ino, .. } => after(&self.synced, ino),
+            // Only a `sync(All)` of the file or a `sync_dir` of the
+            // directory itself keeps a mode (clause 3.1.15).
+            Op::SetMode { ino, dir: true, .. } => after(&self.dir_synced, ino),
+            Op::SetMode {
+                ino, dir: false, ..
+            } => after(&self.synced_all, ino),
         }
     }
 
@@ -595,6 +650,7 @@ impl Disk {
         }
         if self.log.is_empty() {
             self.synced.clear();
+            self.synced_all.clear();
             self.dir_synced.clear();
         }
     }
@@ -654,12 +710,19 @@ impl Disk {
         self.base = tree.clone();
         self.current = tree;
         self.synced.clear();
+        self.synced_all.clear();
         self.dir_synced.clear();
         self.open.clear();
         self.held.clear();
     }
 
-    fn open(&mut self, path: &RtPath, options: OpenOptions) -> Result<Opened, DiskError> {
+    /// Opens `path`; a file it creates gets `mode`.
+    fn open(
+        &mut self,
+        path: &RtPath,
+        options: OpenOptions,
+        mode: u32,
+    ) -> Result<Opened, DiskError> {
         let (place, found) = self.current.find(path)?;
         let ino = match (found, place) {
             (Some(ino), _) => {
@@ -688,6 +751,7 @@ impl Disk {
                     name,
                     ino,
                     dir: false,
+                    mode,
                 });
                 ino
             }
@@ -759,7 +823,8 @@ impl Disk {
             .collect())
     }
 
-    fn create_dir(&mut self, path: &RtPath) -> Result<(), DiskError> {
+    /// Creates the directory `path` with `mode`.
+    fn create_dir(&mut self, path: &RtPath, mode: u32) -> Result<(), DiskError> {
         let (place, found) = self.current.find(path)?;
         let (Some((parent, name)), None) = (place, found) else {
             return Err(DiskError::AlreadyExists);
@@ -771,7 +836,33 @@ impl Disk {
             name,
             ino,
             dir: true,
+            mode,
         });
+        Ok(())
+    }
+
+    /// What `lstat` would report: `mem` has no symbolic links, and user id 0
+    /// owns every entry (clause 3.1.15).
+    fn security(&self, path: &RtPath) -> Result<Security, DiskError> {
+        let ino = self.current.find(path)?.1.ok_or(DiskError::NotFound)?;
+        let node = self.current.node(ino)?;
+        Ok(Security::Unix {
+            kind: node.kind(),
+            symlink: false,
+            uid: 0,
+            mode: node.mode,
+        })
+    }
+
+    /// Sets the mode of the entry at `path`. User id 0 may set any mode on
+    /// any entry, so nothing is refused for its mode.
+    fn set_mode(&mut self, path: &RtPath, mode: u32) -> Result<(), DiskError> {
+        if mode > PERMISSION_BITS {
+            return Err(invalid("a mode is at most 0o7777"));
+        }
+        let ino = self.current.find(path)?.1.ok_or(DiskError::NotFound)?;
+        let dir = self.current.node(ino)?.kind() == EntryKind::Dir;
+        self.commit(Op::SetMode { ino, dir, mode });
         Ok(())
     }
 
@@ -839,9 +930,12 @@ impl Disk {
         Ok(())
     }
 
-    fn sync(&mut self, ino: u64) {
+    fn sync(&mut self, ino: u64, kind: SyncKind) {
         self.seq += 1;
         self.synced.insert(ino, self.seq);
+        if kind == SyncKind::All {
+            self.synced_all.insert(ino, self.seq);
+        }
         self.compact();
     }
 
@@ -1007,8 +1101,18 @@ fn path_call<T: Send + 'static>(
     one_call(at, 0, op, (0, 0), f)
 }
 
-/// The `mem` disk-io instance of one start (clauses 3.1.10 to 3.1.12). Every
-/// instance of a host shares the host's disk and counts its own handles.
+/// The number `disk-op` records give `protection` (section 4.1).
+fn protection_code(protection: Protection) -> u64 {
+    match protection {
+        Protection::Default => 0,
+        Protection::Private => 1,
+        Protection::PrivateRoot => 2,
+    }
+}
+
+/// The `mem` disk-io instance of one start (clauses 3.1.10 to 3.1.12 and
+/// 3.1.15). Every instance of a host shares the host's disk and counts its
+/// own handles.
 #[derive(Debug)]
 pub(crate) struct MemDiskIo {
     at: Place,
@@ -1024,12 +1128,16 @@ impl MemDiskIo {
     }
 }
 
-impl DiskIo for MemDiskIo {
-    fn open<'a>(
-        &'a self,
-        path: &'a RtPath,
+impl MemDiskIo {
+    /// `open`, writing one record of operation `op` with `range`. A file it
+    /// creates gets `mode`.
+    fn open_with(
+        &self,
+        path: &RtPath,
         options: OpenOptions,
-    ) -> BoxFuture<'a, Result<Box<dyn DiskFile>, DiskError>> {
+        (op, range): (u8, (u64, u64)),
+        mode: u32,
+    ) -> BoxFuture<'static, Result<Box<dyn DiskFile>, DiskError>> {
         let opened = with_disk(&self.at, |disk, record| {
             let opened = match disk {
                 None => Err(DiskError::Io),
@@ -1039,13 +1147,13 @@ impl DiskIo for MemDiskIo {
                 Some(_) if self.handles.load(Ordering::Acquire) >= MAX_HANDLES => {
                     Err(DiskError::TooManyOpen)
                 }
-                Some(disk) => disk.open(path, options),
+                Some(disk) => disk.open(path, options, mode),
             };
             if opened.is_ok() {
                 self.handles.fetch_add(1, Ordering::AcqRel);
             }
             let number = opened.as_ref().map_or(0, |o| o.number);
-            record(number, OP_OPEN, (0, 0), opened.as_ref().err(), None);
+            record(number, op, range, opened.as_ref().err(), None);
             opened
         });
         let result = opened.map(|opened| -> Box<dyn DiskFile> {
@@ -1061,6 +1169,16 @@ impl DiskIo for MemDiskIo {
         });
         Box::pin(ready(result))
     }
+}
+
+impl DiskIo for MemDiskIo {
+    fn open<'a>(
+        &'a self,
+        path: &'a RtPath,
+        options: OpenOptions,
+    ) -> BoxFuture<'a, Result<Box<dyn DiskFile>, DiskError>> {
+        self.open_with(path, options, (OP_OPEN, (0, 0)), FILE_MODE)
+    }
 
     fn metadata<'a>(&'a self, path: &'a RtPath) -> BoxFuture<'a, Result<Metadata, DiskError>> {
         path_call(&self.at, OP_METADATA, |disk| disk.metadata(path))
@@ -1071,7 +1189,9 @@ impl DiskIo for MemDiskIo {
     }
 
     fn create_dir<'a>(&'a self, path: &'a RtPath) -> BoxFuture<'a, Result<(), DiskError>> {
-        path_call(&self.at, OP_CREATE_DIR, |disk| disk.create_dir(path))
+        path_call(&self.at, OP_CREATE_DIR, |disk| {
+            disk.create_dir(path, DIR_MODE)
+        })
     }
 
     fn remove<'a>(&'a self, path: &'a RtPath) -> BoxFuture<'a, Result<(), DiskError>> {
@@ -1088,6 +1208,56 @@ impl DiskIo for MemDiskIo {
 
     fn sync_dir<'a>(&'a self, dir: &'a RtPath) -> BoxFuture<'a, Result<(), DiskError>> {
         path_call(&self.at, OP_SYNC_DIR, |disk| disk.sync_dir(dir))
+    }
+
+    fn create_file<'a>(
+        &'a self,
+        path: &'a RtPath,
+        protection: Protection,
+    ) -> BoxFuture<'a, Result<Box<dyn DiskFile>, DiskError>> {
+        let options = OpenOptions {
+            access: Access::ReadWrite,
+            create: Create::New,
+            direct: false,
+            exclusive: false,
+        };
+        let mode = match protection {
+            Protection::Default => FILE_MODE,
+            Protection::Private | Protection::PrivateRoot => PRIVATE_FILE_MODE,
+        };
+        let record = (OP_CREATE_FILE, (0, protection_code(protection)));
+        self.open_with(path, options, record, mode)
+    }
+
+    fn create_dir_protected<'a>(
+        &'a self,
+        path: &'a RtPath,
+        protection: Protection,
+    ) -> BoxFuture<'a, Result<(), DiskError>> {
+        let mode = match protection {
+            Protection::Default => DIR_MODE,
+            Protection::Private | Protection::PrivateRoot => PRIVATE_DIR_MODE,
+        };
+        let range = (0, protection_code(protection));
+        one_call(&self.at, 0, OP_CREATE_DIR_PROTECTED, range, |disk| {
+            disk.create_dir(path, mode)
+        })
+    }
+
+    fn security<'a>(&'a self, path: &'a RtPath) -> BoxFuture<'a, Result<Security, DiskError>> {
+        path_call(&self.at, OP_SECURITY, |disk| disk.security(path))
+    }
+
+    fn set_mode<'a>(&'a self, path: &'a RtPath, mode: u32) -> BoxFuture<'a, Result<(), DiskError>> {
+        let range = (0, u64::from(mode));
+        one_call(&self.at, 0, OP_SET_MODE, range, |disk| {
+            disk.set_mode(path, mode)
+        })
+    }
+
+    /// `mem` has no native paths (clause 3.1.15). Writes no record.
+    fn rt_path(&self, _native: &str) -> Result<RtPath, DiskError> {
+        Err(DiskError::Unsupported)
     }
 }
 
@@ -1228,9 +1398,9 @@ impl DiskFile for MemFile {
 
     /// Every call completes when it is made, so nothing is pending: the sync
     /// makes every change of the file so far durable (clause 3.3.4).
-    fn sync(&self, _kind: SyncKind) -> BoxFuture<'_, Result<(), DiskError>> {
+    fn sync(&self, kind: SyncKind) -> BoxFuture<'_, Result<(), DiskError>> {
         self.call(OP_SYNC, (0, 0), |disk| {
-            disk.sync(self.ino);
+            disk.sync(self.ino, kind);
             Ok(())
         })
     }
@@ -1277,7 +1447,7 @@ mod tests {
             exclusive: false,
         };
         let path = RtPath::new(at).expect("a valid path");
-        disk.open(&path, how).expect("open").ino
+        disk.open(&path, how, FILE_MODE).expect("open").ino
     }
 
     fn bytes(disk: &mut Disk, ino: u64) -> Vec<u8> {
@@ -1309,7 +1479,7 @@ mod tests {
         let mut disk = disk();
         let ino = create(&mut disk, "/f");
         disk.write(ino, 0, b"abc").expect("write");
-        disk.sync(ino);
+        disk.sync(ino, SyncKind::Data);
         assert_eq!(disk.log.len(), 2, "the create is not durable yet");
         disk.sync_dir(&RtPath::root()).expect("sync_dir");
         assert!(disk.log.is_empty() && disk.synced.is_empty());
@@ -1327,7 +1497,7 @@ mod tests {
             let mut disk = disk();
             let ino = create(&mut disk, "/f");
             disk.write(ino, 0, b"data").expect("write");
-            disk.sync(ino);
+            disk.sync(ino, SyncKind::Data);
             disk.rename(
                 &RtPath::new("/f").expect("path"),
                 &RtPath::new("/g").expect("path"),
@@ -1361,5 +1531,127 @@ mod tests {
         };
         let expected = BTreeSet::from([(Vec::new(), None), some(&["f"]), some(&["g"])]);
         assert_eq!(seen, expected);
+    }
+
+    fn at(text: &str) -> RtPath {
+        RtPath::new(text).expect("a valid path")
+    }
+
+    /// The mode of the entry at `path`, or `None` when it is missing.
+    fn mode(disk: &Disk, path: &str) -> Option<u32> {
+        match disk.security(&at(path)) {
+            Ok(Security::Unix {
+                symlink: false,
+                uid: 0,
+                mode,
+                ..
+            }) => Some(mode),
+            Err(DiskError::NotFound) => None,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn entries_start_with_the_modes_of_their_kind() {
+        let device = DeviceConfig {
+            path: at("/dev/sda"),
+            len: 4_096,
+            block_size: 512,
+        };
+        let reads = Stream::new(1, b"test-reads", &[]);
+        let mut disk = Disk::new(4_096, 1 << 30, &[device], reads).expect("a valid disk");
+        create(&mut disk, "/f");
+        disk.create_dir(&at("/d"), DIR_MODE).expect("create_dir");
+        disk.create_dir(&at("/p"), PRIVATE_DIR_MODE)
+            .expect("create_dir");
+        let how = OpenOptions {
+            access: Access::ReadWrite,
+            create: Create::New,
+            direct: false,
+            exclusive: false,
+        };
+        disk.open(&at("/p/k"), how, PRIVATE_FILE_MODE)
+            .expect("open");
+        let modes: Vec<Option<u32>> = ["/", "/f", "/d", "/dev", "/dev/sda", "/p", "/p/k", "/x"]
+            .iter()
+            .map(|path| mode(&disk, path))
+            .collect();
+        let expected = [0o755, 0o644, 0o755, 0o755, 0o660, 0o700, 0o600];
+        let expected: Vec<Option<u32>> = expected.into_iter().map(Some).chain([None]).collect();
+        assert_eq!(modes, expected);
+        assert_eq!(
+            disk.security(&at("/dev/sda")),
+            Ok(Security::Unix {
+                kind: EntryKind::Block,
+                symlink: false,
+                uid: 0,
+                mode: 0o660
+            })
+        );
+        assert_eq!(disk.security(&at("/f/x")), Err(DiskError::NotDirectory));
+        assert!(matches!(
+            disk.set_mode(&at("/f"), 0o10_000),
+            Err(DiskError::InvalidInput(_))
+        ));
+        assert_eq!(disk.set_mode(&at("/x"), 0o600), Err(DiskError::NotFound));
+        // User id 0 may set any mode, and nothing is refused for one.
+        disk.set_mode(&at("/d"), 0).expect("set_mode");
+        disk.set_mode(&at("/dev/sda"), 0o7777).expect("set_mode");
+        create(&mut disk, "/d/inner");
+        assert_eq!(mode(&disk, "/d"), Some(0));
+        assert_eq!(mode(&disk, "/dev/sda"), Some(0o7777));
+    }
+
+    #[test]
+    fn a_mode_is_kept_by_a_full_sync_of_its_file_or_a_sync_of_its_directory() {
+        let mut disk = disk();
+        let ino = create(&mut disk, "/f");
+        disk.create_dir(&at("/d"), DIR_MODE).expect("create_dir");
+        disk.sync_dir(&RtPath::root()).expect("sync_dir");
+        let lost = |disk: &mut Disk| disk.crash(Unsynced::Lost, &mut Stream::new(1, b"t", &[]));
+        // Neither `sync(Data)` nor a `sync_dir` of the parent keeps a mode.
+        disk.set_mode(&at("/f"), 0o600).expect("set_mode");
+        disk.set_mode(&at("/d"), 0o700).expect("set_mode");
+        disk.sync(ino, SyncKind::Data);
+        disk.sync_dir(&RtPath::root()).expect("sync_dir");
+        lost(&mut disk);
+        assert_eq!(
+            (mode(&disk, "/f"), mode(&disk, "/d")),
+            (Some(0o644), Some(0o755))
+        );
+        // `sync(All)` of the file and a `sync_dir` of the directory itself do.
+        disk.set_mode(&at("/f"), 0o600).expect("set_mode");
+        disk.set_mode(&at("/d"), 0o700).expect("set_mode");
+        disk.sync(ino, SyncKind::All);
+        disk.sync_dir(&at("/d")).expect("sync_dir");
+        lost(&mut disk);
+        assert_eq!(
+            (mode(&disk, "/f"), mode(&disk, "/d")),
+            (Some(0o600), Some(0o700))
+        );
+        assert!(disk.log.is_empty());
+        // A mode given at creation is kept or undone with the create.
+        disk.create_dir(&at("/d/p"), PRIVATE_DIR_MODE)
+            .expect("create_dir");
+        lost(&mut disk);
+        assert_eq!(mode(&disk, "/d/p"), None);
+        disk.create_dir(&at("/d/p"), PRIVATE_DIR_MODE)
+            .expect("create_dir");
+        disk.sync_dir(&at("/d")).expect("sync_dir");
+        lost(&mut disk);
+        assert_eq!(mode(&disk, "/d/p"), Some(0o700));
+    }
+
+    #[test]
+    fn a_seeded_crash_drops_a_set_mode_whose_create_it_drops() {
+        let mut seen = BTreeSet::new();
+        for seed in 0..32 {
+            let mut disk = disk();
+            create(&mut disk, "/f");
+            disk.set_mode(&at("/f"), 0o600).expect("set_mode");
+            disk.crash(Unsynced::Seeded, &mut Stream::new(seed, b"t", &[]));
+            seen.insert(mode(&disk, "/f"));
+        }
+        assert_eq!(seen, BTreeSet::from([None, Some(0o644), Some(0o600)]));
     }
 }

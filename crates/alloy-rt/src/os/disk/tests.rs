@@ -515,3 +515,375 @@ fn sync_on_a_read_handle_makes_the_file_durable() {
     drop(reader);
     s.finish();
 }
+
+#[test]
+fn create_file_and_create_dir_protected_create_as_open_and_create_dir() {
+    let s = Scratch::new("create-protected");
+    let disk = &s.disk;
+    let file = s
+        .run(disk.create_file(&path("/f"), Protection::Default))
+        .unwrap();
+    let done = s.run(file.write_at(vec![write(0, b"new")]));
+    assert_eq!(done[0].result, Ok(()));
+    let done = s.run(file.read_at(vec![read(0, 3)]));
+    assert_eq!(done[0].result, Ok(3));
+    assert_eq!(&done[0].buf[..], b"new");
+    drop(file);
+    let fails = |r: Result<Box<dyn DiskFile>, DiskError>| r.map(|_| ()).unwrap_err();
+    for protection in [
+        Protection::Default,
+        Protection::Private,
+        Protection::PrivateRoot,
+    ] {
+        assert_eq!(
+            fails(s.run(disk.create_file(&path("/f"), protection))),
+            DiskError::AlreadyExists
+        );
+        assert_eq!(
+            fails(s.run(disk.create_file(&path("/x/f"), protection))),
+            DiskError::NotFound
+        );
+        assert_eq!(
+            s.run(disk.create_dir_protected(&path("/f"), protection)),
+            Err(DiskError::AlreadyExists)
+        );
+        assert_eq!(
+            s.run(disk.create_dir_protected(&path("/x/d"), protection)),
+            Err(DiskError::NotFound)
+        );
+    }
+    s.run(disk.create_dir_protected(&path("/d"), Protection::Default))
+        .unwrap();
+    assert_eq!(
+        s.run(disk.metadata(&path("/d"))).map(|m| m.kind),
+        Ok(EntryKind::Dir)
+    );
+    // As `open` with `Create::New` fails on a directory.
+    assert_eq!(
+        fails(s.run(disk.create_file(&path("/d"), Protection::Default))),
+        DiskError::IsDirectory
+    );
+    assert_eq!(
+        s.run(disk.security(&path("/none"))),
+        Err(DiskError::NotFound)
+    );
+    s.finish();
+}
+
+#[test]
+fn rt_path_names_native_paths_below_the_root() {
+    let s = Scratch::new("rt-path");
+    let native = |p: &Path| p.to_str().unwrap().to_owned();
+    assert_eq!(s.disk.rt_path(&native(&s.dir)), Ok(RtPath::root()));
+    assert_eq!(
+        s.disk.rt_path(&native(&s.dir.join("a").join("b"))),
+        Ok(path("/a/b"))
+    );
+    let parent = s.dir.parent().unwrap();
+    assert_eq!(
+        s.disk.rt_path(&native(&parent.join("elsewhere"))),
+        Err(DiskError::InvalidPath)
+    );
+    assert_eq!(s.disk.rt_path("relative"), Err(DiskError::InvalidPath));
+    s.finish();
+}
+
+#[cfg(unix)]
+mod unix {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+
+    use super::*;
+
+    fn unix(s: &Scratch, at: &str) -> (EntryKind, bool, u32, u32) {
+        match s.run(s.disk.security(&path(at))).unwrap() {
+            Security::Unix {
+                kind,
+                symlink,
+                uid,
+                mode,
+            } => (kind, symlink, uid, mode),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn me(s: &Scratch) -> u32 {
+        fs::metadata(&s.dir).unwrap().uid()
+    }
+
+    #[test]
+    fn private_entries_get_exactly_their_mode() {
+        let s = Scratch::new("private-unix");
+        let disk = &s.disk;
+        let uid = me(&s);
+        // A set-group-ID parent: Linux `mkdir` copies the bit to a new
+        // directory, which `create_dir_protected` then clears.
+        fs::create_dir(s.dir.join("g")).unwrap();
+        fs::set_permissions(s.dir.join("g"), fs::Permissions::from_mode(0o2755)).unwrap();
+        for (n, protection) in [Protection::Private, Protection::PrivateRoot]
+            .into_iter()
+            .enumerate()
+        {
+            for dir in ["", "/g"] {
+                let file = format!("{dir}/f{n}");
+                drop(s.run(disk.create_file(&path(&file), protection)).unwrap());
+                assert_eq!(unix(&s, &file), (EntryKind::File, false, uid, 0o600));
+                let sub = format!("{dir}/d{n}");
+                s.run(disk.create_dir_protected(&path(&sub), protection))
+                    .unwrap();
+                assert_eq!(unix(&s, &sub), (EntryKind::Dir, false, uid, 0o700));
+            }
+        }
+        // `Default` gives what `open` and `create_dir` give.
+        File::create(s.dir.join("std-file")).unwrap();
+        fs::create_dir(s.dir.join("std-dir")).unwrap();
+        let mode = |name: &str| fs::metadata(s.dir.join(name)).unwrap().mode() & 0o7777;
+        drop(
+            s.run(disk.create_file(&path("/plain"), Protection::Default))
+                .unwrap(),
+        );
+        s.run(disk.create_dir_protected(&path("/plain-dir"), Protection::Default))
+            .unwrap();
+        assert_eq!(mode("plain"), mode("std-file"));
+        assert_eq!(mode("plain-dir"), mode("std-dir"));
+        s.finish();
+    }
+
+    #[test]
+    fn security_does_not_follow_the_last_link_and_set_mode_does() {
+        let s = Scratch::new("links-unix");
+        let disk = &s.disk;
+        let uid = me(&s);
+        drop(s.open("/f", Access::ReadWrite, Create::New).unwrap());
+        s.run(disk.create_dir(&path("/d"))).unwrap();
+        drop(s.open("/d/g", Access::ReadWrite, Create::New).unwrap());
+        symlink(s.dir.join("f"), s.dir.join("link")).unwrap();
+        symlink(s.dir.join("d"), s.dir.join("dir-link")).unwrap();
+        s.run(disk.set_mode(&path("/f"), 0o640)).unwrap();
+        assert_eq!(unix(&s, "/f"), (EntryKind::File, false, uid, 0o640));
+        let (kind, link, owner, _) = unix(&s, "/link");
+        assert_eq!((kind, link, owner), (EntryKind::Other, true, uid));
+        // A link above the last component is followed.
+        s.run(disk.set_mode(&path("/d/g"), 0o604)).unwrap();
+        assert_eq!(
+            unix(&s, "/dir-link/g"),
+            (EntryKind::File, false, uid, 0o604)
+        );
+        // `set_mode` follows a link at the last component.
+        s.run(disk.set_mode(&path("/link"), 0o4600)).unwrap();
+        assert_eq!(unix(&s, "/f").3, 0o4600);
+        s.run(disk.set_mode(&path("/d"), 0o1750)).unwrap();
+        assert_eq!(unix(&s, "/d"), (EntryKind::Dir, false, uid, 0o1750));
+        assert!(matches!(
+            s.run(disk.set_mode(&path("/f"), 0o10000)),
+            Err(DiskError::InvalidInput(_))
+        ));
+        assert_eq!(
+            s.run(disk.set_mode(&path("/none"), 0o600)),
+            Err(DiskError::NotFound)
+        );
+        assert_eq!(
+            s.run(disk.security(&RtPath::root())),
+            Ok(Security::Unix {
+                kind: EntryKind::Dir,
+                symlink: false,
+                uid,
+                mode: fs::metadata(&s.dir).unwrap().mode() & 0o7777,
+            })
+        );
+        s.finish();
+    }
+}
+
+#[cfg(windows)]
+mod windows {
+    use super::super::windows::{create_dir_owned, create_file_owned};
+    use super::*;
+    use crate::{Ace, Sid};
+
+    const SYSTEM: &str = "S-1-5-18";
+    const ADMINISTRATORS: &str = "S-1-5-32-544";
+    /// `FILE_ALL_ACCESS`.
+    const FULL: u32 = 0x001F_01FF;
+
+    struct Seen {
+        kind: EntryKind,
+        reparse_point: bool,
+        owner: Sid,
+        dacl_protected: bool,
+        dacl: Vec<Ace>,
+    }
+
+    fn seen(s: &Scratch, at: &str) -> Seen {
+        match s.run(s.disk.security(&path(at))).unwrap() {
+            Security::Windows {
+                kind,
+                reparse_point,
+                owner,
+                dacl_protected,
+                dacl,
+            } => Seen {
+                kind,
+                reparse_point,
+                owner,
+                dacl_protected,
+                dacl: dacl.expect("a list"),
+            },
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// Each entry's trustee, mask, and flags inherited, object inherit, and
+    /// container inherit. Every entry must be an allow entry that applies to
+    /// the entry itself.
+    fn shape(dacl: &[Ace]) -> Vec<(String, u32, bool, bool, bool)> {
+        assert!(dacl.iter().all(|ace| ace.allow && !ace.inherit_only));
+        dacl.iter()
+            .map(|ace| {
+                (
+                    ace.trustee.sid.clone(),
+                    ace.mask,
+                    ace.inherited,
+                    ace.object_inherit,
+                    ace.container_inherit,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn security_reads_kind_owner_and_list() {
+        let s = Scratch::new("security-windows");
+        let disk = &s.disk;
+        drop(
+            s.run(disk.create_file(&path("/f"), Protection::Default))
+                .unwrap(),
+        );
+        s.run(disk.create_dir_protected(&path("/d"), Protection::Default))
+            .unwrap();
+        let file = seen(&s, "/f");
+        assert_eq!((file.kind, file.reparse_point), (EntryKind::File, false));
+        assert!(file.owner.sid.starts_with("S-1-") && !file.owner.name.is_empty());
+        assert!(!file.dacl_protected && !file.dacl.is_empty());
+        assert!(file.dacl.iter().all(|ace| ace.inherited));
+        let dir = seen(&s, "/d");
+        assert_eq!((dir.kind, dir.owner.sid), (EntryKind::Dir, file.owner.sid));
+        assert_eq!(seen(&s, "/").kind, EntryKind::Dir);
+        assert_eq!(
+            s.run(disk.set_mode(&path("/f"), 0o600)),
+            Err(DiskError::Unsupported)
+        );
+        s.finish();
+    }
+
+    #[test]
+    fn administrators_own_private_entries_or_nothing_is_created() {
+        let s = Scratch::new("private-windows");
+        let disk = &s.disk;
+        let made = s.run(disk.create_dir_protected(&path("/r"), Protection::PrivateRoot));
+        if made == Err(DiskError::PermissionDenied) {
+            // The token may not name `Administrators` as owner: it is not
+            // elevated. Nothing is left behind.
+            assert_eq!(s.run(disk.metadata(&path("/r"))), Err(DiskError::NotFound));
+            for protection in [Protection::Private, Protection::PrivateRoot] {
+                let file = s.run(disk.create_file(&path("/f"), protection));
+                assert_eq!(file.map(|_| ()).unwrap_err(), DiskError::PermissionDenied);
+                assert_eq!(s.run(disk.metadata(&path("/f"))), Err(DiskError::NotFound));
+                assert_eq!(
+                    s.run(disk.create_dir_protected(&path("/d"), protection)),
+                    Err(DiskError::PermissionDenied)
+                );
+                assert_eq!(s.run(disk.metadata(&path("/d"))), Err(DiskError::NotFound));
+            }
+            s.finish();
+            return;
+        }
+        made.unwrap();
+        let both = |inherited, oi, ci| {
+            vec![
+                (SYSTEM.to_owned(), FULL, inherited, oi, ci),
+                (ADMINISTRATORS.to_owned(), FULL, inherited, oi, ci),
+            ]
+        };
+        let root = seen(&s, "/r");
+        assert_eq!(
+            (root.owner.sid.as_str(), root.dacl_protected),
+            (ADMINISTRATORS, true)
+        );
+        assert_eq!(shape(&root.dacl), both(false, true, true));
+        drop(
+            s.run(disk.create_file(&path("/r/rf"), Protection::PrivateRoot))
+                .unwrap(),
+        );
+        let root_file = seen(&s, "/r/rf");
+        assert!(root_file.dacl_protected);
+        assert_eq!(shape(&root_file.dacl), both(false, false, false));
+        s.run(disk.create_dir_protected(&path("/r/d"), Protection::Private))
+            .unwrap();
+        drop(
+            s.run(disk.create_file(&path("/r/d/f"), Protection::Private))
+                .unwrap(),
+        );
+        for (at, oi_ci) in [("/r/d", true), ("/r/d/f", false)] {
+            let entry = seen(&s, at);
+            assert_eq!(entry.owner.sid, ADMINISTRATORS, "{at}");
+            assert!(!entry.dacl_protected, "{at}");
+            assert_eq!(shape(&entry.dacl), both(true, oi_ci, oi_ci), "{at}");
+        }
+        s.finish();
+    }
+
+    /// The descriptors the clause names, with the test's own account in
+    /// place of `Administrators`, which a token that is not elevated may not
+    /// name as owner.
+    #[test]
+    fn descriptors_carry_owner_and_list_into_the_create() {
+        let s = Scratch::new("owned-windows");
+        drop(
+            s.run(s.disk.create_file(&path("/plain"), Protection::Default))
+                .unwrap(),
+        );
+        let plain = seen(&s, "/plain");
+        let me = plain.owner.sid.clone();
+        let native = |at: &str| s.disk.native(&path(at)).unwrap();
+        create_dir_owned(&native("/r"), Protection::PrivateRoot, &me, &me).unwrap();
+        let both = |inherited, oi, ci| {
+            vec![
+                (SYSTEM.to_owned(), FULL, inherited, oi, ci),
+                (me.clone(), FULL, inherited, oi, ci),
+            ]
+        };
+        let root = seen(&s, "/r");
+        assert_eq!(
+            (root.owner.sid.as_str(), root.dacl_protected),
+            (me.as_str(), true)
+        );
+        assert_eq!(shape(&root.dacl), both(false, true, true));
+        let root_file = native("/r/rf");
+        drop(create_file_owned(&root_file, Protection::PrivateRoot, &me, &me).unwrap());
+        let root_file = seen(&s, "/r/rf");
+        assert!(root_file.dacl_protected);
+        assert_eq!(shape(&root_file.dacl), both(false, false, false));
+        create_dir_owned(&native("/r/d"), Protection::Private, &me, &me).unwrap();
+        drop(create_file_owned(&native("/r/f"), Protection::Private, &me, &me).unwrap());
+        drop(create_file_owned(&native("/r/d/g"), Protection::Private, &me, &me).unwrap());
+        for (at, oi_ci) in [("/r/d", true), ("/r/f", false), ("/r/d/g", false)] {
+            let entry = seen(&s, at);
+            assert_eq!(entry.owner.sid, me, "{at}");
+            assert!(!entry.dacl_protected, "{at}");
+            assert_eq!(shape(&entry.dacl), both(true, oi_ci, oi_ci), "{at}");
+        }
+        // With no list of its own, a `Private` entry holds exactly what the
+        // parent passes on, as an entry created with no descriptor does.
+        drop(create_file_owned(&native("/p"), Protection::Private, &me, &me).unwrap());
+        assert_eq!(seen(&s, "/p").dacl, plain.dacl);
+        assert_eq!(
+            create_file_owned(&native("/p"), Protection::Private, &me, &me).map(|_| ()),
+            Err(DiskError::AlreadyExists)
+        );
+        assert_eq!(
+            create_dir_owned(&native("/p"), Protection::Private, &me, &me),
+            Err(DiskError::AlreadyExists)
+        );
+        s.finish();
+    }
+}

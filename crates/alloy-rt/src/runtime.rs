@@ -303,8 +303,8 @@ mod tests {
     use super::*;
     use crate::{
         DirEntry, DiskError, DiskFile, Instant, InterfaceList, ListenOptions, Listener, Metadata,
-        NetError, OpenOptions, RngError, RtPath, Stream, StreamAddr, StreamOptions, UdpOptions,
-        UdpSocket, WallTime,
+        NetError, OpenOptions, Protection, RngError, RtPath, Security, Stream, StreamAddr,
+        StreamOptions, UdpOptions, UdpSocket, WallTime,
     };
 
     fn poll<F: Future + ?Sized>(future: Pin<&mut F>) -> Poll<F::Output> {
@@ -492,6 +492,29 @@ mod tests {
         }
         fn sync_dir<'a>(&'a self, _: &'a RtPath) -> BoxFuture<'a, Result<(), DiskError>> {
             unsupported()
+        }
+        fn create_file<'a>(
+            &'a self,
+            _: &'a RtPath,
+            _: Protection,
+        ) -> BoxFuture<'a, Result<Box<dyn DiskFile>, DiskError>> {
+            unsupported()
+        }
+        fn create_dir_protected<'a>(
+            &'a self,
+            _: &'a RtPath,
+            _: Protection,
+        ) -> BoxFuture<'a, Result<(), DiskError>> {
+            unsupported()
+        }
+        fn security<'a>(&'a self, _: &'a RtPath) -> BoxFuture<'a, Result<Security, DiskError>> {
+            unsupported()
+        }
+        fn set_mode<'a>(&'a self, _: &'a RtPath, _: u32) -> BoxFuture<'a, Result<(), DiskError>> {
+            unsupported()
+        }
+        fn rt_path(&self, _: &str) -> Result<RtPath, DiskError> {
+            Err(DiskError::Unsupported)
         }
     }
 

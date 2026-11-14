@@ -1,6 +1,6 @@
 # ADR 0008: Deterministic simulation comes first and all I/O goes through alloy-rt
 
-- Status: accepted
+- Status: superseded by 0067
 - Subject: engineering
 - Specs: arfc-0005
 
