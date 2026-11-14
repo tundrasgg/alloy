@@ -171,11 +171,17 @@ version = "0.0.0"
 name = "alloyd"
 version = "0.0.0"
 dependencies = [
+ "alloy-api",
  "alloy-crypto",
  "alloy-id",
+ "alloy-link",
+ "alloy-proto",
  "alloy-rt",
  "alloy-seam",
+ "alloy-state",
+ "alloy-wire",
  "prost",
+ "prost-types",
  "thiserror",
  "tokio",
  "tracing",

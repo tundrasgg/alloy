@@ -8,13 +8,19 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+alloy-api = { path = "../alloy-api" }
 alloy-crypto = { path = "../alloy-crypto" }
 alloy-id = { path = "../alloy-id" }
+alloy-link = { path = "../alloy-link" }
+alloy-proto = { path = "../alloy-proto" }
 alloy-rt = { path = "../alloy-rt" }
 alloy-seam = { path = "../alloy-seam" }
+alloy-state = { path = "../alloy-state" }
+alloy-wire = { path = "../alloy-wire" }
 prost.workspace = true
+prost-types.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["signal"] }
+tokio = { workspace = true, features = ["signal", "sync"] }
 tracing.workspace = true
 
 [target.'cfg(windows)'.dependencies]

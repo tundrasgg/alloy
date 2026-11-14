@@ -248,3 +248,40 @@ proptest! {
         let _ = JoinToken::decode(&text);
     }
 }
+
+#[test]
+fn the_token_key_is_seeded_by_the_secret_under_its_context() {
+    let secret = TokenSecret::from_bytes([7; 16]);
+    let mut seed_input = b"alloy/id/token-key/v1".to_vec();
+    seed_input.extend_from_slice(&[7; 16]);
+    let seed = alloy_crypto::hash(&seed_input);
+    let expected = alloy_crypto::ed25519::SigningKey::from_seed(&seed).verifying_key();
+    assert_eq!(
+        secret.token_key().verifying_key().as_bytes(),
+        expected.as_bytes()
+    );
+    let other = TokenSecret::from_bytes([8; 16]);
+    assert_ne!(
+        other.token_key().verifying_key().as_bytes(),
+        expected.as_bytes()
+    );
+    let message = b"alloy/id/join/v1";
+    let signature = secret.token_key().sign(message);
+    assert!(expected.verify(message, &signature).is_ok());
+}
+
+#[test]
+fn the_join_message_is_the_context_cluster_mesh_key_and_body() {
+    use crate::token::{JOIN_CONTEXT, join_message};
+    let cluster = ClusterId::from_bytes([1; 16]);
+    let mesh = PublicKey::from_bytes([2; 32]);
+    let message = join_message(&cluster, &mesh, b"body");
+    let mut expected = b"alloy/id/join/v1".to_vec();
+    expected.extend_from_slice(&[1; 16]);
+    expected.extend_from_slice(&[2; 32]);
+    expected.extend_from_slice(b"body");
+    assert_eq!(message, expected);
+    assert_eq!(JOIN_CONTEXT.len(), 16);
+    let other = join_message(&cluster, &PublicKey::from_bytes([3; 32]), b"body");
+    assert_ne!(message, other);
+}

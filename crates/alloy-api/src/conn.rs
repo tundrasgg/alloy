@@ -532,6 +532,13 @@ impl Gate {
         due
     }
 
+    /// Whether the connection is unproven and its place was taken for a
+    /// newer one.
+    pub(crate) fn was_evicted(&self) -> bool {
+        matches!(self.state().rule, Rule::Unproven { .. })
+            && self.evicted.as_ref().is_some_and(|e| e.fired())
+    }
+
     /// Whether the connection still takes calls. `false` once it must
     /// close: the call is then not served.
     pub(crate) fn admit(&self) -> bool {

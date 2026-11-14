@@ -19,8 +19,9 @@ pub const MAX_FORWARDED_MESSAGE: usize = 16_512;
 /// The largest node message that holds no `forwarded`, in bytes.
 pub const MAX_MESSAGE: usize = 16_384;
 
-/// The longest `release` of a `JoinHello` or a `NodeStatus`, in bytes
-/// (ARFC 0006 section 4.3).
+/// The longest `release` of a `NodeStatus` that keeps ARFC 0006 section
+/// 4.3, in bytes. The channel passes a longer one on, for the leader to
+/// answer `INVALID` (clause 3.14).
 pub const MAX_RELEASE: usize = 64;
 
 /// The longest node name and zone, in bytes.
@@ -403,8 +404,8 @@ pub enum MessageError {
 /// # Errors
 ///
 /// [`MessageError`] for bytes over the bound, bytes that do not decode, and
-/// a message that breaks a bound of ARFC 0002 section 3.13 or ARFC 0006
-/// section 4.3.
+/// a message that breaks a bound of ARFC 0002 section 3.13. A `NodeStatus`
+/// that breaks ARFC 0006 section 4.3 decodes, for the leader to answer.
 pub fn decode(bytes: &[u8]) -> Result<NodeMessage, MessageError> {
     if bytes.len() > MAX_FORWARDED_MESSAGE {
         return Err(MessageError::TooLong);
@@ -437,10 +438,14 @@ fn check(message: &NodeMessage, outer: bool) -> Result<(), MessageError> {
         _ if message.request_id == 0 => return Err(MessageError::Forwarding),
         _ => {}
     }
+    // Strings whose length ARFC 0002 section 3.13 does not bound, the
+    // releases among them, are bounded only by the message size, and a
+    // `NodeStatus` that breaks ARFC 0006 section 4.3 is passed on, so that
+    // the leader can answer it `INVALID` (clause 3.14; T-0111 review F1).
     let ok = match body {
-        Body::JoinHello(hello) => hello.release.len() <= MAX_RELEASE,
+        Body::JoinHello(_) | Body::NodeStatus(_) => true,
         Body::JoinHelloReply(reply) => match &reply.result {
-            Some(HelloResult::Version(refusal)) => refusal.highest_release.len() <= MAX_RELEASE,
+            Some(HelloResult::Version(_)) => true,
             Some(HelloResult::Cluster(proof)) => check_proof(proof),
             None => false,
         },
@@ -466,15 +471,9 @@ fn check(message: &NodeMessage, outer: bool) -> Result<(), MessageError> {
         Body::Withdraw(withdraw) => withdraw.signature.len() == 64,
         Body::Leave(leave) => leave.node_id.len() == 16 && leave.signature.len() == 64,
         Body::Done(done) => (done::OK..=done::CONFLICT).contains(&done.code),
-        Body::NodeStatus(status) => {
-            status.addresses.len() <= MAX_STATUS_ADDRESSES
-                && status.addresses.iter().all(|a| is_ip(a))
-                && status.release.len() <= MAX_RELEASE
-        }
         Body::NodeStatusReply(reply) => {
             (status::OK..=status::RELEASE_REFUSED).contains(&reply.result)
                 && (reply.result == status::RELEASE_REFUSED || reply.finalized_release.is_empty())
-                && reply.finalized_release.len() <= MAX_RELEASE
         }
         Body::Forwarded(_) => false,
     };
@@ -694,21 +693,32 @@ mod tests {
 
     #[test]
     fn bounds_are_checked() {
+        // A status that breaks ARFC 0006 section 4.3 reaches the leader,
+        // which answers it `INVALID`, and a release no bound of ARFC 0002
+        // section 3.13 limits is bounded only by the message size (T-0111
+        // review F1).
         let mut long = status(1);
         if let Some(Body::NodeStatus(s)) = &mut long.body {
             s.release = "1".repeat(65);
         }
-        assert_eq!(decode(&encode(&long)), Err(MessageError::Bounds));
+        assert_eq!(decode(&encode(&long)), Ok(long));
         let mut many = status(1);
         if let Some(Body::NodeStatus(s)) = &mut many.body {
             s.addresses = vec![vec![1, 2, 3, 4]; 65];
         }
-        assert_eq!(decode(&encode(&many)), Err(MessageError::Bounds));
+        assert_eq!(decode(&encode(&many)), Ok(many));
         let mut odd = status(1);
         if let Some(Body::NodeStatus(s)) = &mut odd.body {
             s.addresses = vec![vec![1, 2, 3]];
         }
-        assert_eq!(decode(&encode(&odd)), Err(MessageError::Bounds));
+        assert_eq!(decode(&encode(&odd)), Ok(odd));
+        let long_hello = NodeMessage {
+            request_id: 1,
+            body: Some(Body::JoinHello(JoinHello {
+                release: "1".repeat(1_000),
+            })),
+        };
+        assert_eq!(decode(&encode(&long_hello)), Ok(long_hello));
         let bad_request = NodeMessage {
             request_id: 1,
             body: Some(Body::JoinRequest(JoinRequest {

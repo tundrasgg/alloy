@@ -1,0 +1,122 @@
+// The `iam` service at `v1alpha1` (ARFC 0008 clause 3.13): the login codes of
+// ARFC 0002 section 3.7 and the user access keys they are exchanged for
+// (ARFC 0007 clause 3.9).
+//
+// This version holds the methods M11 rung 2 calls, `IssueLoginCode` and
+// `ExchangeLoginCode` (ARFC 0002 section 3.15). Every method fails with an
+// `alloy.common.v1alpha1.Error` (ARFC 0008 clause 3.6). No request or
+// response carries a login code's secret except the exchange request, and no
+// response but the exchange's carries an access key secret (I-22).
+syntax = "proto3";
+
+package alloy.iam.v1alpha1;
+
+import "google/protobuf/timestamp.proto";
+
+// Login codes and user access keys.
+service IamService {
+  // Issues a login code for one user (ARFC 0002 section 3.7, ARFC 0007 clause
+  // 3.9.2). The client generates the code's 16-byte secret and sends only its
+  // BLAKE3 hash; the response carries every other field of the code, from
+  // which the client writes the `alyc_` string.
+  //
+  // In this version it is served only on the local admin socket (ARFC 0007
+  // clause 3.10.2), as action `iam:IssueLoginCode` of the local admin. On the
+  // API port it fails with `ERROR_CODE_PERMISSION_DENIED`.
+  //
+  // Fails with `ERROR_CODE_INVALID_ARGUMENT` for a `secret_hash` that is not
+  // 32 bytes or a `user` or `org` that is not a name, with
+  // `ERROR_CODE_NOT_FOUND` when no such user exists, and with
+  // `ERROR_CODE_PERMISSION_DENIED` when the user or its org is disabled.
+  //
+  // Example request: `{"secret_hash": "<32 bytes>"}`.
+  rpc IssueLoginCode(IssueLoginCodeRequest) returns (IssueLoginCodeResponse);
+
+  // Exchanges a login code for a new access key of its user (ARFC 0002
+  // section 3.7, ARFC 0007 clauses 3.9.3, 3.9.4, and 3.9.10). The one method
+  // that takes neither a session token nor a SigV4 signature: the login code
+  // alone authenticates it.
+  //
+  // Served only on the API port. On the local admin socket it fails with
+  // `ERROR_CODE_PERMISSION_DENIED` (ARFC 0007 clause 3.10.2).
+  //
+  // Fails with `ERROR_CODE_RATE_LIMITED` over 10 calls a second from one
+  // source, or 100 in all, before the code is looked up; with
+  // `ERROR_CODE_UNAUTHENTICATED`, the same for an unknown `code_id` and a
+  // wrong secret; with `ERROR_CODE_PERMISSION_DENIED` for a code that was
+  // used, voided, or has expired, and when the user or its org is disabled;
+  // with `ERROR_CODE_INVALID_ARGUMENT` for a `name` that is not a key name;
+  // and with `ERROR_CODE_QUOTA_EXCEEDED` when the user holds as many keys as
+  // ARFC 0007 section 7 allows.
+  //
+  // Example request: `{"code_id": "<8 bytes>", "secret": "<16 bytes>",
+  // "name": "laptop"}`.
+  rpc ExchangeLoginCode(ExchangeLoginCodeRequest) returns (ExchangeLoginCodeResponse);
+}
+
+// The request of `IssueLoginCode`.
+message IssueLoginCodeRequest {
+  // The user the code is for. Empty means `admin`.
+  string user = 1;
+  // The org of that user. Empty means `default`.
+  string org = 2;
+  // The BLAKE3 hash of the code's secret, 32 bytes. The secret itself is never
+  // sent.
+  bytes secret_hash = 3;
+}
+
+// One API endpoint of a login code: the first advertise address of a control
+// node and its API port (ARFC 0002 section 3.7).
+message Endpoint {
+  // The address, 4 bytes for IPv4 or 16 for IPv6.
+  bytes address = 1;
+  // The node's API TCP port, 1 to 65535.
+  uint32 port = 2;
+}
+
+// The response of `IssueLoginCode`: every field of the login code but its
+// secret.
+message IssueLoginCodeResponse {
+  // The cluster's id, 16 bytes.
+  bytes cluster_id = 1;
+  // The first 16 bytes of the BLAKE3 hash of the API CA certificate's
+  // SubjectPublicKeyInfo, DER.
+  bytes api_ca_fp = 2;
+  // The code's public lookup id, 8 bytes.
+  bytes code_id = 3;
+  // The endpoints, 1 to 4, in the order the code lists them.
+  repeated Endpoint endpoints = 4;
+  // When the code expires: 24 hours after it was issued.
+  google.protobuf.Timestamp expire_time = 5;
+}
+
+// The request of `ExchangeLoginCode`.
+message ExchangeLoginCodeRequest {
+  // The code's public lookup id, 8 bytes.
+  bytes code_id = 1;
+  // The code's secret, 16 bytes.
+  bytes secret = 2;
+  // The name the new key asks for (ARFC 0007 clause 3.9.3).
+  string name = 3;
+  // The id of an access key the new one replaces, or empty (ARFC 0007 clause
+  // 3.9.10).
+  string replaces = 4;
+}
+
+// The response of `ExchangeLoginCode`. It holds the new key's secret, which
+// no later call returns.
+message ExchangeLoginCodeResponse {
+  // The new access key's id, 20 characters.
+  string access_key_id = 1;
+  // The new access key's secret, 40 characters.
+  string secret = 2;
+  // The name the new key got: the one asked for, or that name with the
+  // lowest free `-<n>` suffix.
+  string name = 3;
+  // The name of the user the key belongs to.
+  string user = 4;
+  // The org that user lives in.
+  string org = 5;
+  // `default` when that org has a project named `default`, else empty.
+  string project = 6;
+}

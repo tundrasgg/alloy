@@ -29,6 +29,9 @@
 //! [`x509`], and XChaCha20-Poly1305 with a
 //! caller-chosen nonce for data at rest in [`aead`].
 //!
+//! SHA-256 and HMAC-SHA-256 for SigV4 request signing, in [`sha256`]
+//! (ARFC 0008 clause 3.7.1).
+//!
 //! TLS 1.3 for the API endpoints, in [`tls`]: the server and client
 //! configurations, the ClientHello read before a configuration is chosen,
 //! and the encrypted streams (ARFC 0008 clauses 3.8 and 3.8.1).
@@ -57,6 +60,7 @@ pub mod aead;
 pub mod al;
 pub mod ecdsa;
 pub mod ed25519;
+pub mod sha256;
 pub mod tls;
 pub mod x509;
 

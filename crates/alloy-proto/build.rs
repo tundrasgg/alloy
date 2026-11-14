@@ -11,9 +11,10 @@ use std::path::PathBuf;
 use protox::prost_reflect::prost_types::{FileDescriptorProto, FileDescriptorSet};
 
 /// The definition files, relative to the `proto/` root.
-const FILES: [&str; 2] = [
+const FILES: [&str; 3] = [
     "alloy/common/errors.proto",
     "alloy/cluster/v1alpha1/cluster.proto",
+    "alloy/iam/v1alpha1/iam.proto",
 ];
 
 // `FileDescriptorProto` field numbers that a source location path names

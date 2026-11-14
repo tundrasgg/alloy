@@ -207,14 +207,25 @@ impl Requester {
         }
     }
 
-    /// Takes `message`, received from `from`, when it is the reply to the
-    /// outstanding request: its `request_id`, from the peer the request went
-    /// to, and of the kind that answers it. Anything else is dropped,
-    /// including a reply that comes after its request's time limit.
-    pub fn receive(&mut self, from: &PublicKey, message: NodeMessage, out: &mut Vec<Action>) {
+    /// Takes `message`, received from `from` at `now`, when it is the reply
+    /// to the outstanding request: its `request_id`, from the peer the
+    /// request went to, of the kind that answers it, and before the request's
+    /// time limit, counted from its first send, has passed. Anything else is
+    /// dropped: a reply at or after the limit is never taken, whatever order
+    /// the caller calls this and [`Requester::poll`] in (T-0111 review F2).
+    pub fn receive(
+        &mut self,
+        from: &PublicKey,
+        message: NodeMessage,
+        now: Instant,
+        out: &mut Vec<Action>,
+    ) {
         let Some(o) = &self.outstanding else {
             return;
         };
+        if now >= o.first_sent.saturating_add(o.limit) {
+            return;
+        }
         let Some(body) = message.body else {
             return;
         };
@@ -411,18 +422,19 @@ mod tests {
             body: Some(Body::JoinHelloReply(JoinHelloReply::default())),
         };
         let mut out = Vec::new();
-        r.receive(&P, reply(2), &mut out);
-        r.receive(&Q, reply(1), &mut out);
+        r.receive(&P, reply(2), at(0), &mut out);
+        r.receive(&Q, reply(1), at(0), &mut out);
         r.receive(
             &P,
             NodeMessage {
                 request_id: 1,
                 body: Some(Body::Done(Done::default())),
             },
+            at(0),
             &mut out,
         );
         assert!(out.is_empty());
-        r.receive(&P, reply(1), &mut out);
+        r.receive(&P, reply(1), at(0), &mut out);
         assert_eq!(
             out,
             [Action::Ended {
@@ -432,8 +444,45 @@ mod tests {
             }]
         );
         out.clear();
-        r.receive(&P, reply(1), &mut out);
+        r.receive(&P, reply(1), at(0), &mut out);
         assert!(out.is_empty(), "a second reply is dropped");
+    }
+
+    #[test]
+    fn a_reply_at_or_after_the_limit_is_not_taken() {
+        // T-0111 review F2: a heartbeat with a 4 s limit, polled once at 0,
+        // and its reply received at 4 s before any later poll.
+        let mut r = Requester::new();
+        let mut ids = Counter(0);
+        r.submit(status(), Duration::from_secs(4));
+        poll(&mut r, at(0), &mut ids);
+        let reply = NodeMessage {
+            request_id: 1,
+            body: Some(Body::NodeStatusReply(proto::NodeStatusReply {
+                result: proto::status::OK,
+                ..proto::NodeStatusReply::default()
+            })),
+        };
+        let mut out = Vec::new();
+        r.receive(&P, reply.clone(), at(4), &mut out);
+        assert!(out.is_empty(), "{out:?}");
+        assert_eq!(
+            poll(&mut r, at(4), &mut ids),
+            [Action::Ended {
+                kind: Kind::NodeStatus,
+                peer: Some(P),
+                outcome: Outcome::TimedOut
+            }]
+        );
+        // Just inside the limit, the same reply is taken.
+        r.submit(status(), Duration::from_secs(4));
+        poll(&mut r, at(5), &mut ids);
+        let inside = NodeMessage {
+            request_id: 2,
+            ..reply
+        };
+        r.receive(&P, inside, Instant::from_nanos(8_999_999_999), &mut out);
+        assert_eq!(out.len(), 1);
     }
 
     #[test]
@@ -463,6 +512,7 @@ mod tests {
                 request_id: 1,
                 body: Some(Body::JoinReply(Default::default())),
             },
+            at(0),
             &mut out,
         );
         assert_eq!(out.len(), 1);

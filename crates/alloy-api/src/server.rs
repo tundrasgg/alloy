@@ -4,6 +4,7 @@
 use std::convert::Infallible;
 use std::fmt;
 use std::future::{Future, poll_fn};
+use std::net::IpAddr;
 use std::pin::{Pin, pin};
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -14,7 +15,8 @@ use alloy_crypto::tls::{
 };
 use alloy_proto::cluster::v1alpha1::cluster_service_server::ClusterServiceServer;
 use alloy_proto::common::v1alpha1::{Error, ErrorCode};
-use alloy_rt::{BoxFuture, Instant, Listener, Runtime, Stream};
+use alloy_proto::iam::v1alpha1::iam_service_server::IamServiceServer;
+use alloy_rt::{BoxFuture, Instant, Listener, Runtime, Stream, StreamAddr};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::{Frame, Incoming, SizeHint};
@@ -24,8 +26,10 @@ use tonic::codegen::Service as _;
 
 use crate::access::{self, Access, AuthnError, Principal};
 use crate::conn::{Gate, InProgress, NotStarted, Place, Pools, Source};
+use crate::iam::{ExchangeLimit, LoginCodes};
 use crate::io::{HyperIo, RtExecutor, RtIo, task_name};
-use crate::service::ClusterApi;
+use crate::service::{ClusterApi, IamApi, Origin};
+use crate::sigv4;
 use crate::store::NodeStore;
 use crate::tls::{Protocol, select_protocol};
 use crate::transport::{AdminLimits, ConnLimits, Slots, Transport, sniff};
@@ -48,28 +52,51 @@ const MAX_STREAMS: u32 = 100;
 /// call meanwhile, and is dropped when they are answered or this has passed.
 pub const CLOSE_GRACE: Duration = Duration::from_secs(1);
 
-/// The paths of the methods this server serves (ARFC 0008 clause 3.12).
-const METHODS: [&str; 2] = [
-    "/alloy.cluster.v1alpha1.ClusterService/GetNode",
-    "/alloy.cluster.v1alpha1.ClusterService/ListNodes",
-];
+/// The methods M11 rung 2 serves (ARFC 0002 section 3.15). Every other path
+/// fails with `UNIMPLEMENTED` and no Alloy code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Method {
+    ListNodes,
+    IssueLoginCode,
+    ExchangeLoginCode,
+}
+
+impl Method {
+    /// The method whose gRPC path is `path` (ARFC 0008 clause 3.12).
+    fn of(path: &str) -> Option<Method> {
+        match path {
+            "/alloy.cluster.v1alpha1.ClusterService/ListNodes" => Some(Method::ListNodes),
+            "/alloy.iam.v1alpha1.IamService/IssueLoginCode" => Some(Method::IssueLoginCode),
+            "/alloy.iam.v1alpha1.IamService/ExchangeLoginCode" => Some(Method::ExchangeLoginCode),
+            _ => None,
+        }
+    }
+}
 
 /// How a connection's calls are authenticated.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Caller {
-    /// Over the API port: each call carries a session token.
+    /// Over the API port: each call carries a session token or a SigV4
+    /// signature, except `ExchangeLoginCode`, which the login code alone
+    /// authenticates.
     Token,
     /// Through the local admin socket: each call is a local admin call.
     LocalAdmin,
 }
 
-/// The gRPC methods of the API over a node store and an access subsystem.
-/// Clones share them.
+/// The user id whose connections the local admin socket serves (ARFC 0007
+/// clause 3.10.2).
+const ROOT_UID: u32 = 0;
+
+/// The gRPC methods of the API over a node store, the login codes, and an
+/// access subsystem. Clones share them.
 #[derive(Clone)]
 pub struct ApiServer {
     runtime: Runtime,
     cluster: ClusterServiceServer<ClusterApi>,
+    iam: IamServiceServer<IamApi>,
     access: Arc<dyn Access>,
+    exchanges: Arc<ExchangeLimit>,
 }
 
 impl fmt::Debug for ApiServer {
@@ -81,27 +108,45 @@ impl fmt::Debug for ApiServer {
 }
 
 impl ApiServer {
-    /// A server of the `cluster` service over `store`, authenticating and
-    /// authorizing with `access`, starting its tasks on `runtime`.
+    /// A server of the `cluster` service over `store` and the `iam` service
+    /// over `codes`, authenticating and authorizing with `access`, starting
+    /// its tasks on `runtime`.
     #[must_use]
-    pub fn new(runtime: Runtime, store: Arc<dyn NodeStore>, access: Arc<dyn Access>) -> ApiServer {
+    pub fn new(
+        runtime: Runtime,
+        store: Arc<dyn NodeStore>,
+        codes: Arc<dyn LoginCodes>,
+        access: Arc<dyn Access>,
+    ) -> ApiServer {
         let api = ClusterApi {
             store,
             access: Arc::clone(&access),
         };
-        // The service refuses a response over 4 MiB with `InvalidArgument`
+        // Each service refuses a response over 4 MiB with `InvalidArgument`
         // before encoding it; this limit only backs that check.
         let cluster = ClusterServiceServer::new(api)
             .max_decoding_message_size(MAX_MESSAGE_BYTES)
             .max_encoding_message_size(MAX_MESSAGE_BYTES);
+        let iam = IamServiceServer::new(IamApi {
+            codes,
+            access: Arc::clone(&access),
+        })
+        .max_decoding_message_size(MAX_MESSAGE_BYTES)
+        .max_encoding_message_size(MAX_MESSAGE_BYTES);
+        let exchanges = Arc::new(ExchangeLimit::new(runtime.clock().now()));
         ApiServer {
             runtime,
             cluster,
+            iam,
             access,
+            exchanges,
         }
     }
 
-    /// Serves the local admin socket (ARFC 0008 clause 3.7.2): every
+    /// Serves the local admin socket (ARFC 0008 clause 3.7.2, ARFC 0007
+    /// clause 3.10.2): a connection whose peer the kernel does not report
+    /// as user id 0, or whose peer's user id cannot be read, is closed
+    /// before a byte of it is read, and the refusal logged. Every other
     /// connection `listener` accepts is HTTP/2 by prior knowledge, without
     /// TLS, and each call on it is a local admin call whatever headers it
     /// carries. `limits` bound the connections, normally
@@ -114,6 +159,23 @@ impl ApiServer {
         let slots = Slots::new(limits.max_connections);
         loop {
             let stream = accept(&self.runtime, listener.as_ref()).await;
+            match stream.peer_uid() {
+                Ok(ROOT_UID) => {}
+                Ok(uid) => {
+                    tracing::warn!(
+                        uid,
+                        "a local admin connection was refused: its peer is not user id 0"
+                    );
+                    continue;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        reason = %e,
+                        "a local admin connection was refused: its peer's user id cannot be read"
+                    );
+                    continue;
+                }
+            }
             let Some(slot) = slots.take() else {
                 tracing::debug!(
                     max = limits.max_connections,
@@ -126,15 +188,15 @@ impl ApiServer {
             let gate = Arc::new(Gate::proven(clock, limits.idle, limits.call));
             spawn_connection(&self.runtime, async move {
                 let io = RtIo::new(Arc::from(stream));
-                server.serve_h2(io, Caller::LocalAdmin, gate).await;
+                server.serve_h2(io, Caller::LocalAdmin, gate, None).await;
                 drop(slot);
             });
         }
     }
 
-    /// Serves HTTP/2 on one connection until it closes, or until `gate`
-    /// says it must close.
-    async fn serve_h2<I>(&self, io: I, caller: Caller, gate: Arc<Gate>)
+    /// Serves HTTP/2 on one connection from `source` until it closes, or
+    /// until `gate` says it must close.
+    async fn serve_h2<I>(&self, io: I, caller: Caller, gate: Arc<Gate>, source: Option<IpAddr>)
     where
         I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
@@ -142,6 +204,7 @@ impl ApiServer {
             server: self.clone(),
             caller,
             gate: Arc::clone(&gate),
+            source,
         };
         let executor = RtExecutor::new(self.runtime.clone(), task_name("api-h2"));
         // No `date` header: hyper would read it from the system clock, outside
@@ -154,6 +217,13 @@ impl ApiServer {
         match first(connection.as_mut(), gate.closed()).await {
             Some(Err(e)) => tracing::debug!(reason = %e, "an API connection ended with an error"),
             Some(Ok(())) => {}
+            None if gate.was_evicted() => {
+                // An unproven connection whose place was taken runs no
+                // authenticated call, so it is dropped at once, not given
+                // the grace, and its place is free for the newer one
+                // (T-0118 re-review F1).
+                tracing::debug!("an unproven API connection was closed: its place was taken");
+            }
             None => {
                 tracing::debug!("an API connection was closed at one of its limits");
                 // GOAWAY, and the calls in progress are answered for at most
@@ -167,37 +237,40 @@ impl ApiServer {
         }
     }
 
-    /// Answers one call. A call on a connection that must close is refused
-    /// unread. A call that names no method or fails authentication is
-    /// rejected ([`ConnLimits`]); every other call is in progress until its
-    /// response is sent.
+    /// Answers one call from `source`. A call on a connection that must
+    /// close is refused unread. A call that names no method or fails
+    /// authentication is rejected ([`ConnLimits`]); every other
+    /// authenticated call is in progress until its response is sent.
+    /// `ExchangeLoginCode` on the API port is authenticated by its login code
+    /// alone: it neither proves its connection nor counts as in progress, and
+    /// it is rejected when it fails.
     async fn call(
         self,
         request: http::Request<Incoming>,
         caller: Caller,
         gate: &Arc<Gate>,
+        source: Option<IpAddr>,
     ) -> Response {
         if !gate.admit() {
             return respond(closing().into_status().into_http(), None);
         }
-        if !METHODS.contains(&request.uri().path()) {
+        let Some(method) = Method::of(request.uri().path()) else {
             gate.reject();
             return respond(Status::unimplemented("").into_http(), None);
+        };
+        let (mut parts, body) = request.into_parts();
+        if method == Method::ExchangeLoginCode && caller == Caller::Token {
+            return self.exchange(parts, body, gate, source).await;
         }
-        let principal = match caller {
-            Caller::LocalAdmin => Principal::LocalAdmin,
-            Caller::Token => {
-                match self
-                    .authenticate(request.headers().get(http::header::AUTHORIZATION))
-                    .await
-                {
-                    Ok(principal) => principal,
-                    Err(error) => {
-                        gate.reject();
-                        return respond(error.into_status().into_http(), None);
-                    }
+        let (principal, read) = match caller {
+            Caller::LocalAdmin => (Principal::LocalAdmin, Read::Pending(body)),
+            Caller::Token => match self.authenticate(&parts, body).await {
+                Ok(done) => done,
+                Err(error) => {
+                    gate.reject();
+                    return respond(error.into_status().into_http(), None);
                 }
-            }
+            },
         };
         let call = match gate.begin(&principal) {
             Ok(call) => call,
@@ -209,39 +282,157 @@ impl ApiServer {
                 return respond(closing().into_status().into_http(), None);
             }
         };
-        let (mut parts, body) = request.into_parts();
-        // No method streams from the client, so the body is one message.
-        let body = match Limited::new(body, MAX_MESSAGE_BYTES + PREFIX_BYTES)
-            .collect()
-            .await
-        {
-            Ok(collected) => collected.to_bytes(),
-            Err(e) if e.is::<http_body_util::LengthLimitError>() => {
-                return respond(too_large().into_status().into_http(), Some(call));
-            }
-            Err(_) => {
-                let cancelled = Status::cancelled("the request body was not received");
-                return respond(cancelled.into_http(), Some(call));
+        let body = match read {
+            Read::Done(bytes) => bytes,
+            Read::Pending(body) => match collect(body).await {
+                Ok(bytes) => bytes,
+                Err(status) => return respond(status.into_http(), Some(call)),
+            },
+        };
+        parts.extensions.insert(Origin {
+            principal: Some(principal),
+            source,
+        });
+        let request = http::Request::from_parts(parts, Full::<Bytes>::new(body));
+        let response = match method {
+            Method::ListNodes => self.cluster.clone().call(request).await,
+            Method::IssueLoginCode | Method::ExchangeLoginCode => {
+                self.iam.clone().call(request).await
             }
         };
-        parts.extensions.insert(principal);
-        let request = http::Request::from_parts(parts, Full::<Bytes>::new(body));
-        match self.cluster.clone().call(request).await {
+        match response {
             Ok(response) => respond(response, Some(call)),
             Err(never) => match never {},
         }
     }
 
-    async fn authenticate(&self, header: Option<&http::HeaderValue>) -> Result<Principal, Error> {
-        let token = access::bearer(header)?;
-        match self.access.authenticate(&token).await {
-            Ok(principal) => Ok(principal),
-            Err(AuthnError::Refused) => Err(access::unauthenticated()),
-            Err(AuthnError::Failed(error)) if error.code() == ErrorCode::Unauthenticated => {
-                Err(access::unauthenticated())
-            }
-            Err(AuthnError::Failed(error)) => Err(error),
+    /// Serves `ExchangeLoginCode` on the API port: the rate limit first,
+    /// then the call with no principal. A refused or failed exchange is
+    /// rejected.
+    async fn exchange(
+        self,
+        mut parts: http::request::Parts,
+        body: Incoming,
+        gate: &Arc<Gate>,
+        source: Option<IpAddr>,
+    ) -> Response {
+        let now = self.runtime.clock().now();
+        if let Err(error) = self.exchanges.take(source, now) {
+            gate.reject();
+            return respond(error.into_status().into_http(), None);
         }
+        let body = match collect(body).await {
+            Ok(bytes) => bytes,
+            Err(status) => {
+                gate.reject();
+                return respond(status.into_http(), None);
+            }
+        };
+        parts.extensions.insert(Origin {
+            principal: None,
+            source,
+        });
+        let request = http::Request::from_parts(parts, Full::<Bytes>::new(body));
+        let response = match self.iam.clone().call(request).await {
+            Ok(response) => response,
+            Err(never) => match never {},
+        };
+        // An error is sent trailers-only, its status in the headers; a
+        // success carries its status in the trailers.
+        let failed = response
+            .headers()
+            .get("grpc-status")
+            .is_some_and(|status| status.as_bytes() != b"0");
+        if failed {
+            gate.reject();
+        }
+        respond(response, None)
+    }
+
+    /// Authenticates a call on the API port by its `authorization` header:
+    /// a session token, checked by [`Access::authenticate`], or a SigV4
+    /// signature, verified against the secret of the key it names, which
+    /// needs the whole body. Returns the principal and the body, read or
+    /// not.
+    async fn authenticate(
+        &self,
+        parts: &http::request::Parts,
+        body: Incoming,
+    ) -> Result<(Principal, Read), Error> {
+        let header = parts.headers.get(http::header::AUTHORIZATION);
+        let sigv4 = header
+            .and_then(|v| v.to_str().ok())
+            .filter(|v| v.starts_with(sigv4::ALGORITHM));
+        let Some(value) = sigv4 else {
+            let token = access::bearer(header)?;
+            let principal = match self.access.authenticate(&token).await {
+                Ok(principal) => principal,
+                Err(AuthnError::Refused) => return Err(access::unauthenticated()),
+                Err(AuthnError::Failed(error)) if error.code() == ErrorCode::Unauthenticated => {
+                    return Err(access::unauthenticated());
+                }
+                Err(AuthnError::Failed(error)) => return Err(error),
+            };
+            return Ok((principal, Read::Pending(body)));
+        };
+        let authorization =
+            sigv4::parse_authorization(value).ok_or_else(access::unauthenticated)?;
+        let holder = match self.access.access_key(&authorization.key_id).await {
+            Ok(holder) => holder,
+            Err(AuthnError::Refused) => return Err(access::unauthenticated()),
+            Err(AuthnError::Failed(error)) if error.code() == ErrorCode::Unauthenticated => {
+                return Err(access::unauthenticated());
+            }
+            Err(AuthnError::Failed(error)) => return Err(error),
+        };
+        // A body that does not arrive or is over 4 MiB cannot hash to the
+        // signed value, so it fails as any call that does not verify.
+        let bytes = collect(body).await.map_err(|_| access::unauthenticated())?;
+        let header_text = |name: &str| {
+            parts
+                .headers
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+        };
+        let host = parts
+            .uri
+            .authority()
+            .map(http::uri::Authority::as_str)
+            .unwrap_or_default();
+        let signed = sigv4::Signed {
+            path: parts.uri.path(),
+            content_type: header_text(http::header::CONTENT_TYPE.as_str()),
+            host,
+            amz_date: header_text(sigv4::DATE_HEADER),
+            content_sha256: header_text(sigv4::CONTENT_HEADER),
+        };
+        let now = self.runtime.clock().wall();
+        if sigv4::verify(&holder.secret, &authorization, &signed, &bytes, now) {
+            Ok((holder.principal, Read::Done(bytes)))
+        } else {
+            Err(access::unauthenticated())
+        }
+    }
+}
+
+/// A call's body, read in full or still to read.
+enum Read {
+    Done(Bytes),
+    Pending(Incoming),
+}
+
+/// The whole body of a call, which no method streams from the client, or
+/// the status that ends the call: `InvalidArgument` over 4 MiB, `CANCELLED`
+/// when the body does not arrive.
+async fn collect(body: Incoming) -> Result<Bytes, Status> {
+    match Limited::new(body, MAX_MESSAGE_BYTES + PREFIX_BYTES)
+        .collect()
+        .await
+    {
+        Ok(collected) => Ok(collected.to_bytes()),
+        Err(e) if e.is::<http_body_util::LengthLimitError>() => Err(too_large().into_status()),
+        Err(_) => Err(Status::cancelled("the request body was not received")),
     }
 }
 
@@ -287,6 +478,7 @@ struct Router {
     server: ApiServer,
     caller: Caller,
     gate: Arc<Gate>,
+    source: Option<IpAddr>,
 }
 
 impl hyper::service::Service<http::Request<Incoming>> for Router {
@@ -298,7 +490,8 @@ impl hyper::service::Service<http::Request<Incoming>> for Router {
         let server = self.server.clone();
         let caller = self.caller;
         let gate = Arc::clone(&self.gate);
-        Box::pin(async move { Ok(server.call(request, caller, &gate).await) })
+        let source = self.source;
+        Box::pin(async move { Ok(server.call(request, caller, &gate, source).await) })
     }
 }
 
@@ -523,10 +716,11 @@ impl ApiPort {
         let timer = self.runtime.clock().sleep_until(deadline);
         let evicted = place.evicted();
         let end = first(timer, evicted.wait());
+        let from = peer_ip(stream.as_ref());
         let Some(Some((protocol, tls))) = first(self.tls_handshake(stream), end).await else {
             return;
         };
-        self.hand_off(protocol, Conn::Tls(tls), place, accepted)
+        self.hand_off(protocol, Conn::Tls(tls), place, accepted, from)
             .await;
     }
 
@@ -567,20 +761,28 @@ impl ApiPort {
         let Some(Some((chosen, seen))) = first(sniff(&stream), end).await else {
             return;
         };
+        let from = peer_ip(stream.as_ref());
         let io = RtIo::with_unread(stream, seen);
-        self.hand_off(chosen, Conn::Clear(io), place, accepted)
+        self.hand_off(chosen, Conn::Clear(io), place, accepted, from)
             .await;
     }
 
-    /// Serves a connection whose protocol is chosen, unproven until a call
-    /// or the underlay proves it.
-    async fn hand_off(self, protocol: Protocol, conn: Conn, place: Place, accepted: Instant) {
+    /// Serves a connection from `from` whose protocol is chosen, unproven
+    /// until a call or the underlay proves it.
+    async fn hand_off(
+        self,
+        protocol: Protocol,
+        conn: Conn,
+        place: Place,
+        accepted: Instant,
+        from: Option<IpAddr>,
+    ) {
         let clock = Arc::clone(self.runtime.clock());
         let gate = Arc::new(Gate::unproven(clock, place, accepted, &self.limits));
         match (protocol, self.api, self.stream) {
             (Protocol::Api, Some((server, _)), _) => match conn {
-                Conn::Tls(tls) => server.serve_h2(tls, Caller::Token, gate).await,
-                Conn::Clear(io) => server.serve_h2(io, Caller::Token, gate).await,
+                Conn::Tls(tls) => server.serve_h2(tls, Caller::Token, gate, from).await,
+                Conn::Clear(io) => server.serve_h2(io, Caller::Token, gate, from).await,
             },
             (Protocol::Stream, _, Some((underlay, _))) => {
                 let conn = StreamConn {
@@ -597,6 +799,14 @@ impl ApiPort {
             }
             _ => {}
         }
+    }
+}
+
+/// The IP address of `stream`'s peer, if it has one.
+fn peer_ip(stream: &dyn Stream) -> Option<IpAddr> {
+    match stream.peer_addr() {
+        Some(StreamAddr::Ip(addr)) => Some(addr.ip()),
+        _ => None,
     }
 }
 
