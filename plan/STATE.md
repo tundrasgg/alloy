@@ -12,9 +12,9 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0144 |
-| Decision `D-` | D-0072 |
-| ADR | 0071 |
+| Task `T-` | T-0145 |
+| Decision `D-` | D-0073 |
+| ADR | 0072 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0003 |
 
@@ -32,12 +32,13 @@ Only tasks that are not done or cancelled. A finished task leaves the board in t
 | T-0084 | verify | verifier | paused | D-0044 | Run the runtime conformance suites against os |
 | T-0113 | verify | verifier | review | T-0136 | Write the M11 rung 2 join and node list check |
 | T-0119 | spec | architect | queued | before rung 5 | Keep VNI binds alive across crossed rekeys, record the ADR |
-| T-0136 | build | developer | active | none | Build M11 rung 2 end to end: API, init, join, and the CLI |
-| T-0141 | build | developer | active | none | Build the rung 2 CLI commands |
-| T-0138 | build | developer | active | none | Build the alloy-path path manager for direct paths |
-| T-0140 | build | developer | fix | none | Build the console shell and first screens on fixture data |
-| T-0142 | spec | architect | active | none | Close the session and bridge gaps of the T-0139 re-review |
-| T-0143 | spec | architect | active | none | Close the al0 gaps of the T-0137 re-review |
+| T-0136 | build | developer | fix | none | Build M11 rung 2 end to end: API, init, join, and the CLI |
+| T-0141 | build | developer | blocked | T-0144 | Build the rung 2 CLI commands |
+| T-0144 | spec | architect | active | none | Specify the host seam for service control and machine facts |
+| T-0138 | build | developer | fix | none | Build the alloy-path path manager for direct paths |
+| T-0140 | build | developer | review | none | Build the console shell and first screens on fixture data |
+| T-0142 | spec | architect | review | none | Close the session and bridge gaps of the T-0139 re-review |
+| T-0143 | spec | architect | review | none | Close the al0 gaps of the T-0137 re-review |
 | T-0134 | verify | verifier | review | T-0136 | Update the rung 2 check for the login flow |
 
 ## Still to cut for M0
