@@ -17,13 +17,13 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+use alloy_crypto::tls::HandshakeError;
 use alloy_proto::cluster::v1alpha1::cluster_service_client::ClusterServiceClient;
 use alloy_proto::cluster::v1alpha1::{GetNodeRequest, ListNodesRequest, ListNodesResponse, Node};
 use alloy_proto::common::v1alpha1::{Error, ErrorCode};
 use alloy_rt::{BoxFuture, NetError, Runtime, SpawnError, StreamAddr, StreamOptions, UnixPath};
 use hyper::body::Incoming;
 use hyper::client::conn::http2::SendRequest;
-use rustls::pki_types::ServerName;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::access::SessionToken;
@@ -77,10 +77,11 @@ pub enum ConnectError {
     /// The server's certificate chain does not verify to the pinned API CA,
     /// or does not name the address connected to. No request was sent.
     #[error("the API server's certificate does not match the pinned API CA: {0}")]
-    Certificate(rustls::Error),
-    /// The TLS handshake failed for another reason.
-    #[error("the TLS handshake failed: {0}")]
-    Tls(std::io::Error),
+    Certificate(TlsError),
+    /// The TLS handshake failed for another reason: the server's alert, or
+    /// an I/O or protocol error.
+    #[error(transparent)]
+    Tls(HandshakeError),
     /// The server chose no ALPN protocol, or one other than `h2`.
     #[error("the server did not choose HTTP/2")]
     NotH2,
@@ -98,16 +99,11 @@ pub enum ConnectError {
     Origin,
 }
 
-impl ConnectError {
-    fn of_handshake(error: std::io::Error) -> ConnectError {
-        let certificate = error
-            .get_ref()
-            .and_then(|e| e.downcast_ref::<rustls::Error>())
-            .filter(|e| matches!(e, rustls::Error::InvalidCertificate(_)))
-            .cloned();
-        match certificate {
-            Some(e) => ConnectError::Certificate(e),
-            None => ConnectError::Tls(error),
+impl From<HandshakeError> for ConnectError {
+    fn from(error: HandshakeError) -> ConnectError {
+        match error {
+            HandshakeError::Certificate(e) => ConnectError::Certificate(e),
+            other => ConnectError::Tls(other),
         }
     }
 }
@@ -142,11 +138,8 @@ pub async fn connect(
         return Client::over(runtime, io, &format!("http://{endpoint}"), token).await;
     }
     let config = client_config(Arc::clone(runtime.clock()), api_ca_fp)?;
-    let tls = tokio_rustls::TlsConnector::from(config)
-        .connect(ServerName::IpAddress(endpoint.ip().into()), io)
-        .await
-        .map_err(ConnectError::of_handshake)?;
-    if tls.get_ref().1.alpn_protocol() != Some(ALPN_H2) {
+    let tls = config.connect(endpoint.ip(), io).await?;
+    if tls.alpn() != Some(ALPN_H2) {
         return Err(ConnectError::NotH2);
     }
     Client::over(runtime, tls, &format!("https://{endpoint}"), token).await
