@@ -217,11 +217,12 @@ impl ApiServer {
         match first(connection.as_mut(), gate.closed()).await {
             Some(Err(e)) => tracing::debug!(reason = %e, "an API connection ended with an error"),
             Some(Ok(())) => {}
-            None if !gate.is_proven() => {
-                // An unproven connection runs no authenticated call, so it
-                // is dropped at once, not given the grace (T-0118 re-review
-                // F1).
-                tracing::debug!("an unproven API connection was closed at one of its limits");
+            None if gate.was_evicted() => {
+                // An unproven connection whose place was taken runs no
+                // authenticated call, so it is dropped at once, not given
+                // the grace, and its place is free for the newer one
+                // (T-0118 re-review F1).
+                tracing::debug!("an unproven API connection was closed: its place was taken");
             }
             None => {
                 tracing::debug!("an API connection was closed at one of its limits");

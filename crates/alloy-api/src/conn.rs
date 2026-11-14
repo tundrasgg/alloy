@@ -532,10 +532,11 @@ impl Gate {
         due
     }
 
-    /// Whether an authenticated call or the underlay has proven the
-    /// connection, or it was proven at accept.
-    pub(crate) fn is_proven(&self) -> bool {
-        !matches!(self.state().rule, Rule::Unproven { .. })
+    /// Whether the connection is unproven and its place was taken for a
+    /// newer one.
+    pub(crate) fn was_evicted(&self) -> bool {
+        matches!(self.state().rule, Rule::Unproven { .. })
+            && self.evicted.as_ref().is_some_and(|e| e.fired())
     }
 
     /// Whether the connection still takes calls. `false` once it must
