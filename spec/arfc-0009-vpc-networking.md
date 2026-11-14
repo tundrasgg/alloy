@@ -77,6 +77,17 @@ DHCP, multicast, non-IP EtherTypes.
 3.12 Peering routes between two VPCs, including across orgs, when both sides
 accept and their ranges do not overlap. Security groups still apply.
 
+3.13 Client nodes. A client node (ARFC 0002 section 3.11) runs no virtual
+switch and holds no port. It reaches VPC addresses only through `al0`: every
+route it takes to a VPC prefix goes through `al0`, is added by `add_route`
+(ARFC 0005 clause 3.1.17), and follows ARFC 0017 clause 3.17.3, and every
+packet it sends to a VPC address is one it reads from `al0`. This version
+gives a client node no such route: it adds no route through `al0`, and drops
+each packet it reads there for an address outside the infrastructure network
+(ARFC 0002 section 3.4). The spec task of M11 rung 6 extends this clause with
+the prefixes a client node routes, the node and VNI its packets go to, and the
+rules that apply to them.
+
 ## 6. Failure behavior
 
 A node with a stale view forwards by its last table. A packet for an ENI that has

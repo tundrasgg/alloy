@@ -105,6 +105,7 @@ or supersede it.
 |---|---|
 | [0020](0020-vpcs-are-layer-3-only-and-dual-stack.md) | VPCs are layer 3 only and dual stack |
 | [0021](0021-public-addresses-attach-by-mode-and-are-independent-of-place.md) | Public addresses attach by mode and are independent of placement |
+| [0069](0069-al0-is-a-tun-interface-of-the-net-seam-and-node-messages-nev.md) | al0 is a tun interface of the net seam, and node messages never pass through it |
 
 ## Compute
 
