@@ -1166,11 +1166,13 @@ mod tests {
         }
     }
 
+    type Writes = Vec<(Vec<u8>, Option<Resource>)>;
+
     fn run(
         x: &Exchange,
         code: &LoginCodeRecord,
         keys: &[Resource],
-    ) -> Result<(Vec<(Vec<u8>, Option<Resource>)>, AccessKey), Refusal> {
+    ) -> Result<(Writes, AccessKey), Refusal> {
         let (writes, created) = decide_exchange(
             x,
             Some(code.to_resource()),
