@@ -209,6 +209,70 @@ fn files_round_trip_and_secrets_are_sealed() {
     });
 }
 
+/// A write that returned survives a crash whatever happens to unsynced
+/// changes: `replace` makes the rename durable (ARFC 0005 clause 3.1.16),
+/// also when a durable stale `.new` file had to be removed first.
+#[test]
+fn a_returned_write_survives_a_crash() {
+    for unsynced in [Unsynced::Lost, Unsynced::Seeded, Unsynced::Torn] {
+        for seed in 1..=4 {
+            let write = start(|runtime| async move {
+                let dir = make_dir(&runtime).await?;
+                dir.write(HOST_FILE, b"alloy-host 1\n")
+                    .await
+                    .map_err(err("host"))?;
+                dir.write(NODE_FILE, b"first").await.map_err(err("first"))?;
+                let disk = runtime.disk_io();
+                let stale = RtPath::new("/alloyd/node.new").map_err(err("path"))?;
+                drop(
+                    disk.create_file(&stale, alloy_rt::Protection::Default)
+                        .await
+                        .map_err(err("stale"))?,
+                );
+                let dir_path = RtPath::new("/alloyd").map_err(err("path"))?;
+                disk.sync_dir(&dir_path).await.map_err(err("sync_dir"))?;
+                dir.write(NODE_FILE, b"second")
+                    .await
+                    .map_err(err("second"))?;
+                Ok(())
+            });
+            let verify = start(|runtime| async move {
+                let dir = data_dir(&runtime)?;
+                let node = dir.read(NODE_FILE).await.map_err(err("node"))?;
+                check(
+                    node.as_deref().map(Vec::as_slice) == Some(&b"second"[..]),
+                    "the second write was lost",
+                )?;
+                let host = dir.read(HOST_FILE).await.map_err(err("host"))?;
+                check(host.is_some(), "the host file was lost")?;
+                let dir_path = RtPath::new("/alloyd").map_err(err("path"))?;
+                let names: Vec<String> = runtime
+                    .disk_io()
+                    .list(&dir_path)
+                    .await
+                    .map_err(err("list"))?
+                    .into_iter()
+                    .map(|entry| entry.name)
+                    .collect();
+                check(names == [HOST_FILE, NODE_FILE], "stray entries")
+            });
+            run_starts(
+                seed,
+                vec![
+                    (
+                        write,
+                        Then {
+                            unsynced,
+                            capacity: 1 << 30,
+                        },
+                    ),
+                    (verify, Then::FINISH),
+                ],
+            );
+        }
+    }
+}
+
 #[test]
 fn damage_is_detected_and_nothing_is_read() {
     on_host(2, |runtime| async move {

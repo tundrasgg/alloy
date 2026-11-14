@@ -490,6 +490,13 @@ mod tests {
         ) -> BoxFuture<'a, Result<(), DiskError>> {
             unsupported()
         }
+        fn replace<'a>(
+            &'a self,
+            _: &'a RtPath,
+            _: &'a RtPath,
+        ) -> BoxFuture<'a, Result<(), DiskError>> {
+            unsupported()
+        }
         fn sync_dir<'a>(&'a self, _: &'a RtPath) -> BoxFuture<'a, Result<(), DiskError>> {
             unsupported()
         }

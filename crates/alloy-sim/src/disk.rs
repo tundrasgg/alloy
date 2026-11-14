@@ -12,7 +12,9 @@
 //! drops each unsynced one as the crash's `Unsynced` mode says. A change whose
 //! target the replay does not hold (a write to a file whose create was
 //! dropped, a rename of a missing entry, a `set_mode` of an entry whose
-//! create was dropped) is dropped with it.
+//! create was dropped) is dropped with it. A `replace` makes its own rename,
+//! and the create of the file it moves, durable on their own, wherever they
+//! sit in the log (clause 3.1.16).
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
@@ -79,6 +81,7 @@ const OP_CREATE_FILE: u8 = 13;
 const OP_CREATE_DIR_PROTECTED: u8 = 14;
 const OP_SECURITY: u8 = 15;
 const OP_SET_MODE: u8 = 16;
+const OP_REPLACE: u8 = 17;
 
 fn invalid(text: &str) -> DiskError {
     DiskError::InvalidInput(Detail::new(text))
@@ -438,6 +441,9 @@ pub(crate) struct Disk {
     synced_all: BTreeMap<u64, u64>,
     /// Per directory, the sequence number of its last completed `sync_dir`.
     dir_synced: BTreeMap<u64, u64>,
+    /// Logged changes durable on their own: the rename of each completed
+    /// `replace` and the create of the file it moved (clause 3.1.16).
+    forced: BTreeSet<u64>,
     next_ino: u64,
     /// The next handle number, continuing across restarts (section 4.1).
     next_handle: u64,
@@ -556,6 +562,7 @@ impl Disk {
             synced: BTreeMap::new(),
             synced_all: BTreeMap::new(),
             dir_synced: BTreeMap::new(),
+            forced: BTreeSet::new(),
             next_ino,
             next_handle: 1,
             open: BTreeMap::new(),
@@ -594,6 +601,9 @@ impl Disk {
 
     /// Whether the logged change `op` of sequence number `seq` is durable.
     fn durable(&self, seq: u64, op: &Op) -> bool {
+        if self.forced.contains(&seq) {
+            return true;
+        }
         let after = |map: &BTreeMap<u64, u64>, ino: &u64| map.get(ino).is_some_and(|s| *s > seq);
         match op {
             Op::Create { parent, .. } | Op::Remove { parent, .. } => {
@@ -642,16 +652,18 @@ impl Disk {
         while let Some((seq, op)) = self.log.front()
             && self.durable(*seq, op)
         {
-            if let Some((_, op)) = self.log.pop_front()
-                && let Some(Some(orphan)) = self.base.apply(&op)
-            {
-                self.base.nodes.remove(&orphan);
+            if let Some((seq, op)) = self.log.pop_front() {
+                self.forced.remove(&seq);
+                if let Some(Some(orphan)) = self.base.apply(&op) {
+                    self.base.nodes.remove(&orphan);
+                }
             }
         }
         if self.log.is_empty() {
             self.synced.clear();
             self.synced_all.clear();
             self.dir_synced.clear();
+            self.forced.clear();
         }
     }
 
@@ -712,6 +724,7 @@ impl Disk {
         self.synced.clear();
         self.synced_all.clear();
         self.dir_synced.clear();
+        self.forced.clear();
         self.open.clear();
         self.held.clear();
     }
@@ -919,6 +932,38 @@ impl Disk {
             to_name,
             ino,
         });
+        Ok(())
+    }
+
+    /// The durable replace of clause 3.1.16: `rename` of a regular file
+    /// within one directory, which with the create of the file, when that
+    /// is still unsynced, is durable at once and makes nothing else durable.
+    fn replace(&mut self, from_path: &RtPath, to_path: &RtPath) -> Result<(), DiskError> {
+        match (from_path.parent(), to_path.parent()) {
+            (Some(from), Some(to)) if from == to => {}
+            _ => return Err(invalid("replace needs from and to in one directory")),
+        }
+        let ino = self.current.find(from_path)?.1.ok_or(DiskError::NotFound)?;
+        match self.current.node(ino)?.kind() {
+            EntryKind::File => {}
+            EntryKind::Dir => return Err(DiskError::IsDirectory),
+            EntryKind::Block | EntryKind::Other => {
+                return Err(invalid("replace moves a regular file"));
+            }
+        }
+        let created = self.log.iter().find_map(|(seq, op)| match op {
+            Op::Create { ino: made, .. } if *made == ino => Some(*seq),
+            _ => None,
+        });
+        let before = self.seq;
+        self.rename(from_path, to_path)?;
+        if self.seq > before {
+            self.forced.insert(self.seq);
+        }
+        if let Some(seq) = created {
+            self.forced.insert(seq);
+        }
+        self.compact();
         Ok(())
     }
 
@@ -1204,6 +1249,14 @@ impl DiskIo for MemDiskIo {
         to: &'a RtPath,
     ) -> BoxFuture<'a, Result<(), DiskError>> {
         path_call(&self.at, OP_RENAME, |disk| disk.rename(from, to))
+    }
+
+    fn replace<'a>(
+        &'a self,
+        from: &'a RtPath,
+        to: &'a RtPath,
+    ) -> BoxFuture<'a, Result<(), DiskError>> {
+        path_call(&self.at, OP_REPLACE, |disk| disk.replace(from, to))
     }
 
     fn sync_dir<'a>(&'a self, dir: &'a RtPath) -> BoxFuture<'a, Result<(), DiskError>> {

@@ -379,6 +379,26 @@ impl StreamIo {
             StreamIo::Unix(s) => SockRef::from(s).shutdown(Shutdown::Write),
         }
     }
+
+    /// ARFC 0005 clause 3.1.9.2.
+    fn peer_uid(&self) -> Result<u32, NetError> {
+        match self {
+            StreamIo::Tcp(_) => Err(NetError::InvalidInput(Detail::new(
+                "peer_uid applies to Unix streams only",
+            ))),
+            // `UnixStream::peer_cred` on Linux is `getsockopt` with
+            // `SOL_SOCKET` and `SO_PEERCRED`, returning `ucred.uid`, and
+            // `last_os_error` when the call fails (tokio 1.54.1,
+            // src/net/unix/ucred.rs, `impl_linux::get_peer_cred`).
+            #[cfg(target_os = "linux")]
+            StreamIo::Unix(s) => s.peer_cred().map(|cred| cred.uid()).map_err(|e| {
+                e.raw_os_error()
+                    .map_or_else(|| errors::net(&e), |code| NetError::Os { code })
+            }),
+            #[cfg(all(unix, not(target_os = "linux")))]
+            StreamIo::Unix(_) => Err(NetError::Unsupported),
+        }
+    }
 }
 
 /// A connected stream, implementation `os` (ARFC 0005 clause 3.1.9).
@@ -547,6 +567,10 @@ impl Stream for OsStream {
             }
         };
         Box::pin(ready(result))
+    }
+
+    fn peer_uid(&self) -> Result<u32, NetError> {
+        self.io.peer_uid()
     }
 }
 
