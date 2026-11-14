@@ -143,7 +143,7 @@ allow = [
     { crate = "hashbrown", reason = "indexmap dependency (version 0.17) and petgraph dependency (version 0.15, see `skip`)" },
     { crate = "heck", reason = "prost-build dependency, in alloy-proto's build only" },
     { crate = "hkdf", reason = "alloy-crypto dev-dependency only: an independent HKDF the crate tests its own against" },
-    { crate = "hmac", reason = "alloy-crypto dev-dependency only, and hkdf dependency: an independent HMAC the crate tests its own against" },
+    { crate = "hmac", reason = "HMAC-SHA-256 of SigV4 request signing in alloy-crypto (ARFC 0008 clause 3.7.1), the independent HMAC its HMAC-BLAKE2s is tested against, and an hkdf dependency" },
     { crate = "http", reason = "the HTTP types of hyper and tonic in the API" },
     { crate = "http-body", reason = "the HTTP body trait of hyper and tonic in the API" },
     { crate = "http-body-util", reason = "bounded request bodies in alloy-api (ARFC 0008 section 7)" },

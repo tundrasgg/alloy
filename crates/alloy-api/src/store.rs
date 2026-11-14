@@ -55,21 +55,14 @@ impl NodeName {
 ///
 /// Methods take `&self`, may be called concurrently, and never panic.
 pub trait NodeStore: Send + Sync + fmt::Debug + 'static {
-    /// The node named `name`, or `None` when there is none.
-    ///
-    /// # Errors
-    ///
-    /// An error of ARFC 0008 clause 3.6, `Unavailable` when the store cannot
-    /// answer.
-    fn get<'a>(&'a self, name: &'a NodeName) -> BoxFuture<'a, Result<Option<Node>, Error>>;
-
     /// At most `limit` nodes, ascending by name in byte order, whose names
     /// are greater than `after`, or from the first when `after` is `None`.
     /// `limit` is 1 to 1,001.
     ///
     /// # Errors
     ///
-    /// As [`NodeStore::get`].
+    /// An error of ARFC 0008 clause 3.6, `Unavailable` when the store cannot
+    /// answer.
     fn list<'a>(
         &'a self,
         after: Option<&'a NodeName>,

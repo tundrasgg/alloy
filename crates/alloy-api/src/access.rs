@@ -2,13 +2,16 @@
 //! 3.7.2).
 //!
 //! A call over TLS authenticates with a session token in the header
-//! `authorization: Bearer <token>`; a call through the local admin socket
-//! takes no header and is a local admin call. The server checks the header's
-//! form, and an [`Access`] implementation, the identity and access
-//! subsystem, checks the token and authorizes each call.
+//! `authorization: Bearer <token>`, or with a SigV4 signature by an access
+//! key (`crate::sigv4`); a call through the local admin socket takes no
+//! header and is a local admin call. The server checks the header's form and
+//! verifies a signature, and an [`Access`] implementation, the identity and
+//! access subsystem, checks the token, finds the key, and authorizes each
+//! call.
 
 use std::fmt;
 
+use alloy_crypto::Zeroizing;
 use alloy_proto::common::v1alpha1::{Error, ErrorCode};
 use alloy_rt::BoxFuture;
 
@@ -63,28 +66,46 @@ pub enum Principal {
     /// The node's local admin, `root@<node name>`, through the local admin
     /// socket (ARFC 0007 clause 3.10).
     LocalAdmin,
-    /// A principal that a session token authenticated, by the name
-    /// [`Access::authenticate`] gave it.
+    /// A principal that a session token or a SigV4 signature authenticated,
+    /// by the name [`Access::authenticate`] or [`Access::access_key`] gave
+    /// it.
     Authenticated(String),
 }
 
 /// An action a call asks to take (ARFC 0007), named `<service>:<Method>`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Action {
-    /// `cluster:GetNode`.
-    GetNode,
     /// `cluster:ListNodes`.
     ListNodes,
+    /// `iam:IssueLoginCode`.
+    IssueLoginCode,
 }
 
 impl Action {
-    /// The action's name, as in `cluster:GetNode`.
+    /// The action's name, as in `cluster:ListNodes`.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
-            Action::GetNode => "cluster:GetNode",
             Action::ListNodes => "cluster:ListNodes",
+            Action::IssueLoginCode => "iam:IssueLoginCode",
         }
+    }
+}
+
+/// The holder of an access key and the key's secret, as [`Access::access_key`]
+/// finds them. Its `Debug` output never shows the secret (I-22).
+pub struct KeyHolder {
+    /// The principal the key authenticates.
+    pub principal: Principal,
+    /// The key's secret, 40 characters.
+    pub secret: Zeroizing<String>,
+}
+
+impl fmt::Debug for KeyHolder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("KeyHolder")
+            .field("principal", &self.principal)
+            .finish_non_exhaustive()
     }
 }
 
@@ -112,6 +133,15 @@ pub trait Access: Send + Sync + fmt::Debug + 'static {
         &'a self,
         token: &'a SessionToken,
     ) -> BoxFuture<'a, Result<Principal, AuthnError>>;
+
+    /// The holder and secret of the access key `id`, for a SigV4 signature
+    /// to be verified against (ARFC 0008 clause 3.7.1).
+    ///
+    /// # Errors
+    ///
+    /// [`AuthnError::Refused`] when no unrevoked key has the id, whatever
+    /// the cause (ARFC 0007 clause 3.9.12).
+    fn access_key<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Result<KeyHolder, AuthnError>>;
 
     /// Whether `principal` may take `action` on the resource with full name
     /// `resource` (`nodes` for a whole collection).

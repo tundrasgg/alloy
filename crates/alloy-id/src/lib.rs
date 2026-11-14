@@ -18,6 +18,8 @@
 //!   only while unexpired; the `renew` signature of section 3.5.
 //! - [`token`]: [`JoinToken`], its `alyt_` string, and every rejection rule
 //!   of section 3.2 as a [`TokenError`].
+//! - [`login`]: [`LoginCode`], its `alyc_` string, and every rejection rule
+//!   of section 3.7 as a [`CodeError`].
 //! - [`api`]: the [`ApiCa`] and the API server certificates it issues, with
 //!   the fields of section 2.
 //! - [`datadir`]: the rules of an Alloy data directory on Linux and Windows,
@@ -41,6 +43,7 @@ mod base32;
 pub mod datadir;
 pub mod ids;
 pub mod keys;
+pub mod login;
 pub mod proto;
 pub mod record;
 pub mod store;
@@ -50,6 +53,7 @@ pub use api::{ApiCa, ApiServerCertificate};
 pub use datadir::{DataDirFacts, DataDirProblem, InitAction};
 pub use ids::{ClusterId, ClusterKeyFp, NodeId, Role, Roles};
 pub use keys::AtRestKey;
+pub use login::{CodeError, LoginCode};
 pub use record::{NodeRecord, RecordError, SignedNodeRecord};
 pub use store::{DataDir, StoreError};
 pub use token::{JoinToken, TokenError};

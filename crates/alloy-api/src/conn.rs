@@ -532,6 +532,12 @@ impl Gate {
         due
     }
 
+    /// Whether an authenticated call or the underlay has proven the
+    /// connection, or it was proven at accept.
+    pub(crate) fn proven(&self) -> bool {
+        !matches!(self.state().rule, Rule::Unproven { .. })
+    }
+
     /// Whether the connection still takes calls. `false` once it must
     /// close: the call is then not served.
     pub(crate) fn admit(&self) -> bool {

@@ -5,17 +5,27 @@
 //!
 //! - the API port, [`ApiPort`]: TLS 1.3 only, sharing one TCP port with the
 //!   `stream` underlay by ALPN (clause 3.8), each call authenticated by a
-//!   session token in `authorization: Bearer <token>` (clause 3.7.1);
+//!   session token in `authorization: Bearer <token>` or a SigV4 signature
+//!   by an access key ([`sigv4`], clause 3.7.1), except `ExchangeLoginCode`,
+//!   which its login code alone authenticates, rate limited before the code
+//!   is looked up;
 //! - the local admin socket, [`ApiServer::serve_local_admin`]: HTTP/2 by prior
-//!   knowledge without TLS, each call a local admin call (clause 3.7.2).
+//!   knowledge without TLS, served only to a peer the kernel reports as user
+//!   id 0, each call a local admin call (clause 3.7.2, ARFC 0007 clause
+//!   3.10.2).
 //!
-//! It serves `alloy.cluster.v1alpha1.ClusterService` with `GetNode` and
-//! `ListNodes` (clause 3.13) over a [`NodeStore`], paginated as clause 3.4
-//! says, and authenticates and authorizes each call through an [`Access`].
-//! Errors are those of clause 3.6, carried as `alloy-proto`'s
-//! [`error`](alloy_proto::error) module says. A path that names no method
-//! fails with `UNIMPLEMENTED` and no Alloy code, and a request or response
-//! larger than 4 MiB with `InvalidArgument`.
+//! It serves what M11 rung 2 builds (ARFC 0002 section 3.15):
+//! `alloy.cluster.v1alpha1.ClusterService/ListNodes` (clause 3.13) over a
+//! [`NodeStore`], paginated as clause 3.4 says, on both listeners;
+//! `alloy.iam.v1alpha1.IamService/ExchangeLoginCode` over [`LoginCodes`] on
+//! the API port, refused with `PermissionDenied` on the local admin socket;
+//! and `IssueLoginCode` on the local admin socket, refused with
+//! `PermissionDenied` on the API port. It authenticates and authorizes each
+//! call through an [`Access`]. Errors are those of clause 3.6, carried as
+//! `alloy-proto`'s [`error`](alloy_proto::error) module says. A path that
+//! names no method it serves, `GetNode` included, fails with `UNIMPLEMENTED`
+//! and no Alloy code, and a request or response larger than 4 MiB with
+//! `InvalidArgument`.
 //!
 //! Every connection is an `alloy-rt` stream and every task an `alloy-rt`
 //! task. TLS comes from `alloy-crypto`, the only crate that depends on
@@ -42,10 +52,12 @@
 mod access;
 pub mod client;
 mod conn;
+mod iam;
 mod io;
 mod page;
 mod server;
 mod service;
+pub mod sigv4;
 mod store;
 pub mod tls;
 mod transport;
@@ -54,9 +66,10 @@ mod transport;
 mod tests;
 
 pub use access::{
-    Access, Action, AuthnError, MAX_TOKEN_LEN, Principal, SessionToken, UNAUTHENTICATED_MESSAGE,
-    unauthenticated,
+    Access, Action, AuthnError, KeyHolder, MAX_TOKEN_LEN, Principal, SessionToken,
+    UNAUTHENTICATED_MESSAGE, unauthenticated,
 };
+pub use iam::{EXCHANGES_IN_ALL, EXCHANGES_PER_SOURCE, Exchange, Issue, LoginCodes};
 pub use page::{DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE};
 pub use server::{ApiPort, ApiServer, CLOSE_GRACE, MAX_MESSAGE_BYTES, StreamConn, StreamUnderlay};
 pub use store::{MAX_NAME_LEN, NodeName, NodeStore};

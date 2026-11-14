@@ -113,17 +113,30 @@ pub struct Facts {
     pub disks: Vec<Disk>,
 }
 
-/// `JoinRequest`. It holds the token's secret, so it erases its fields when
-/// dropped and shows none through `Debug`.
+/// `JoinRequest`: the encoded body and the two signatures over the join
+/// message (section 3.3 step 6). It carries no secret: the joiner proves the
+/// token by the token key's signature, never by sending the secret.
 #[derive(Clone, PartialEq, prost::Message)]
-#[prost(skip_debug)]
 pub struct JoinRequest {
+    /// `JoinRequestBody`, encoded, kept and checked as sent.
+    #[prost(bytes = "vec", tag = "1")]
+    pub body: Vec<u8>,
+    /// 64 bytes, by the token key over the join message.
+    #[prost(bytes = "vec", tag = "2")]
+    pub token_signature: Vec<u8>,
+    /// 64 bytes, by the node identity key over the join message.
+    #[prost(bytes = "vec", tag = "3")]
+    pub identity_signature: Vec<u8>,
+}
+
+/// `JoinRequestBody`. Numbers 2 and 4 are reserved: no node message carries
+/// a token's secret, and the mesh key is the one the AL session
+/// authenticated.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct JoinRequestBody {
     /// 8 bytes.
     #[prost(bytes = "vec", tag = "1")]
     pub token_id: Vec<u8>,
-    /// 16 bytes.
-    #[prost(bytes = "vec", tag = "2")]
-    pub secret: Vec<u8>,
     /// 32 bytes.
     #[prost(bytes = "vec", tag = "3")]
     pub identity_pub: Vec<u8>,
@@ -133,10 +146,10 @@ pub struct JoinRequest {
     /// Whether the name came from the hostname rule.
     #[prost(bool, tag = "6")]
     pub name_is_default: bool,
-    /// `Role` values.
+    /// `Role` values, empty when not given.
     #[prost(int32, repeated, tag = "7")]
     pub roles: Vec<i32>,
-    /// At most 63 bytes.
+    /// At most 63 bytes, empty when not given.
     #[prost(string, tag = "8")]
     pub zone: String,
     /// As in `NodeRecord`.
@@ -151,18 +164,6 @@ pub struct JoinRequest {
     /// The machine's facts.
     #[prost(message, optional, tag = "12")]
     pub facts: Option<Facts>,
-}
-
-impl Drop for JoinRequest {
-    fn drop(&mut self) {
-        self.secret.zeroize();
-    }
-}
-
-impl fmt::Debug for JoinRequest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("JoinRequest").finish_non_exhaustive()
-    }
 }
 
 /// `NodeSecrets`, the plaintext of the `secrets` file. It erases every
