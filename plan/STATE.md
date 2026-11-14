@@ -12,8 +12,8 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0155 |
-| Decision `D-` | D-0078 |
+| Task `T-` | T-0157 |
+| Decision `D-` | D-0079 |
 | ADR | 0072 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0003 |
@@ -40,7 +40,8 @@ Only tasks that are not done or cancelled. A finished task leaves the board in t
 | T-0151 | build | developer | blocked | T-0150 | Apply the snapshot exclusions of 3.17.6 in host-snapshot.ps1 |
 | T-0152 | build | developer | active | none | Read node states and roles in the JSON mapping's enum names |
 | T-0153 | build | developer | active | none | Record /run/alloy in the host file before creating it |
-| T-0154 | build | developer | active | none | Keep alloy.exe from raising a Windows Firewall prompt |
+| T-0155 | spec | architect | active | none | Add a port holders call to the host seam |
+| T-0156 | build | developer | blocked | T-0155 | Build the host seam's port holders call |
 
 ## Still to cut for M0
 
@@ -111,6 +112,7 @@ Only tasks that are not done or cancelled. A finished task leaves the board in t
 - From T-0144: `cargo xtask ci` installs and removes a test service `alloyd` and sets `ALLOY_TEST_SERVICE=1` on CI hosts for the privileged `host` tests (ARFC 0005 section 5); a verify task writes `tests/conformance/rt/host/` against clause 3.1.18 independently of T-0141.
 - From T-0149 review (for the next task on `crates/alloyd/src/**`): log a wrong `/run/alloy` again every 60 seconds while it lasts (ARFC 0007 clause 3.10.2, F2); a test of each start line under its condition (F3). For T-0145: the CLI maps every local admin failure to "Not logged in".
 - For rung 3: Alloy creates no Windows Firewall rule (ARFC 0017 clause 3.17), so inbound mesh packets to `alloyd.exe` on a Windows client may be dropped; check what the mesh needs there.
+- After T-0156: cut the CLI task that moves the ports check (`crates/alloy/src/setup/probe.rs` `busy_ports`) to the port holders call and names each holder (D-0078). Also, the `os` net tests of `alloy` and `alloyd` listen on wildcard addresses on Windows and leave `Query User` rules; make them bind loopback.
 - Paused after rung 2 (pilot direction): T-0138 fix round, re-review of T-0140, reviews of T-0142 and T-0143, and T-0145.
 
 - From T-0130 review (fold into the next `alloy-state` task): F1, the generic `Group::update`, `delete`, and `remove` skip the identity kinds' checks (`check_kind`), as T-0114's F1 did for `Node`; and the notes in `plan/reports/T-0130.reviewer.1.md`.
