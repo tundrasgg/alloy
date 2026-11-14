@@ -513,6 +513,60 @@ with counters, statistics, and timestamps removed:
   `Get-NetFirewallRule`, `Get-Service`, the machine `PATH`,
   `Get-DnsClientServerAddress`, and `Get-DnsClientNrptRule`.
 
+Three things on Windows change with no act of Alloy's, so the Windows snapshot
+reduces them:
+
+- `Get-Service` gives, for each service, only `Name`, `DisplayName`,
+  `StartType`, and `ServiceType`. Its other properties are left out. `Status`,
+  `CanStop`, `CanShutdown`, and `CanPauseAndContinue` follow whether the
+  service runs, and Windows starts and stops demand-start and trigger-start
+  services on its own, so they change with no cause on the machine. The four
+  compared show a service that is created or removed and a change to its start
+  type, which is what an install does to services, as
+  `systemctl list-unit-files` shows on Linux.
+- A **per-user service** is one whose `ServiceType` includes the bit 64 and
+  whose `Name` and `DisplayName` both end in `_` and the same suffix of
+  hexadecimal digits. It is given with that suffix removed from both. Windows
+  creates per-user services from templates when a user signs in, deletes them
+  when the user signs out, and names each `<service name>_LUID`, where the LUID
+  identifies the user's context (Microsoft Learn, Per-user services, section
+  View per-user services,
+  https://learn.microsoft.com/windows/application-management/per-user-services-in-windows).
+  The suffix changes from one sign-in to the next. The reduction hides nothing
+  else: a per-user service present in one snapshot and absent from the other
+  is still a difference, so every snapshot of a run must be taken with the
+  same users signed in.
+- Every **prompt rule** of `Get-NetFirewallRule`, whatever its action and
+  whether it is enabled, is left out of both snapshots, so that its creation,
+  change, or removal between them is no difference. When a program listens
+  and no rule allows it, Windows Firewall prompts the user and creates rules
+  from the answer, typically one for TCP and one for UDP (Microsoft Learn,
+  Windows Firewall rules, section Applications rules,
+  https://learn.microsoft.com/windows/security/operating-system-security/network-security/windows-firewall/rules).
+  Those rules follow what the machine's user answers for other programs. A
+  rule is a prompt rule when all of these hold:
+  - Its `Name` is `TCP Query User` or `UDP Query User`, then a GUID in braces,
+    then a path, the form in which Windows names the rules it creates from a
+    prompt, and that path equals, ignoring case, the `Program` that
+    `Get-NetFirewallApplicationFilter` reports for the rule.
+  - That program is a full long path: a drive letter, `:\`, then names
+    separated by `\`, none of them `.` or `..`, and no character of it `%`,
+    `~`, or `/`.
+  - That program is not under the install directory `%ProgramFiles%\Alloy\`
+    (clause 3.15 step 6), with `%ProgramFiles%` the folder Windows reports to a
+    64-bit process, compared ignoring case.
+
+  The name form tells a prompt's rules from those an installer, an
+  administrator, or a policy writes, which stay in the snapshot. The program
+  conditions keep every rule for a program of Alloy's in the snapshot, so a
+  rule that a prompt for `alloyd` or `alloy` creates is a difference, since
+  Alloy owns no Windows Firewall rule (clause 3.17). A program in any other
+  form, such as an 8.3 short name, a path that starts `\\?\`, a relative path,
+  or one holding an environment variable, keeps its rule in the snapshot, as
+  does a prompt rule that Windows names in any other form, so the check fails
+  rather than passes. The snapshot does not show a change to a prompt rule;
+  clause 3.17.1 still forbids Alloy to make one.
+
 These must hold, and the M11 scripts under `tests/e2e/` check them:
 
 - After an install on a machine with no data directory, the snapshot equals the
