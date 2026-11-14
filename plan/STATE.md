@@ -36,7 +36,6 @@ Only tasks that are not done or cancelled. A finished task leaves the board in t
 | T-0142 | spec | architect | review | none | Close the session and bridge gaps of the T-0139 re-review |
 | T-0143 | spec | architect | review | none | Close the al0 gaps of the T-0137 re-review |
 | T-0145 | build | developer | paused | none | Close the CLI join gaps left after rung 2's merge |
-| T-0148 | build | developer | active | none | Make the documented e2e driver commands bind node lists |
 | T-0149 | build | developer | active | none | Open the local admin socket on Linux |
 | T-0150 | spec | architect | active | none | Leave Windows prompt firewall rules out of the host snapshot |
 | T-0151 | build | developer | blocked | T-0150 | Apply the snapshot exclusions of 3.17.6 in host-snapshot.ps1 |
