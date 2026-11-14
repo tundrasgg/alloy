@@ -12,7 +12,7 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0147 |
+| Task `T-` | T-0148 |
 | Decision `D-` | D-0075 |
 | ADR | 0072 |
 | Research `R-` | R-0009 |
@@ -36,6 +36,7 @@ Only tasks that are not done or cancelled. A finished task leaves the board in t
 | T-0142 | spec | architect | review | none | Close the session and bridge gaps of the T-0139 re-review |
 | T-0143 | spec | architect | review | none | Close the al0 gaps of the T-0137 re-review |
 | T-0146 | build | developer | active | none | Unbreak the v0.0.1-preview.3 release build |
+| T-0147 | verify | verifier | active | none | Renormalize the CRLF files under tests/conformance |
 | T-0145 | build | developer | paused | none | Close the CLI join gaps left after rung 2's merge |
 
 ## Still to cut for M0
