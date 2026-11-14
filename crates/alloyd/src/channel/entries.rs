@@ -1,7 +1,7 @@
 //! The entries a control node keeps per origin (ARFC 0002 section 3.13), so
 //! that a request is handled at most once while its `alloyd` runs.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use alloy_crypto::al::PublicKey;
@@ -50,6 +50,10 @@ struct Entry {
 #[derive(Debug, Default)]
 pub struct Entries {
     entries: BTreeMap<Origin, Entry>,
+    /// Each entry by the instant its last request arrived, so that
+    /// forgetting entries costs time in the number forgotten, not the
+    /// number held (T-0111 review F3).
+    by_last: BTreeSet<(Instant, Origin)>,
     direct: usize,
     per_anchor: BTreeMap<PublicKey, usize>,
 }
@@ -70,6 +74,8 @@ impl Entries {
     pub fn admit(&mut self, origin: Origin, request_id: u64, now: Instant) -> Admit {
         self.expire(now);
         if let Some(entry) = self.entries.get_mut(&origin) {
+            self.by_last.remove(&(entry.last, origin));
+            self.by_last.insert((now, origin));
             entry.last = now;
             return match request_id.cmp(&entry.highest) {
                 std::cmp::Ordering::Less => Admit::Drop,
@@ -92,6 +98,7 @@ impl Entries {
             None => self.direct += 1,
             Some(_) => *self.per_anchor.entry(origin.session).or_insert(0) += 1,
         }
+        self.by_last.insert((now, origin));
         self.entries.insert(
             origin,
             Entry {
@@ -117,13 +124,11 @@ impl Entries {
     /// Forgets the entries whose last request arrived [`ENTRY_LIFETIME`] or
     /// more before `now`.
     pub fn expire(&mut self, now: Instant) {
-        let gone: Vec<Origin> = self
-            .entries
-            .iter()
-            .filter(|(_, e)| now.saturating_duration_since(e.last) >= ENTRY_LIFETIME)
-            .map(|(origin, _)| *origin)
-            .collect();
-        for origin in gone {
+        while let Some(&(last, origin)) = self.by_last.first() {
+            if now.saturating_duration_since(last) < ENTRY_LIFETIME {
+                break;
+            }
+            self.by_last.remove(&(last, origin));
             self.entries.remove(&origin);
             match origin.forwarded {
                 None => self.direct -= 1,

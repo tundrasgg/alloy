@@ -578,13 +578,7 @@ impl Fixture {
             .net()
             .connect(StreamAddr::Ip(addr), StreamOptions::default())
             .await?;
-        Client::over(
-            &self.runtime,
-            RtIo::new(Arc::from(stream)),
-            "http://localhost",
-            &Credential::None,
-        )
-        .await
+        crate::client::local_admin_over(&self.runtime, stream).await
     }
 
     /// Opens a raw stream to the port, writes `bytes`, and reads to its end.

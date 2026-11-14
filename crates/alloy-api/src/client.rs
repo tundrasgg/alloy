@@ -274,13 +274,7 @@ pub async fn connect_local_admin(
         .net()
         .connect(StreamAddr::Unix(path), StreamOptions::default())
         .await?;
-    Client::over(
-        runtime,
-        RtIo::new(Arc::from(stream)),
-        "http://localhost",
-        &Credential::None,
-    )
-    .await
+    local_admin_over(runtime, stream).await
 }
 
 /// A connection to the API with the helpers of `product/principles.md` A18.
@@ -290,6 +284,27 @@ pub struct Client {
     channel: Channel,
     cluster: ClusterClient,
     iam: IamClient,
+}
+
+/// Speaks the local admin protocol (ARFC 0008 clause 3.7.2) on `stream`, a
+/// connection already open to a local admin listener: HTTP/2 by prior
+/// knowledge, without TLS. [`connect_local_admin`] opens the socket and
+/// calls this.
+///
+/// # Errors
+///
+/// [`ConnectError`].
+pub async fn local_admin_over(
+    runtime: &Runtime,
+    stream: Box<dyn alloy_rt::Stream>,
+) -> Result<Client, ConnectError> {
+    Client::over(
+        runtime,
+        RtIo::new(Arc::from(stream)),
+        "http://localhost",
+        &Credential::None,
+    )
+    .await
 }
 
 impl Client {

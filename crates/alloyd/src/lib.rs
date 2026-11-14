@@ -16,14 +16,24 @@
 //! process ([`os_signals`]) or, on Windows, of the service control manager
 //! (the `service` module); tests call it with a [`Stop`] of their own.
 //!
+//! On a node whose local join state is `joined` and whose record holds
+//! `control`, it serves the API port and the local admin socket over the
+//! global group ([`ControlNode`]), and makes the node's own heartbeats.
+//!
+//! [`init`](mod@init) is the interface `alloy init` calls to create a cluster
+//! (ARFC 0002 section 3.1).
+//!
 //! [`channel`] holds the sans-I/O parts of the node channel (ARFC 0002
 //! section 3.13), which the node's `init`, `join`, and heartbeats run on.
 
 #![forbid(unsafe_code)]
 
+mod api;
 mod args;
 pub mod channel;
+mod control;
 mod data_dir;
+pub mod init;
 mod log;
 #[cfg(windows)]
 pub mod service;
@@ -31,16 +41,22 @@ mod signals;
 mod stop;
 
 use std::future::{Future, poll_fn};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::pin::pin;
+use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 
-use alloy_rt::{OsHost, Runtime, RuntimeConfig, register_os};
+use alloy_rt::{
+    DiskError, EntryKind, ListenOptions, Listener, OsHost, Protection, RtPath, Runtime,
+    RuntimeConfig, Security, StreamAddr, UnixPath, register_os,
+};
 use alloy_seam::{Binding, BuildError, ConfigValue, Detail, ImplName, RegistryBuilder};
 use tracing::{error, info, warn};
 
 pub use args::{Command, HELP, USAGE, UsageError, parse_args};
+pub use control::{Both, ControlNode, Listeners, NodeError, NodePaths};
 use data_dir::StartCheck;
 pub use data_dir::{
     DataDirError, HOST_FILE, HostFileError, JoinState, LINUX_DATA_DIR, WINDOWS_DATA_DIR_NAME,
@@ -151,25 +167,159 @@ where
     F: FnOnce() -> Result<W, DaemonError>,
     W: Future<Output = StopCause>,
 {
-    let runtime = os_runtime(host, location)?;
+    let (runtime, transport) = os_runtime(host, location)?;
     info!(
         version = VERSION,
         data_dir = %options.data_dir.display(),
         "alloyd started"
     );
     let check = data_dir::check_at_start(runtime.disk_io().as_ref(), location).await;
+    let mut node = None;
     match &check {
-        StartCheck::Alloy => report_join_state(&runtime, location).await,
+        StartCheck::Alloy => {
+            if report_join_state(&runtime, location).await == Some(JoinState::Joined) {
+                node = start_node(&runtime, options, location, transport).await;
+            }
+        }
         StartCheck::Missing => log_not_initialized(),
         StartCheck::NotAlloy(reason) => log_not_alloy(reason),
     }
-    let stop = stop_when()?;
+    let stop = match stop_when() {
+        Ok(stop) => stop,
+        Err(e) => {
+            stop_node(node).await;
+            return Err(e);
+        }
+    };
     let cause = match check {
         StartCheck::NotAlloy(reason) => wait_logging(&runtime, stop, &reason).await,
         StartCheck::Alloy | StartCheck::Missing => stop.await,
     };
     info!(cause = %cause, "alloyd stopping");
+    stop_node(node).await;
     Ok(cause)
+}
+
+/// The local admin socket (ARFC 0007 clause 3.10.2).
+pub const ADMIN_SOCKET: &str = "/run/alloy/admin.sock";
+
+/// Starts serving the node of the data directory, when it holds
+/// `control`. `None`, logged, when it does not or cannot.
+async fn start_node(
+    runtime: &Runtime,
+    options: &RunOptions,
+    location: &data_dir::Location,
+    transport: alloy_api::Transport,
+) -> Option<ControlNode> {
+    let paths = NodePaths {
+        data: alloy_id::DataDir::new(Arc::clone(runtime.disk_io()), location.dir().clone()),
+        dir: location.dir().clone(),
+        native: options.data_dir.clone(),
+    };
+    let admin = admin_dir_ready(runtime).await;
+    let listen = |record: &alloy_id::NodeRecord| listeners(runtime, record.api_port, admin);
+    match ControlNode::start(runtime, &paths, listen, transport).await {
+        Ok(node) => {
+            info!(
+                node = node.name(),
+                "serving the API and the local admin socket"
+            );
+            Some(node)
+        }
+        Err(NodeError::NotControl) => None,
+        Err(e) => {
+            error!(error = %e, "this node cannot serve");
+            None
+        }
+    }
+}
+
+async fn stop_node(node: Option<ControlNode>) {
+    if let Some(node) = node
+        && let Err(e) = node.stop().await
+    {
+        warn!(error = %e, "the control node did not stop cleanly");
+    }
+}
+
+/// The API port on every local address, IPv4 and IPv6 (ARFC 0008 clause
+/// 3.8), and the local admin socket when `admin`.
+fn listeners(runtime: &Runtime, api_port: u16, admin: bool) -> Result<Listeners, NodeError> {
+    let net = runtime.net();
+    let options = ListenOptions::default();
+    let v4 = net.listen(
+        StreamAddr::Ip(SocketAddr::from((Ipv4Addr::UNSPECIFIED, api_port))),
+        options,
+    )?;
+    let v6 = net.listen(
+        StreamAddr::Ip(SocketAddr::from((Ipv6Addr::UNSPECIFIED, api_port))),
+        options,
+    );
+    let api: Box<dyn Listener> = match v6 {
+        Ok(v6) => Box::new(Both(v4, v6)),
+        Err(e) => {
+            warn!(reason = %e, "the API port is not served on IPv6");
+            v4
+        }
+    };
+    let admin = if admin {
+        let path = UnixPath::new(ADMIN_SOCKET)?;
+        match net.listen(StreamAddr::Unix(path), options) {
+            Ok(listener) => Some(listener),
+            Err(e) => {
+                warn!(reason = %e, "the local admin socket could not be opened");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    Ok(Listeners { api, admin })
+}
+
+/// Makes `/run/alloy` ready for the local admin socket (ARFC 0007 clause
+/// 3.10.2): creates it `Private` when missing, refuses it when it is not a
+/// directory owned by user id 0 with mode `0700`, and removes an entry an
+/// earlier start left at the socket path. `false`, logged, when no socket
+/// may be created, as on Windows, which has no local admin socket.
+async fn admin_dir_ready(runtime: &Runtime) -> bool {
+    if !cfg!(unix) {
+        return false;
+    }
+    let disk = runtime.disk_io();
+    let Ok(dir) = RtPath::new("run/alloy") else {
+        return false;
+    };
+    let refuse = |why: String| {
+        warn!(reason = %why, "no local admin socket is created");
+        false
+    };
+    match disk.security(&dir).await {
+        Err(DiskError::NotFound) => {
+            if let Err(e) = disk.create_dir_protected(&dir, Protection::Private).await {
+                return refuse(format!("/run/alloy could not be created: {e}"));
+            }
+        }
+        Ok(Security::Unix {
+            kind: EntryKind::Dir,
+            symlink: false,
+            uid: 0,
+            mode: 0o700,
+        }) => {}
+        Ok(other) => {
+            return refuse(format!(
+                "/run/alloy is not a directory owned by user id 0 with mode 0700: {other:?}"
+            ));
+        }
+        Err(e) => return refuse(format!("/run/alloy cannot be checked: {e}")),
+    }
+    let Ok(socket) = dir.join("admin.sock") else {
+        return false;
+    };
+    match disk.remove(&socket).await {
+        Ok(()) | Err(DiskError::NotFound) => true,
+        Err(e) => refuse(format!("the old {ADMIN_SOCKET} could not be removed: {e}")),
+    }
 }
 
 /// Waits for `stop`, logging `reason` again every [`NOT_ALLOY_LOG_INTERVAL`]
@@ -211,22 +361,34 @@ fn log_not_initialized() {
 }
 
 /// Logs the local join state that the host file of an Alloy data directory
-/// holds.
-async fn report_join_state(runtime: &Runtime, location: &data_dir::Location) {
+/// holds, and returns it, `None` when it cannot be read.
+async fn report_join_state(runtime: &Runtime, location: &data_dir::Location) -> Option<JoinState> {
     match data_dir::read_join_state(runtime.disk_io().as_ref(), location).await {
-        Ok(JoinState::Unjoined) => log_not_initialized(),
-        Ok(state) => info!(join_state = %state, "local join state"),
-        Err(e) => warn!(
-            host_file = %location.host_file_display(),
-            reason = %e,
-            "the host file cannot be read, so the local join state is unknown"
-        ),
+        Ok(JoinState::Unjoined) => {
+            log_not_initialized();
+            Some(JoinState::Unjoined)
+        }
+        Ok(state) => {
+            info!(join_state = %state, "local join state");
+            Some(state)
+        }
+        Err(e) => {
+            warn!(
+                host_file = %location.host_file_display(),
+                reason = %e,
+                "the host file cannot be read, so the local join state is unknown"
+            );
+            None
+        }
     }
 }
 
 /// The `os` runtime seams on `host`, with `disk-io` rooted at the root of the
-/// data directory's file system.
-fn os_runtime(host: &OsHost, location: &data_dir::Location) -> Result<Runtime, DaemonError> {
+/// data directory's file system, and the API's transport on them.
+fn os_runtime(
+    host: &OsHost,
+    location: &data_dir::Location,
+) -> Result<(Runtime, alloy_api::Transport), DaemonError> {
     let mut builder = RegistryBuilder::new();
     register_os(&mut builder, host)
         .map_err(|e| DaemonError::Seams(BuildError::Failed(Detail::new(&e.to_string()))))?;
@@ -238,7 +400,8 @@ fn os_runtime(host: &OsHost, location: &data_dir::Location) -> Result<Runtime, D
         name: os,
         config: disk_io_config(location.native_root())?,
     };
-    Runtime::from_registry(&registry, &config).map_err(DaemonError::Seams)
+    let runtime = Runtime::from_registry(&registry, &config).map_err(DaemonError::Seams)?;
+    Ok((runtime, alloy_api::Transport::of(&config)))
 }
 
 /// Version 1 of the `os` `disk-io` configuration, `message OsDiskIoConfig {
@@ -256,6 +419,9 @@ fn disk_io_config(root: &str) -> Result<ConfigValue, DaemonError> {
     payload.extend_from_slice(root.as_bytes());
     ConfigValue::new(1, payload).map_err(|e| DaemonError::Seams(BuildError::Config(e)))
 }
+
+#[cfg(test)]
+mod node_tests;
 
 #[cfg(test)]
 mod tests {
@@ -365,7 +531,7 @@ mod tests {
     ) {
         let location = data_dir::Location::of(dir).unwrap();
         let host = OsHost::start(0).unwrap();
-        let runtime = os_runtime(&host, &location).unwrap();
+        let (runtime, _) = os_runtime(&host, &location).unwrap();
         host.block_on(body(runtime.disk_io().as_ref(), &location));
         host.shutdown(SHUTDOWN_GRACE);
     }
@@ -378,7 +544,7 @@ mod tests {
         on_disk(&dir, |disk, location| {
             Box::pin(async move {
                 match disk.create_dir(location.dir()).await {
-                    Ok(()) | Err(alloy_rt::DiskError::AlreadyExists) => {}
+                    Ok(()) | Err(DiskError::AlreadyExists) => {}
                     Err(e) => panic!("{e}"),
                 }
                 let options = alloy_rt::OpenOptions {

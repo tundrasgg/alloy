@@ -209,7 +209,6 @@ impl Location {
     }
 
     /// The data directory, as the `disk-io` seam names it.
-    #[cfg(test)]
     pub(crate) fn dir(&self) -> &RtPath {
         &self.dir
     }
