@@ -55,6 +55,28 @@ These are settled, see the ADRs. Do not reopen them in a build task.
 Choices marked "default, pending research" in an ARFC are confirmed or replaced by
 the research task that the ARFC names.
 
+## npm packages (the console)
+
+The console under `ui/console/` uses npm (ADR 0070). `cargo deny` does not see
+npm, so `cargo xtask console` checks these rules over every package in
+`ui/console/package-lock.json` and fails, naming the package, on any breach.
+
+- **Pinned**: every entry of `dependencies` and `devDependencies` in
+  `ui/console/package.json` is an exact version, with no range, tag, URL, git
+  revision, or path. The lockfile is committed and `npm ci` installs from it.
+- **No install scripts**: packages install with `--ignore-scripts`.
+- **Runtime packages**, the ones that `dependencies` brings into the built
+  console, are the four that ADR 0070 names, with their own dependencies. They
+  pass every rule of a crate above: license, maintained, necessary, contained.
+- **Dev packages**, everything else in the lockfile, never ship in
+  `ui/console/dist/`. Each is maintained and contained as a crate is, and its
+  license is one that a crate may carry, or one of `0BSD`, `BlueOak-1.0.0`,
+  `CC0-1.0`, and `CC-BY-4.0`. A license is read from the package's `license`
+  field as an SPDX expression; an `OR` passes when one side passes, and an
+  `AND` when both do. A missing or unparsable field fails.
+- Adding a dev package is class R when it passes; adding a runtime package
+  needs an ADR (ADR 0070). Adding a license to either list is a `process` task.
+
 ## Not dependencies
 
 - Do not vendor source into the tree without an ADR.

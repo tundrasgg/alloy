@@ -3,7 +3,7 @@
 - Status: accepted
 - Depends on: 0006
 - Crates: alloy-iam
-- Decisions: 0017, 0018, 0055, 0068
+- Decisions: 0017, 0018, 0055, 0068, 0070
 
 ## 1. Purpose
 
@@ -36,7 +36,7 @@ with any credential.
 
 | Credential | Form | Lifetime |
 |---|---|---|
-| session token | Ed25519-signed token, format below | 12 hours, refreshable for 30 days |
+| session token | Ed25519-signed token, format below | 12 hours, refreshable until 30 days after its session began (3.12.2) |
 | access key | `AKAL` + 16 characters, with a 40-character secret | Until revoked |
 | temporary key | Access key, secret, and session token | 15 minutes to 12 hours |
 
@@ -50,7 +50,17 @@ trait. The control plane generates both when it creates the key (3.9.4).
 Access keys sign requests with AWS Signature Version 4, on every API surface. A
 token is `base64url(payload) "." base64url(signature)` where the payload is a
 Protocol Buffers message `{principal, org, issued, expires, key_id, scope,
-derives_from, via_temporary_key}`. A temporary key carries such a token.
+derives_from, via_temporary_key, session, session_issued}`. A temporary key
+carries such a token.
+
+A session token belongs to one **session**: the tokens that one
+`CreateSessionToken` call (3.12.1) and the refreshes that descend from it
+produce. `session` is 16 bytes from the `alloy-rt` randomness trait, drawn when
+the session is created, and `session_issued` is the time it was created. Every
+token of a session carries both unchanged. This session is a family of session
+tokens, not the security association between two nodes that the glossary and
+ARFC 0003 call a session. Where both could be meant, this one is a **login
+session**.
 
 An access key belongs to exactly one principal, a service account or a user, and
 grants that principal's policies, no more and no less. It has a `name`, unique
@@ -328,7 +338,8 @@ and kept, deleted (3.9.11), or was never issued, and when the signature does not
 verify. A revocation, and any deletion it causes, binds this clause within 5
 seconds of its commit (3.9.6). An id that was never issued fails at once. A
 request authenticated by a session token or temporary key that 3.9.7 refuses
-fails authentication too. On the native API such a request must fail with
+fails authentication too, and so does one authenticated by a session token
+that 3.12.3 or 3.12.4 refuses. On the native API such a request must fail with
 `Unauthenticated`, must change nothing, must not be authorized or served any
 further, and must be audited as an authentication attempt (ARFC 0018 section
 3.3.1). Every case of this clause must return the same error code and the same
@@ -346,10 +357,13 @@ key of the same user (3.9.2, 3.9.5), so the call is a revocation with
 `descendants: true` of all of them. When it commits, the user has no unrevoked
 key and therefore no kept key (3.9.11), both of its counts in section 7 are 0,
 and no login code issued through any of its access keys is unspent or can be
-issued any more (3.9.2, 3.9.7). The response states how many keys it revoked, 0
-included. It does not void a login code issued by a local admin, by `alloy init`,
-or through a session token that derives from no access key, and it ends no
-session token or temporary key that derives from no access key.
+issued any more (3.9.2, 3.9.7). In the same transaction it voids every unspent
+login code for that user whose `issued_by` is `session`, and ends every session
+of that user as 3.12.6 does, so no session token of the user survives it,
+whatever the token derives from. The response states how many keys it revoked, 0
+included. It does not void a login code issued by a local admin or by `alloy
+init`. It ends no temporary key that derives from no access key: such a key
+lives at most 12 hours and can issue no login code (3.9.2).
 
 ### 3.10 Local admin
 
@@ -395,11 +409,11 @@ What is not policy binds a local admin call as it binds every caller:
   whatever their policies, such as deleting the last control node (ARFC 0002
   section 3.9).
 
-A local admin call of `iam:IssueLoginCode` or `iam:RevokeUserAccessKeys` that
-names no user acts on user `admin` in org `default`. A revocation by a local
-admin under 3.9.13 is refused by no policy and no user or org state: it must
-succeed for a user that is disabled, holds no role, or is under a deny on
-`iam:RevokeUserAccessKeys`.
+A local admin call of `iam:IssueLoginCode`, `iam:RevokeUserAccessKeys`, or
+`iam:RevokeUserSessions` that names no user acts on user `admin` in org
+`default`. A revocation by a local admin under 3.9.13 or 3.12.6 is refused by no
+policy and no user or org state: it must succeed for a user that is disabled,
+holds no role, or is under a deny on its action.
 
 3.10.2 A local admin authenticates only through the local admin socket: a Unix
 domain stream socket at the path `/run/alloy/admin.sock`, owned by user id 0, with
@@ -584,6 +598,119 @@ state export (I-22). A cluster that a rung 2 release made never changes release
 (ARFC 0017 clause 3.13), so the later task that builds `key-provider` replaces
 this rule for new clusters only.
 
+### 3.12 Session tokens
+
+3.12.1 `CreateSessionToken` in the `iam` service creates a session and returns
+its first token. It is authenticated in one of two ways, and a request that
+carries both, or neither, fails with `Unauthenticated`.
+
+- By a login code. The request carries the `code_id` and secret of a login
+  code (ARFC 0002 section 3.7) and no other credential. It is rate limited,
+  checked, spent, refused, and audited exactly as `ExchangeLoginCode` is by
+  ARFC 0002 section 3.7 and clause 3.9.4, and shares its rate limits, except
+  that it creates no access key, takes no `name` and no `replaces`, and the key
+  limits of section 7 do not apply to it. The session's principal is the user
+  the code was issued for. Its `derives_from` is the access key id that the
+  code's `issued_by` (3.9.5) holds, and is empty when `issued_by` is `session`,
+  `root@<node name>`, or `init`. So a session made from a code that an access
+  key issued, directly or through a session token, ends when that key is
+  revoked (3.9.7).
+- By an access key. The request is signed with SigV4 by an unrevoked access
+  key. The session's principal is the key's, and its `derives_from` is the
+  key's id. It is authorized as `iam:CreateSessionToken` with that principal as
+  the resource, which every built-in org role and the cluster role
+  `cloud-admin` allow on the holder's own user. A request authenticated by a
+  session token or a temporary key fails with `PermissionDenied` and creates
+  nothing.
+
+Either way, `via_temporary_key` is not set, `issued` and `session_issued` are
+the commit time, and `expires` is 12 hours later. When the commit time is not
+after the principal's `sessions_not_before` (3.12.4), which a commit in the same
+instant allows, `issued` and `session_issued` are instead 1 microsecond after
+`sessions_not_before`, so a session created after a revocation is never ended
+by it. The call fails with
+`PermissionDenied`, and creates nothing, when the principal or its org is
+disabled (2.2, 3.7). The response carries `token`, empty when the request set
+`cookie` (ARFC 0008 clause 3.14.6), `expire_time`, `session_expire_time`, which
+is `session_issued` plus 30 days, `principal`, and `org`.
+
+3.12.2 `RefreshSessionToken` is authenticated by a session token and returns a
+new token of the same session: the same `principal`, `org`, `scope`,
+`derives_from`, `via_temporary_key`, `session`, and `session_issued`, with
+`issued` the commit time and `expires` the earlier of `issued` plus 12 hours
+and `session_issued` plus 30 days. It fails with `Unauthenticated`, and issues
+nothing, when the presented token is refused by any clause of this ARFC, and
+when the session began 30 days or more before. It must also fail so when, as
+its transaction commits, a revoked session record names its session, its
+`session_issued` is at or before the principal's `sessions_not_before`
+(3.12.4), its principal or that principal's org is disabled, or the access key
+it derives from is not kept, is revoked, or was created after the presented
+token was issued (3.9.7). These checks read the state committed in that
+transaction, not the view that authenticates requests, which may lag a
+revocation by up to 5 seconds, as in 3.9.2. A refresh and a revocation of its
+session are ordered by the control plane (I-11): if the revocation commits
+first, the refresh fails, even while nodes still accept the presented token.
+The presented token stays valid until its own `expires`. A request
+authenticated by anything but a session token fails with `PermissionDenied`. No policy is evaluated: the call returns a credential of
+the caller's own session with nothing added, and the checks of this clause,
+2.2, and 3.9.7 are its whole authorization.
+
+3.12.3 `RevokeSessionToken` is authenticated by a session token and revokes
+its session. Within 5 seconds of its commit, across the cluster, every token
+of that session must be refused (3.9.12) and must not be refreshable, and every
+Watch stream that one of them authenticated must end (ARFC 0008 clause
+3.15.6). A request authenticated by anything but a session token fails with
+`PermissionDenied`. No policy is evaluated, as in 3.12.2. A token of a session
+that is already revoked fails with `Unauthenticated`, as every refused token
+does.
+
+3.12.4 Revoked sessions. The transaction of a revocation writes a **revoked
+session record** holding the principal, the `session`, and a delete time,
+which is the session's `session_issued` plus 30 days, and the control plane
+deletes the record at that time. No token of the session outlives the record:
+every token's `expires` is at most `session_issued` plus 30 days (3.12.2),
+whichever control node's clock gave its `issued`, and no refresh that commits
+after the revocation issues one (3.12.2). So from 5 seconds after the
+revocation commits, every token of the session must be refused, and must not
+be refreshable, until its own `expires`. A principal has at most 1,000 revoked
+session records. A revocation that would write one more instead
+sets the principal's `sessions_not_before` to its commit time and deletes every
+revoked session record of that principal in the same transaction. From then,
+within 5 seconds across the cluster, every session token of that principal
+whose `session_issued` is at or before `sessions_not_before` must be refused,
+as 3.12.3 says. `sessions_not_before` is one time per principal and never moves
+back. So a revocation is never refused or delayed by the bound, and always
+ends at least the session it names. The times that 3.9.7 and this section
+compare, `issued`, `session_issued`, an access key's creation time, and
+`sessions_not_before`, are commit times of the global group, and the control
+plane must give each commit of that group a time no earlier than that of the
+commit before it, whichever control node leads. So a session created by a
+transaction ordered before a revocation of 3.12.4 or 3.12.6 has a
+`session_issued` at or before that revocation's time.
+
+3.12.5 Audit (ARFC 0018 section 3.3). A record is written in the principal's
+org chain for each `CreateSessionToken` attempt, successful or not, as an
+authentication attempt with the source address and the login code id or the
+access key id, and for each refresh and each revocation. Each names the
+session by `session` in lower case hexadecimal. No record, log line, error, or
+response other than those of 3.12.1 and 3.12.2 holds a session token (I-22).
+Each call of 3.12.6 is recorded too, naming the user, with its caller as
+principal, `root@<node name>` for a local admin.
+
+3.12.6 Ending every session of a user. `RevokeUserSessions` in the `iam`
+service names one user. In one transaction it sets that user's
+`sessions_not_before` to its commit time, unless it is already later, and
+deletes every revoked session record of that user, which that time now covers.
+From then, within 5 seconds across the cluster, every session token of that
+user whose `session_issued` is at or before that time must be refused and must
+not be refreshable, and every Watch stream that one of them authenticated must
+end (ARFC 0008 clause 3.15.6). So it ends every session of the user, whatever
+its tokens derive from, the caller's own session included, and revokes no
+access key. It is authorized as `iam:RevokeUserSessions` with that user as the
+resource, which every built-in org role and the cluster role `cloud-admin`
+allow on the holder's own user, and a local admin may call it for any user
+(3.10.1). The response is empty.
+
 ## 5. Seams
 
 | Kind | Trait | Implementations | Suite |
@@ -602,7 +729,10 @@ must revoke no access key. Whether a failed exchange spends the login code is
 defined with the login code, in ARFC 0002, except where this ARFC says it must
 not (3.9.3 and section 7). If an audit record of a local admin call, read or
 write, or of an exchange cannot be committed, the call must fail, change
-nothing, and return no data (3.10.6). If the record of local admin use cannot be
+nothing, and return no data (3.10.6). If a revoked session record or `sessions_not_before` cannot
+be read, every session token of that principal must be refused, and every
+refresh of one must fail (3.12.2, 3.12.4). If the
+record of local admin use cannot be
 written with a local admin write (3.10.8), that write must fail and change
 nothing. If the
 control plane cannot read the state of the access key that a session token or
@@ -632,6 +762,12 @@ token that derives from no such key.
 Lineage state is bounded by these limits alone: derivation keeps no control
 plane state per session token or temporary key (2.3), and revoked keys are kept
 only within the 1,000 (I-21).
+1,000 revoked session records per principal, each deleted 30 days after its
+session began, and one `sessions_not_before` per principal (3.12.4). A
+revocation at the bound is never refused: one that would write the 1,001st
+record instead ends every session of that principal that began at or before
+it. A session token is at most 1,024 characters, so
+it fits a cookie.
 Names, including access key names: 1 to 63 characters, `[a-z0-9-]`, starting
 with a letter. A key name is cut to 59 characters before a number is appended
 (3.9.3).
@@ -686,6 +822,28 @@ And a user access key whose `issued_by` is `session` descends from no key: if a
 session token that derives from no access key is stolen, the keys made with it
 are found through `issued_by` and the audit log and are revoked one by one, or
 with all of the user's keys at once (3.9.13).
+
+Session tokens. A session made from an access key derives from it, and one made
+from a login code derives from the access key that issued the code, directly or
+through a session token, when one did (3.12.1). So revoking that key ends the
+session, and a thief cannot escape the lineage above by trading a login code
+for a session token. A session token lives at most 12 hours without a refresh, and no
+session lasts past 30 days. Revoking a session takes effect within 5 seconds
+(ARFC 0020 section 3.4) and for good: a thief who refreshes in a loop while the
+user logs out gets no token from a refresh that commits after the revocation,
+since a refresh reads committed state (3.12.2), and the record lasts as long as
+any token of the session can (3.12.4). The revoked state is bounded per
+principal, and the bound widens a revocation rather than refusing it (3.12.4).
+A session made from a login code that a local admin, `alloy init`, or a
+key-less session issued derives from no access key, so no key revocation ends
+it. The user ends it, with every other session of that user, through
+`RevokeUserSessions`, and a local admin does so for any user, without disabling
+the user (3.12.6). Revoking all of a user's keys does the same and also voids
+the login codes that a key-less session issued (3.9.13), so after a local
+admin's revocation a thief keeps no credential of the user but a temporary key
+that lives at most 12 hours and can issue no login code. In a browser the
+token is held where page script cannot read it and another site cannot send it
+(ARFC 0008 clause 3.14.6, ARFC 0019 clause 3.2.7).
 
 A deny on `iam:IssueLoginCode` attached to a user, a group, or an org stops login
 codes being issued for the users it covers, by every caller except a local admin
