@@ -613,3 +613,116 @@ fn protection_ops_write_their_records_and_keep_synced_modes() {
     .collect();
     assert_eq!(records, expected);
 }
+
+/// The first start of the replace tests: `/d/x` durable with `old`, then
+/// `/d/x.new` created unsynced with `new` synced, replaced over `/d/x`, with
+/// unsynced creates in `/d` before and after the replace, and its refusals.
+fn replacing() -> Phase {
+    phase(|rt, _| async move {
+        let disk = rt.disk_io().as_ref();
+        disk.create_dir(&path("/d")).await.expect("create_dir");
+        disk.sync_dir(&path("/")).await.expect("sync_dir");
+        let x = open(disk, "/d/x").await;
+        write(x.as_ref(), 0, b"old").await.expect("write");
+        x.sync(SyncKind::All).await.expect("sync");
+        disk.sync_dir(&path("/d")).await.expect("sync_dir");
+        drop(x);
+        drop(open(disk, "/d/before").await);
+        let new = open(disk, "/d/x.new").await;
+        write(new.as_ref(), 0, b"new").await.expect("write");
+        new.sync(SyncKind::All).await.expect("sync");
+        drop(new);
+        disk.replace(&path("/d/x.new"), &path("/d/x"))
+            .await
+            .expect("replace");
+        drop(open(disk, "/d/after").await);
+        disk.create_dir(&path("/d/sub")).await.expect("create_dir");
+        let refused = [
+            ("/d/x", "/x"),
+            ("/", "/d"),
+            ("/d", "/e"),
+            ("/d/x", "/d/sub"),
+            ("/d/none", "/d/q"),
+            ("/dev", "/e"),
+        ];
+        let mut out = vec![format!("{:?}", names(disk, "/d").await)];
+        for (from, to) in refused {
+            out.push(format!("{:?}", disk.replace(&path(from), &path(to)).await));
+        }
+        out
+    })
+}
+
+/// The second start of the replace tests: what `/d` holds after the crash.
+fn after_replace() -> Phase {
+    phase(|rt, _| async move {
+        let disk = rt.disk_io().as_ref();
+        vec![
+            format!("{:?}", names(disk, "/d").await),
+            format!("{:?}", content(disk, "/d/x").await),
+        ]
+    })
+}
+
+fn with_device(c: &mut HostConfig) {
+    c.devices.push(DeviceConfig {
+        path: path("/dev"),
+        len: 4_096,
+        block_size: 4_096,
+    });
+}
+
+#[test]
+fn a_replace_alone_is_durable_and_writes_its_records() {
+    let ops = DiskOps::default();
+    let seen = ops.clone();
+    let first = replacing();
+    let observing = phase(move |rt, world| {
+        let (first, seen) = (Arc::clone(&first), seen.clone());
+        async move {
+            world.observe(Box::new(seen)).expect("room");
+            first(rt, world).await
+        }
+    });
+    let second = Some(after_replace());
+    let (outs, _) = starts(11, with_device, Unsynced::Lost, observing, second);
+    let invalid = |text: &str| format!("Err(InvalidInput(Detail({text:?})))");
+    assert_eq!(
+        outs[0],
+        [
+            r#"["after", "before", "sub", "x"]"#.to_owned(),
+            invalid("replace needs from and to in one directory"),
+            invalid("replace needs from and to in one directory"),
+            "Err(IsDirectory)".to_owned(),
+            "Err(IsDirectory)".to_owned(),
+            "Err(NotFound)".to_owned(),
+            invalid("replace moves a regular file"),
+        ]
+    );
+    // The replace survives with the create of `/d/x.new`; the unsynced
+    // creates before and after it do not.
+    assert_eq!(outs[1], [r#"["x"]"#, "Some([110, 101, 119])"]);
+    let records = ops.0.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    let replaces: Vec<Vec<u8>> = records
+        .into_iter()
+        .map(|(_, body, _)| body)
+        .filter(|body| body[8] == 17)
+        .collect();
+    let expected: Vec<Vec<u8>> = [0, 8, 8, 12, 12, 1, 8]
+        .into_iter()
+        .map(|result| op_body(0, 17, (0, 0), result, None))
+        .collect();
+    assert_eq!(replaces, expected);
+}
+
+#[test]
+fn a_replace_survives_every_unsynced_mode() {
+    for seed in 1..=8 {
+        for mode in [Unsynced::Seeded, Unsynced::Torn] {
+            let second = Some(after_replace());
+            let (outs, _) = starts(seed, with_device, mode, replacing(), second);
+            assert_eq!(outs[1][1], "Some([110, 101, 119])", "seed {seed} {mode:?}");
+            assert!(!outs[1][0].contains("x.new"), "seed {seed} {mode:?}");
+        }
+    }
+}

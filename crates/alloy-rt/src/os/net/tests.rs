@@ -504,6 +504,60 @@ fn unix_streams_round_trip_and_clean_up() {
     finish(host);
 }
 
+#[test]
+fn peer_uid_of_a_tcp_stream_is_invalid_input() {
+    let (host, net) = setup();
+    let (client, server, listener) = tcp_pair(&host, &net);
+    for stream in [&client, &server] {
+        assert!(matches!(stream.peer_uid(), Err(NetError::InvalidInput(_))));
+    }
+    drop((client, server, listener));
+    finish(host);
+}
+
+#[cfg(unix)]
+#[allow(unsafe_code, reason = "geteuid has no safe binding")]
+fn effective_uid() -> u32 {
+    // SAFETY: geteuid takes no arguments, touches no memory of ours, and
+    // always succeeds.
+    unsafe { libc::geteuid() }
+}
+
+/// ARFC 0005 clause 3.1.9.2: on Linux both ends see the user id of this
+/// process, and every other Unix platform returns `Unsupported`.
+#[cfg(unix)]
+#[test]
+fn peer_uid_of_a_unix_stream_is_the_peer_process_user() {
+    let (host, net) = setup();
+    let dir = std::env::temp_dir().join(format!("alloy-rt-peer-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("p.sock");
+    let unix = StreamAddr::Unix(UnixPath::new(path.to_str().unwrap()).unwrap());
+    let listener = net.listen(unix.clone(), ListenOptions::default()).unwrap();
+    let client = host
+        .block_on(net.connect(unix, StreamOptions::default()))
+        .unwrap();
+    let server = host.block_on(listener.accept()).unwrap();
+    let want = if cfg!(target_os = "linux") {
+        Ok(effective_uid())
+    } else {
+        Err(NetError::Unsupported)
+    };
+    assert_eq!(client.peer_uid(), want);
+    assert_eq!(server.peer_uid(), want);
+    // It reads and writes nothing: the stream still carries bytes after.
+    assert_eq!(host.block_on(client.write(&[b"ok"])), Ok(2));
+    let mut buf = [0u8; 2];
+    let mut got = 0;
+    while got < 2 {
+        got += host.block_on(server.read(&mut buf[got..])).unwrap();
+    }
+    assert_eq!(&buf, b"ok");
+    drop((client, server, listener));
+    std::fs::remove_dir(&dir).unwrap();
+    finish(host);
+}
+
 #[cfg(not(unix))]
 #[test]
 fn unix_addresses_are_unsupported() {

@@ -175,6 +175,31 @@ pub trait DiskIo: Send + Sync + fmt::Debug + 'static {
         to: &'a RtPath,
     ) -> BoxFuture<'a, Result<(), DiskError>>;
 
+    /// [`DiskIo::rename`] of the file `from` over `to` in one directory,
+    /// durable when it returns `Ok` (ARFC 0005 clause 3.1.16): after any
+    /// later crash `to` names the file `from` named and `from` names nothing.
+    /// It makes no write to the file durable; a caller that needs the
+    /// content durable completes a `sync` of `from` first.
+    ///
+    /// Under `os` on Linux and macOS it is `rename(2)` and then `fsync` of
+    /// the directory, as [`DiskIo::sync_dir`] does; on Windows one
+    /// `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING` and
+    /// `MOVEFILE_WRITE_THROUGH`.
+    ///
+    /// # Errors
+    ///
+    /// Those of `rename`, and [`DiskError::InvalidInput`] when `from` and
+    /// `to` are not entries of one directory or `from` is neither a regular
+    /// file nor a directory, and [`DiskError::IsDirectory`] when either is a
+    /// directory. After an error a crash leaves the state before the call or
+    /// the renamed one; when the rename succeeded and the directory `fsync`
+    /// failed, that error is returned.
+    fn replace<'a>(
+        &'a self,
+        from: &'a RtPath,
+        to: &'a RtPath,
+    ) -> BoxFuture<'a, Result<(), DiskError>>;
+
     /// Makes the creates, removes, and renames of entries of `dir` durable
     /// (ARFC 0005 clause 3.1.12).
     ///

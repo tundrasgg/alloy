@@ -254,6 +254,10 @@ impl Stream for Reported {
     fn shutdown_write(&self) -> BoxFuture<'_, Result<(), NetError>> {
         self.0.shutdown_write()
     }
+
+    fn peer_uid(&self) -> Result<u32, NetError> {
+        self.0.peer_uid()
+    }
 }
 
 /// The `stream` underlay of the tests: the first bytes it reads stand for

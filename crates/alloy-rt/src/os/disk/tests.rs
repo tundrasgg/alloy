@@ -306,6 +306,77 @@ fn the_namespace_lists_creates_removes_and_renames() {
     s.finish();
 }
 
+/// ARFC 0005 clause 3.1.16: a rename of a file over another in one
+/// directory, with its own refusals.
+#[test]
+fn replace_moves_a_file_over_another_in_one_directory() {
+    let s = Scratch::new("replace");
+    let disk = &s.disk;
+    let content = |at: &str| {
+        let file = s.open(at, Access::Read, Create::Never)?;
+        let len = s.run(file.info())?.len as usize;
+        let done = s.run(file.read_at(vec![read(0, len)]));
+        done[0].result.clone()?;
+        Ok::<_, DiskError>(done[0].buf.to_vec())
+    };
+    let put = |at: &str, bytes: &[u8]| {
+        let file = s.open(at, Access::ReadWrite, Create::IfMissing).unwrap();
+        assert_eq!(
+            s.run(file.write_at(vec![write(0, bytes)]))[0].result,
+            Ok(())
+        );
+        s.run(file.sync(SyncKind::All)).unwrap();
+    };
+    s.run(disk.create_dir(&path("/d"))).unwrap();
+    put("/d/x", b"old");
+    put("/d/x.new", b"new");
+    s.run(disk.replace(&path("/d/x.new"), &path("/d/x")))
+        .unwrap();
+    assert_eq!(content("/d/x"), Ok(b"new".to_vec()));
+    assert_eq!(content("/d/x.new"), Err(DiskError::NotFound));
+    // A missing `to` is created.
+    put("/d/y.new", b"y");
+    s.run(disk.replace(&path("/d/y.new"), &path("/d/y")))
+        .unwrap();
+    assert_eq!(content("/d/y"), Ok(b"y".to_vec()));
+    // Two directories, or the root, change nothing.
+    put("/z", b"z");
+    for (from, to) in [("/d/y", "/z"), ("/z", "/d/z"), ("/", "/d/x")] {
+        assert!(matches!(
+            s.run(disk.replace(&path(from), &path(to))),
+            Err(DiskError::InvalidInput(_))
+        ));
+    }
+    assert_eq!(content("/d/y"), Ok(b"y".to_vec()));
+    assert_eq!(content("/z"), Ok(b"z".to_vec()));
+    // A directory on either side.
+    s.run(disk.create_dir(&path("/d/sub"))).unwrap();
+    assert_eq!(
+        s.run(disk.replace(&path("/d/sub"), &path("/d/w"))),
+        Err(DiskError::IsDirectory)
+    );
+    assert_eq!(
+        s.run(disk.replace(&path("/d/y"), &path("/d/sub"))),
+        Err(DiskError::IsDirectory)
+    );
+    assert_eq!(content("/d/y"), Ok(b"y".to_vec()));
+    assert_eq!(
+        s.run(disk.replace(&path("/d/none"), &path("/d/q"))),
+        Err(DiskError::NotFound)
+    );
+    // An entry that is neither a file nor a directory: a socket file.
+    #[cfg(unix)]
+    {
+        let socket = std::os::unix::net::UnixListener::bind(s.dir.join("d").join("s")).unwrap();
+        assert!(matches!(
+            s.run(disk.replace(&path("/d/s"), &path("/d/t"))),
+            Err(DiskError::InvalidInput(_))
+        ));
+        drop(socket);
+    }
+    s.finish();
+}
+
 #[test]
 fn sync_waits_for_operations_issued_before_it() {
     let s = Scratch::new("sync");

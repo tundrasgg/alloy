@@ -378,6 +378,19 @@ pub trait Stream: Send + Sync + fmt::Debug {
     ///
     /// [`NetError::ConnectionReset`] after a reset.
     fn shutdown_write(&self) -> BoxFuture<'_, Result<(), NetError>>;
+
+    /// The effective user id that the kernel recorded for the process at the
+    /// other end of a Unix stream socket (ARFC 0005 clause 3.1.9.2): on
+    /// Linux, the `uid` of `SO_PEERCRED`, fixed when the connection was made.
+    /// Reads and writes nothing on the stream. `mem` returns 0, the user id
+    /// that owns every `mem` entry.
+    ///
+    /// # Errors
+    ///
+    /// [`NetError::InvalidInput`] on a TCP stream, [`NetError::Unsupported`]
+    /// under `os` on every platform but Linux, and [`NetError::Os`] with the
+    /// error number of a failing `getsockopt`.
+    fn peer_uid(&self) -> Result<u32, NetError>;
 }
 
 /// A listening TCP or Unix socket. Dropping it stops listening and, for a

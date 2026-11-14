@@ -237,6 +237,34 @@ impl DiskIo for OsDiskIo {
         })
     }
 
+    fn replace<'a>(
+        &'a self,
+        from: &'a RtPath,
+        to: &'a RtPath,
+    ) -> BoxFuture<'a, Result<(), DiskError>> {
+        let dir = match (from.parent(), to.parent()) {
+            (Some(dir), Some(to_dir)) if dir == to_dir => dir,
+            _ => return fail(invalid("replace needs from and to in one directory")),
+        };
+        let (target, dir) = match (self.native(to), self.native(&dir)) {
+            (Ok(target), Ok(dir)) => (target, dir),
+            (Err(e), _) | (_, Err(e)) => return fail(e),
+        };
+        self.on_path(from, move |source| {
+            let meta = fs::metadata(&source).map_err(|e| errors::disk(&e))?;
+            if meta.is_dir() {
+                return Err(DiskError::IsDirectory);
+            }
+            if !meta.is_file() {
+                return Err(invalid("replace moves a regular file"));
+            }
+            if fs::metadata(&target).is_ok_and(|meta| meta.is_dir()) {
+                return Err(DiskError::IsDirectory);
+            }
+            replace_native(&source, &target, &dir)
+        })
+    }
+
     fn sync_dir<'a>(&'a self, dir: &'a RtPath) -> BoxFuture<'a, Result<(), DiskError>> {
         self.on_path(dir, |native| {
             let meta = fs::metadata(&native).map_err(|e| errors::disk(&e))?;
@@ -291,6 +319,24 @@ impl DiskIo for OsDiskIo {
         let root = self.root.to_str().ok_or(DiskError::InvalidPath)?;
         native::rt_path(root, native, native::Style::HOST)
     }
+}
+
+/// `rename(2)` of `source` over `target`, then `fsync` of a descriptor of
+/// their directory `dir`, as `sync_dir` does (ARFC 0005 clause 3.1.16).
+/// When the rename succeeds and the `fsync` fails, the `fsync` error.
+#[cfg(unix)]
+fn replace_native(source: &Path, target: &Path, dir: &Path) -> Result<(), DiskError> {
+    fs::rename(source, target).map_err(|e| errors::disk(&e))?;
+    platform::open_dir(dir)
+        .and_then(|file| file.sync_all())
+        .map_err(|e| errors::disk(&e))
+}
+
+/// One `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING` and
+/// `MOVEFILE_WRITE_THROUGH` (ARFC 0005 clause 3.1.16).
+#[cfg(windows)]
+fn replace_native(source: &Path, target: &Path, _dir: &Path) -> Result<(), DiskError> {
+    protect::replace(source, target)
 }
 
 fn kind_of(file_type: &fs::FileType) -> EntryKind {
