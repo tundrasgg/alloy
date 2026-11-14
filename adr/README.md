@@ -41,6 +41,7 @@ or supersede it.
 | [0060](0060-libfuzzer-sys-alone-may-use-ncsa-in-fuzz-targets-only.md) | libfuzzer-sys alone may use NCSA, in fuzz targets only |
 | [0062](0062-the-windows-client-may-ship-the-signed-wintun-dll-unmodified.md) | The Windows client may ship the signed Wintun DLL unmodified |
 | [0067](0067-all-i-o-goes-through-alloy-rt-and-the-simulator-gates-work-a.md) | All I/O goes through alloy-rt, and the simulator gates work after M11 |
+| [0071](0071-the-host-seam-controls-only-alloyd-and-reads-machine-facts-o.md) | The host seam controls only alloyd and reads machine facts, outside Runtime |
 
 ## Architecture
 

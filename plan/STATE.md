@@ -33,8 +33,7 @@ Only tasks that are not done or cancelled. A finished task leaves the board in t
 | T-0113 | verify | verifier | review | T-0136 | Write the M11 rung 2 join and node list check |
 | T-0119 | spec | architect | queued | before rung 5 | Keep VNI binds alive across crossed rekeys, record the ADR |
 | T-0136 | build | developer | fix | none | Build M11 rung 2 end to end: API, init, join, and the CLI |
-| T-0141 | build | developer | blocked | T-0144 | Build the rung 2 CLI commands |
-| T-0144 | spec | architect | active | none | Specify the host seam for service control and machine facts |
+| T-0141 | build | developer | active | none | Build the rung 2 CLI commands |
 | T-0138 | build | developer | fix | none | Build the alloy-path path manager for direct paths |
 | T-0140 | build | developer | review | none | Build the console shell and first screens on fixture data |
 | T-0142 | spec | architect | review | none | Close the session and bridge gaps of the T-0139 re-review |
@@ -107,6 +106,8 @@ Only tasks that are not done or cancelled. A finished task leaves the board in t
 - Spec: ARFC 0004 section 8 states the probe reflection bound from section 3.2 (T-0021 follow-up).
 
 ## M11 notes
+- From T-0144: `cargo xtask ci` installs and removes a test service `alloyd` and sets `ALLOY_TEST_SERVICE=1` on CI hosts for the privileged `host` tests (ARFC 0005 section 5); a verify task writes `tests/conformance/rt/host/` against clause 3.1.18 independently of T-0141.
+- Paused after rung 2 (pilot direction): T-0138 fix round, re-review of T-0140, reviews of T-0142 and T-0143.
 
 - From T-0130 review (fold into the next `alloy-state` task): F1, the generic `Group::update`, `delete`, and `remove` skip the identity kinds' checks (`check_kind`), as T-0114's F1 did for `Node`; and the notes in `plan/reports/T-0130.reviewer.1.md`.
 
