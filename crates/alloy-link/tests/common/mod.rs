@@ -69,6 +69,29 @@ pub(crate) fn secs(s: u64) -> Duration {
     Duration::from_secs(s)
 }
 
+/// A test's own choices, apart from the links' randomness: SplitMix64,
+/// seeded by the test.
+pub(crate) struct SplitMix(pub(crate) u64);
+
+impl SplitMix {
+    pub(crate) fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+
+    /// True with probability `percent` in 100.
+    pub(crate) fn chance(&mut self, percent: u64) -> bool {
+        self.next() % 100 < percent
+    }
+
+    pub(crate) fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+}
+
 /// Two links that are each other's peers, the datagrams in flight to each,
 /// and what each delivered or reported.
 pub(crate) struct Pair<'r> {

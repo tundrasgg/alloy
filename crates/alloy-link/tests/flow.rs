@@ -6,8 +6,8 @@ mod common;
 
 use alloy_crypto::al::PresharedKey;
 use alloy_link::{
-    DropReason, Event, HOLD_TIME, LOAD_THRESHOLD, MAX_BINDINGS_PER_SESSION, MAX_HELD_PER_VNI,
-    MAX_SESSIONS_PER_PEER, PREVIOUS_RECV_TIME, REJECT_AFTER, REKEY_AFTER, RETRY_GIVE_UP,
+    DISCARD_AFTER_FOLLOWED, DropReason, Event, HOLD_TIME, LOAD_THRESHOLD, MAX_BINDINGS_PER_SESSION,
+    MAX_HELD_PER_VNI, MAX_SESSIONS_PER_PEER, REJECT_AFTER, REKEY_AFTER, RETRY_GIVE_UP,
     RETRY_INTERVAL, Sent,
 };
 use alloy_wire::{FRAGMENT_HEADER_LEN, Message, Vni};
@@ -171,11 +171,14 @@ fn rekey_moves_traffic_to_the_new_session() {
         p.settle();
         assert_eq!(p.delivered(B), [(VNI_0, ip(40, 3))]);
         assert_eq!(p.delivered(A), [(VNI_0, ip(40, 4))]);
-        // The old session's receive key lasts 10 seconds after the rekey.
-        p.advance(PREVIOUS_RECV_TIME);
+        // The new session follows the old one at both nodes, so each
+        // discards the old one 10 seconds after its first packet under the
+        // new one.
+        p.advance(DISCARD_AFTER_FOLLOWED - secs(1));
+        assert_eq!(p.nodes[A].session_count(&p.keys[B]), 2);
+        assert_eq!(p.nodes[B].session_count(&p.keys[A]), 2);
+        p.advance(secs(1));
         assert_eq!(p.recv(B, old), Err(DropReason::UnknownIndex));
-        // 180 seconds after its handshake the old session is discarded.
-        p.advance(REJECT_AFTER - REKEY_AFTER - PREVIOUS_RECV_TIME);
         assert_eq!(p.nodes[A].session_count(&p.keys[B]), 1);
         assert_eq!(p.nodes[B].session_count(&p.keys[A]), 1);
         assert!(
@@ -494,7 +497,7 @@ fn crossed_rekeys_keep_traffic_flowing_both_ways() {
         assert_eq!(p.delivered(B), [(VNI_0, ip(40, 1))]);
         // Past the 10 seconds, and then every second until the crossed
         // sessions are long discarded, each packet arrives once.
-        p.advance(PREVIOUS_RECV_TIME + secs(1));
+        p.advance(DISCARD_AFTER_FOLLOWED + secs(1));
         for n in 0..200u8 {
             p.send(A, VNI_0, &ip(40, n)).unwrap();
             p.send(B, VNI_0, &ip(41, n)).unwrap();
@@ -530,7 +533,7 @@ fn lost_responses_leave_both_nodes_on_the_previous_session() {
         assert_eq!(p.nodes[A].session_count(&p.keys[B]), 1);
         // Long past 10 seconds, a still seals under the session both hold
         // and b still opens it, and the other way.
-        p.advance(PREVIOUS_RECV_TIME + secs(5));
+        p.advance(DISCARD_AFTER_FOLLOWED + secs(5));
         p.take(B);
         p.send(A, VNI_0, &ip(40, 2)).unwrap();
         p.send(B, VNI_0, &ip(40, 3)).unwrap();
@@ -571,7 +574,7 @@ fn no_key_is_used_past_its_lifetime_without_a_tick() {
         q.advance(REKEY_AFTER);
         q.send(A, VNI_0, &ip(40, 4)).unwrap();
         q.settle();
-        q.now = q.now.saturating_add(PREVIOUS_RECV_TIME);
+        q.now = q.now.saturating_add(DISCARD_AFTER_FOLLOWED);
         assert_eq!(q.recv(B, old), Err(DropReason::UnknownIndex));
     });
 }
