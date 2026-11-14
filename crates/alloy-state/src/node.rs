@@ -53,7 +53,7 @@ pub enum Role {
 }
 
 impl Role {
-    fn to_proto(self) -> pb::Role {
+    pub(crate) fn to_proto(self) -> pb::Role {
         match self {
             Role::Anchor => pb::Role::Anchor,
             Role::Control => pb::Role::Control,
@@ -62,7 +62,7 @@ impl Role {
         }
     }
 
-    fn from_proto(value: i32) -> Option<Role> {
+    pub(crate) fn from_proto(value: i32) -> Option<Role> {
         match pb::Role::try_from(value).ok()? {
             pb::Role::Anchor => Some(Role::Anchor),
             pb::Role::Control => Some(Role::Control),
@@ -293,7 +293,7 @@ impl Node {
     }
 }
 
-fn timestamp(time: WallTime) -> prost_types::Timestamp {
+pub(crate) fn timestamp(time: WallTime) -> prost_types::Timestamp {
     const NANOS: i64 = 1_000_000_000;
     prost_types::Timestamp {
         seconds: time.0.div_euclid(NANOS),
@@ -302,7 +302,7 @@ fn timestamp(time: WallTime) -> prost_types::Timestamp {
     }
 }
 
-fn wall_time(ts: &prost_types::Timestamp) -> Option<WallTime> {
+pub(crate) fn wall_time(ts: &prost_types::Timestamp) -> Option<WallTime> {
     if !(0..1_000_000_000).contains(&ts.nanos) {
         return None;
     }
