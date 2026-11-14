@@ -3,17 +3,28 @@
 //! directory. Each check gets a fresh [`Env`] and a seed derived from its
 //! name, and a failure prints the seed.
 //!
+//! On Windows, `native` creates its store file `Private` through `disk-io`,
+//! with owner `Administrators` (ARFC 0005 clause 3.1.15), and a process that
+//! may not name that owner gets `BuildError::Failed` (D-0062). The `native`
+//! test first asks whether this process can create a `Private` file. When it
+//! cannot, it checks that refusal instead of the suite, and prints one line
+//! saying the `native` checks did not run and why.
+//!
 //! On `native`, the registry also holds `mem`, from one fresh `register_mem`
 //! call, for the checks that move an export between the two.
 
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use alloy_rt::{OsHost, RtPath, Runtime, RuntimeConfig, register_os};
-use alloy_seam::{Binding, ConfigValue, Detail, ImplName, RegistryBuilder};
+use alloy_rt::{DiskError, OsHost, Protection, RtPath, Runtime, RuntimeConfig, register_os};
+use alloy_seam::{Binding, BuildError, ConfigValue, Detail, ImplName, Registry, RegistryBuilder};
 use alloy_sim::{Boot, HostBoot, HostConfig, RunConfig, RunResult, run};
-use conformance_state_store::{Check, Env, Failure, Harness, Implementation, Outcome, run_suite};
+use conformance_state_store::state::StateStoreSeam;
+use conformance_state_store::{
+    Check, Env, Failure, Harness, Implementation, Outcome, checks, run_suite,
+};
 
 /// The suite's name, which prefixes each check's directory.
 const SUITE: &str = "state-store";
@@ -122,7 +133,9 @@ impl NativeHarness {
         Ok(config)
     }
 
-    fn try_run(&self, check: &Check, seed: u64) -> Outcome {
+    /// A fresh `os` runtime and registry, and a directory of its own under
+    /// the temporary directory holding two empty directories, `a` and `b`.
+    fn prepare(&self, seed: u64) -> Result<Place, Failure> {
         let mut builder = RegistryBuilder::new();
         register_os(&mut builder, &self.host).map_err(|e| Failure(format!("register_os: {e}")))?;
         alloy_state::register_native(&mut builder)
@@ -151,7 +164,7 @@ impl NativeHarness {
             for place in ["a", "b"] {
                 runtime.disk_io().create_dir(&top.join(place)?).await?;
             }
-            Ok::<(), alloy_rt::DiskError>(())
+            Ok::<(), DiskError>(())
         });
         made.map_err(|e| Failure(format!("the check's directories: {e}")))?;
         for place in ["a", "b"] {
@@ -162,6 +175,21 @@ impl NativeHarness {
             dirs.push(dir.to_owned());
         }
 
+        Ok(Place {
+            runtime,
+            registry,
+            top,
+            dirs,
+        })
+    }
+
+    fn try_run(&self, check: &Check, seed: u64) -> Outcome {
+        let Place {
+            runtime,
+            registry,
+            top,
+            dirs,
+        } = self.prepare(seed)?;
         let outcome = self.host.block_on((check.run)(Env {
             implementation: Implementation::Native,
             runtime: runtime.clone(),
@@ -171,6 +199,109 @@ impl NativeHarness {
         }));
         // Removing the directory is housekeeping, not part of the check: a
         // directory left behind changes no outcome.
+        let _ = self.host.block_on(remove_tree(&runtime, top));
+        outcome
+    }
+}
+
+/// What [`NativeHarness::prepare`] makes for one use.
+struct Place {
+    runtime: Runtime,
+    registry: Registry,
+    /// The directory of its own, as `disk-io` names it.
+    top: RtPath,
+    /// The absolute native paths of `top/a` and `top/b`.
+    dirs: Vec<String>,
+}
+
+impl NativeHarness {
+    /// Whether this process can create a `Private` file through `disk-io`
+    /// (ARFC 0005 clause 3.1.15). Only a Windows process whose token may not
+    /// name `Administrators` as owner cannot: the create returns
+    /// `PermissionDenied` and leaves nothing at the path. Any other result
+    /// is a failure.
+    fn can_create_private(&self) -> Result<bool, Failure> {
+        let Place { runtime, top, .. } = self.prepare(seed_of("can_create_private"))?;
+        let file = top
+            .join("a")
+            .and_then(|dir| dir.join("private"))
+            .map_err(|e| Failure(format!("{e}")))?;
+        let created = self
+            .host
+            .block_on(runtime.disk_io().create_file(&file, Protection::Private));
+        let answer = match created {
+            Ok(handle) => {
+                drop(handle);
+                Ok(true)
+            }
+            Err(DiskError::PermissionDenied) if cfg!(windows) => {
+                match self.host.block_on(runtime.disk_io().metadata(&file)) {
+                    Err(DiskError::NotFound) => Ok(false),
+                    found => Err(Failure(format!(
+                        "a refused Private create left an entry at its path: {found:?}"
+                    ))),
+                }
+            }
+            Err(e) => Err(Failure(format!("creating a Private file: {e}"))),
+        };
+        // Housekeeping, as in `try_run`.
+        let _ = self.host.block_on(remove_tree(&runtime, top));
+        answer
+    }
+
+    /// For a process that cannot create a `Private` file: building `native`
+    /// on an existing, empty directory fails with `BuildError::Failed`, and
+    /// the directory is still empty afterwards (ARFC 0005 clause 3.1.15,
+    /// ARFC 0006 clause 5.2).
+    fn check_refusal(&self) -> Outcome {
+        let Place {
+            runtime,
+            registry,
+            top,
+            dirs,
+        } = self.prepare(seed_of("check_refusal"))?;
+        let outcome = self.host.block_on(async {
+            let dir = dirs.first().ok_or_else(|| Failure("no directory".into()))?;
+            // `NativeStoreConfig { dir }` in version 1 (ARFC 0006 clause 5.2).
+            let mut payload = vec![0x0A];
+            let mut len = dir.len() as u64;
+            while len >= 0x80 {
+                payload.push((len as u8) | 0x80);
+                len >>= 7;
+            }
+            payload.push(len as u8);
+            payload.extend_from_slice(dir.as_bytes());
+            let config = ConfigValue::new(1, payload).map_err(|e| Failure(format!("{e}")))?;
+            let native = ImplName::new("native").map_err(|e| Failure(format!("{e}")))?;
+            match registry.instantiate::<StateStoreSeam>(&runtime, &native, &config) {
+                Err(BuildError::Failed(_)) => {}
+                Err(other) => {
+                    return Err(Failure(format!(
+                        "native without Private: got {other:?}, expected Failed"
+                    )));
+                }
+                Ok(_) => {
+                    return Err(Failure(
+                        "native built although this process cannot create a Private file".into(),
+                    ));
+                }
+            }
+            let a = top.join("a").map_err(|e| Failure(format!("{e}")))?;
+            let left = runtime
+                .disk_io()
+                .list(&a)
+                .await
+                .map_err(|e| Failure(format!("listing the directory: {e}")))?;
+            if left.is_empty() {
+                Ok(())
+            } else {
+                let names: Vec<_> = left.into_iter().map(|entry| entry.name).collect();
+                Err(Failure(format!(
+                    "a refused native build left entries in its directory: {names:?}"
+                )))
+            }
+        });
+        // Housekeeping, as in `try_run`.
         let _ = self.host.block_on(remove_tree(&runtime, top));
         outcome
     }
@@ -187,7 +318,7 @@ impl Harness for NativeHarness {
 }
 
 /// Removes `path` and everything under it.
-async fn remove_tree(runtime: &Runtime, path: RtPath) -> Result<(), alloy_rt::DiskError> {
+async fn remove_tree(runtime: &Runtime, path: RtPath) -> Result<(), DiskError> {
     let mut stack = vec![(path, false)];
     while let Some((path, listed)) = stack.pop() {
         if listed {
@@ -231,6 +362,27 @@ fn mem_conforms_to_the_state_store_suite() {
 
 #[test]
 fn native_conforms_to_the_state_store_suite() {
-    let failures = failures(&NativeHarness::new());
-    assert!(failures.is_empty(), "{failures:#?}");
+    let harness = NativeHarness::new();
+    let private = harness.can_create_private().expect("the Private probe");
+    if private {
+        let failures = failures(&harness);
+        assert!(failures.is_empty(), "{failures:#?}");
+        return;
+    }
+    // ARFC 0005 clause 3.1.15 and D-0062: `native` refuses to build here.
+    if let Err(failure) = harness.check_refusal() {
+        panic!("{failure}");
+    }
+    let skipped = checks()
+        .into_iter()
+        .filter(|check| check.applies.includes(Implementation::Native))
+        .count();
+    // Straight to the handle, so the test harness does not capture the line.
+    writeln!(
+        std::io::stderr(),
+        "state-store: the {skipped} native checks did not run: this process may not name \
+         Administrators as owner, so native refuses to build (ARFC 0005 clause 3.1.15, \
+         D-0062); that refusal was checked instead"
+    )
+    .expect("stderr takes the skip line");
 }
