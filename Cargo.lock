@@ -33,6 +33,7 @@ dependencies = [
  "alloy-proto",
  "alloy-rt",
  "alloy-seam",
+ "alloy-sim",
  "bytes",
  "http",
  "http-body-util",
