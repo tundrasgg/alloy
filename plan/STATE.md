@@ -12,8 +12,8 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0128 |
-| Decision `D-` | D-0062 |
+| Task `T-` | T-0129 |
+| Decision `D-` | D-0063 |
 | ADR | 0069 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0003 |
@@ -33,11 +33,11 @@ Only tasks that are not done or cancelled. A finished task leaves the board in t
 | T-0111 | build | developer | review | none | Wire alloyd init, join, node channel, and heartbeats |
 | T-0112 | build | developer | queued | T-0126 builds | Add alloy init, join, login, and node list to the CLI |
 | T-0113 | verify | verifier | review | T-0111 | Write the M11 rung 2 join and node list check |
-| T-0116 | build | developer | active | none | Implement the crossed rekey rule in alloy-link |
 | T-0119 | spec | architect | queued | before rung 5 | Keep VNI binds alive across crossed rekeys, record the ADR |
-| T-0121 | build | developer | active | none | Create keys and stores locked down in alloy-id and alloy-state |
+| T-0121 | build | developer | review | none | Create keys and stores locked down in alloy-id and alloy-state |
 | T-0126 | spec | architect | active | none | Specify what M11 rung 2 builds of init, join, and local admin |
-| T-0127 | build | developer | queued | T-0116 | Let alloy-link accept unknown initiators and draw counters |
+| T-0127 | build | developer | active | none | Let alloy-link accept unknown initiators and draw counters |
+| T-0128 | verify | verifier | active | none | Expect the native store refusal on unelevated Windows |
 
 ## Still to cut for M0
 
