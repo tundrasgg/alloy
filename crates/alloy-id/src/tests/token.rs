@@ -269,3 +269,19 @@ fn the_token_key_is_seeded_by_the_secret_under_its_context() {
     let signature = secret.token_key().sign(message);
     assert!(expected.verify(message, &signature).is_ok());
 }
+
+#[test]
+fn the_join_message_is_the_context_cluster_mesh_key_and_body() {
+    use crate::token::{JOIN_CONTEXT, join_message};
+    let cluster = ClusterId::from_bytes([1; 16]);
+    let mesh = PublicKey::from_bytes([2; 32]);
+    let message = join_message(&cluster, &mesh, b"body");
+    let mut expected = b"alloy/id/join/v1".to_vec();
+    expected.extend_from_slice(&[1; 16]);
+    expected.extend_from_slice(&[2; 32]);
+    expected.extend_from_slice(b"body");
+    assert_eq!(message, expected);
+    assert_eq!(JOIN_CONTEXT.len(), 16);
+    let other = join_message(&cluster, &PublicKey::from_bytes([3; 32]), b"body");
+    assert_ne!(message, other);
+}

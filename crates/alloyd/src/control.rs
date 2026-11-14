@@ -16,14 +16,15 @@ use std::task::Poll;
 use alloy_api::tls::{Protocol, ServerCert, server_config};
 use alloy_api::{AdminLimits, ApiPort, ApiServer, Transport};
 use alloy_crypto::aead::AeadKey;
+use alloy_crypto::al::StaticSecret;
 use alloy_crypto::ecdsa::SigningKey as P256Key;
-use alloy_crypto::ed25519::VerifyingKey;
+use alloy_crypto::ed25519::{SigningKey, VerifyingKey};
 use alloy_crypto::tls::ApiCaFingerprint;
 use alloy_id::proto::NodeState as StoredNode;
 use alloy_id::{DataDir, NodeRecord, Role, SignedNodeRecord, StoreError};
 use alloy_rt::{
     BoxFuture, JoinHandle, Listener, NetError, Protection, RtPath, Runtime, Stream, StreamAddr,
-    TaskName,
+    TaskName, UdpSocket,
 };
 use alloy_seam::{ImplName, RegistryBuilder, SeamConfig};
 use alloy_state::{
@@ -34,6 +35,8 @@ use tracing::{debug, warn};
 
 use crate::api::{ControlPlane, GroupSlot, Plane};
 use crate::channel::heartbeat::{self, HeartbeatResult, Schedule};
+use crate::mesh::{Mesh, MeshHandle, reserve_counter};
+use crate::nodes::{NodeService, Own};
 
 /// Why a control node could not start or stop.
 #[derive(Debug, thiserror::Error)]
@@ -160,11 +163,17 @@ pub struct Listeners {
     /// The local admin socket (ARFC 0007 clause 3.10.2), when the platform
     /// has one.
     pub admin: Option<Box<dyn Listener>>,
+    /// The mesh port: UDP, one socket per address family, on which the
+    /// node answers its join service and its nodes' node messages.
+    pub mesh: Vec<Box<dyn UdpSocket>>,
 }
 
 /// What a control node holds of its cluster, read from its data directory.
 struct Stored {
+    signed: SignedNodeRecord,
     record: NodeRecord,
+    cluster_key: SigningKey,
+    mesh_key: StaticSecret,
     cluster_id: [u8; 16],
     at_rest: AeadKey,
     server: ServerCert,
@@ -194,9 +203,20 @@ async fn read_stored(runtime: &Runtime, paths: &NodePaths) -> Result<Stored, Nod
         .record
         .as_ref()
         .ok_or(NodeError::NotJoined("the node file holds no record"))?;
-    let record = SignedNodeRecord::from_proto(signed)
-        .and_then(|s| s.verify(&cluster_pub))
+    let signed = SignedNodeRecord::from_proto(signed)
         .map_err(|e| NodeError::Damaged(format!("the node record: {e}")))?;
+    let record = signed
+        .verify(&cluster_pub)
+        .map_err(|e| NodeError::Damaged(format!("the node record: {e}")))?;
+    let cluster_key = <[u8; 32]>::try_from(opened.secrets.cluster_key.as_slice())
+        .map(|seed| SigningKey::from_seed(&seed))
+        .map_err(|_| damaged("the cluster key"))?;
+    if cluster_key.verifying_key().as_bytes() != cluster_pub.as_bytes() {
+        return Err(damaged("the cluster key is not the cluster's"));
+    }
+    let mesh_key = <[u8; 32]>::try_from(opened.secrets.mesh_key.as_slice())
+        .map(StaticSecret::from_bytes)
+        .map_err(|_| damaged("the mesh key"))?;
     let cluster_id: [u8; 16] = state
         .cluster_id
         .as_slice()
@@ -216,7 +236,10 @@ async fn read_stored(runtime: &Runtime, paths: &NodePaths) -> Result<Stored, Nod
         .ok_or_else(|| damaged("the API CA certificate"))?
         .0;
     Ok(Stored {
+        signed,
         record,
+        cluster_key,
+        mesh_key,
         cluster_id,
         at_rest: AeadKey::from_bytes(opened.key.as_bytes()),
         server,
@@ -318,6 +341,34 @@ impl ControlNode {
                         .await;
                 })?);
         }
+        let counter = reserve_counter(&paths.data).await?;
+        let cluster_id = alloy_id::ClusterId::from_bytes(stored.cluster_id);
+        let (mesh, inbound) = Mesh::new(
+            runtime,
+            stored.mesh_key,
+            counter,
+            paths.data.clone(),
+            cluster_id,
+            true,
+        );
+        let (handle, commands) = MeshHandle::channel();
+        node.tasks
+            .push(runtime.spawn(task("control-mesh"), mesh.run(listeners.mesh, commands))?);
+        let service = NodeService::new(
+            runtime,
+            Arc::clone(&group),
+            paths.data.clone(),
+            cluster_id,
+            stored.cluster_key,
+            Own {
+                name: name.clone(),
+                signed: stored.signed,
+                record: stored.record,
+            },
+            handle,
+        );
+        node.tasks
+            .push(runtime.spawn(task("node-channel"), service.serve(inbound))?);
         let beat = runtime.clone();
         node.tasks
             .push(runtime.spawn(task("heartbeat"), async move {

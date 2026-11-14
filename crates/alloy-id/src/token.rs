@@ -79,6 +79,22 @@ impl TokenSecret {
     }
 }
 
+/// The first 16 bytes of the join message (section 3.3 step 6).
+pub const JOIN_CONTEXT: &[u8; 16] = b"alloy/id/join/v1";
+
+/// The join message both signatures of a `JoinRequest` cover (section 3.3
+/// step 6): [`JOIN_CONTEXT`], `cluster_id`, the mesh key the AL session
+/// authenticated, and the bytes of the encoded `JoinRequestBody` as sent.
+#[must_use]
+pub fn join_message(cluster_id: &ClusterId, mesh_pub: &al::PublicKey, body: &[u8]) -> Vec<u8> {
+    let mut message = Vec::with_capacity(JOIN_CONTEXT.len() + 16 + 32 + body.len());
+    message.extend_from_slice(JOIN_CONTEXT);
+    message.extend_from_slice(cluster_id.as_bytes());
+    message.extend_from_slice(mesh_pub.as_bytes());
+    message.extend_from_slice(body);
+    message
+}
+
 /// The context of the token key's seed (section 3.2).
 pub const TOKEN_KEY_CONTEXT: &[u8; 21] = b"alloy/id/token-key/v1";
 

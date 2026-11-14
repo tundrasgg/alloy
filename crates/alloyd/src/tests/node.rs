@@ -31,7 +31,8 @@ use alloy_rt::{
 
 use crate::data_dir::{JoinState, Location};
 use crate::init::{InitError, InitOptions, init};
-use crate::{ControlNode, Listeners, NodePaths, SHUTDOWN_GRACE, os_runtime};
+use crate::join::{JoinError, JoinOptions, Refusal, join};
+use crate::{ControlNode, Listeners, MemberNode, NodePaths, SHUTDOWN_GRACE, os_runtime};
 
 /// A data directory path no other test uses.
 fn temp_data_dir(name: &str, rng: &dyn alloy_rt::Rng) -> PathBuf {
@@ -236,9 +237,11 @@ impl Machine {
     /// socket on a new listener whose address it returns.
     async fn start(&self, api: Box<dyn Listener>) -> (ControlNode, SocketAddr) {
         let (admin, admin_addr) = listen(&self.runtime, 0);
+        let (mesh, _) = mesh_socket(&self.runtime);
         let listeners = Listeners {
             api,
             admin: Some(Box::new(AsRoot(admin))),
+            mesh: vec![mesh],
         };
         let node = ControlNode::start(
             &self.runtime,
@@ -450,5 +453,274 @@ fn init_refuses_options_out_of_range_and_writes_nothing() {
             .await
             .expect("list");
         assert!(listed.is_empty(), "{listed:?}");
+    });
+}
+
+/// A data directory beside the machine's own, for another node on the same
+/// host, created empty and removed by [`Other::remove`].
+struct Other {
+    location: Location,
+    native: PathBuf,
+}
+
+impl Other {
+    async fn new(m: &Machine, name: &str) -> Other {
+        let native = temp_data_dir(name, m.runtime.rng().as_ref());
+        let location = Location::of(&native).expect("location");
+        m.runtime
+            .disk_io()
+            .create_dir(location.dir())
+            .await
+            .expect("data directory");
+        Other { location, native }
+    }
+
+    fn paths(&self, m: &Machine) -> NodePaths {
+        NodePaths {
+            data: DataDir::new(Arc::clone(m.runtime.disk_io()), self.location.dir().clone()),
+            dir: self.location.dir().clone(),
+            native: self.native.clone(),
+        }
+    }
+
+    async fn remove(self, m: &Machine) {
+        crate::init::remove_tree(m.runtime.disk_io().as_ref(), self.location.dir())
+            .await
+            .expect("cleanup");
+    }
+}
+
+/// A UDP socket on a free loopback port, and the port.
+fn mesh_socket(runtime: &Runtime) -> (Box<dyn alloy_rt::UdpSocket>, u16) {
+    let socket = runtime
+        .net()
+        .bind_udp(
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+            alloy_rt::UdpOptions::default(),
+        )
+        .expect("bind");
+    let port = socket.local_addr().port();
+    (socket, port)
+}
+
+/// A free UDP port: bound once on loopback, then released.
+fn free_udp_port(runtime: &Runtime) -> u16 {
+    mesh_socket(runtime).1
+}
+
+fn facts(os: &str, virtualization: bool) -> alloy_id::proto::Facts {
+    alloy_id::proto::Facts {
+        os: os.to_owned(),
+        arch: "x86_64".to_owned(),
+        cores: 4,
+        memory_bytes: 8 << 30,
+        virtualization,
+        disks: Vec::new(),
+    }
+}
+
+fn join_options(token: &str, name: &str, os: &str, mesh_port: u16) -> JoinOptions {
+    JoinOptions {
+        token: Zeroizing::new(token.to_owned()),
+        name: name.to_owned(),
+        name_is_default: false,
+        roles: None,
+        zone: None,
+        advertise: vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
+        mesh_port,
+        api_port: 443,
+        facts: facts(os, true),
+    }
+}
+
+/// Starts the control node of `m` with its API on `api` and its mesh on
+/// `mesh`.
+async fn start_control(
+    m: &Machine,
+    api: Box<dyn Listener>,
+    mesh: Box<dyn alloy_rt::UdpSocket>,
+) -> ControlNode {
+    let listeners = Listeners {
+        api,
+        admin: None,
+        mesh: vec![mesh],
+    };
+    ControlNode::start(&m.runtime, &m.paths(), move |_| Ok(listeners), m.transport)
+        .await
+        .expect("start")
+}
+
+async fn start_member(m: &Machine, other: &Other) -> MemberNode {
+    let runtime = m.runtime.clone();
+    MemberNode::start(&m.runtime, &other.paths(m), move |record| {
+        crate::mesh::bind(&runtime, record.mesh_port).map_err(crate::NodeError::Listen)
+    })
+    .await
+    .expect("member")
+}
+
+/// Every node, once `count` of them are `active` and each has a heartbeat
+/// accepted at or after `since`, within 40 seconds.
+async fn all_heard(m: &Machine, client: &Client, count: usize, since: i64) -> Vec<Node> {
+    for _ in 0..400 {
+        if let Ok(nodes) = client.list_all_nodes().await {
+            let heard = |n: &Node| {
+                n.status.as_ref().is_some_and(|s| {
+                    s.state == i32::from(NodeState::Active)
+                        && s.last_heartbeat_time
+                            .as_ref()
+                            .is_some_and(|t| t.seconds >= since)
+                })
+            };
+            if nodes.len() == count && nodes.iter().all(heard) {
+                return nodes;
+            }
+        }
+        m.runtime.sleep(Duration::from_millis(100)).await;
+    }
+    let nodes = client.list_all_nodes().await;
+    panic!("the nodes were not all active and heard from: {nodes:?}");
+}
+
+fn roles_of(node: &Node) -> Vec<i32> {
+    node.spec
+        .as_ref()
+        .map(|s| s.roles.clone())
+        .unwrap_or_default()
+}
+
+#[test]
+fn three_nodes_on_loopback_are_healthy_and_heal_after_a_control_node_restart() {
+    Machine::new("cluster").run(async |m| {
+        let (api, addr) = listen(&m.runtime, 0);
+        let (mesh, mesh_port) = mesh_socket(&m.runtime);
+        let mut init_options = options(addr.port());
+        init_options.mesh_port = mesh_port;
+        let done = init(&m.runtime, &m.paths(), &init_options)
+            .await
+            .expect("init");
+        let control = start_control(m, api, mesh).await;
+
+        // One Linux node and one client node join with the token `init`
+        // printed.
+        let linux = Other::new(m, "linux-2").await;
+        let options = join_options(
+            &done.join_token,
+            "linux-2",
+            "linux",
+            free_udp_port(&m.runtime),
+        );
+        let joined = join(&m.runtime, &linux.paths(m), &options)
+            .await
+            .expect("the Linux node joins");
+        assert_eq!(joined.node, "linux-2");
+        assert_eq!(
+            joined.roles,
+            alloy_id::Roles::of(&[alloy_id::Role::Compute, alloy_id::Role::Storage])
+        );
+        assert_eq!(joined.zone, "default");
+        let laptop = Other::new(m, "laptop").await;
+        let options = join_options(
+            &done.join_token,
+            "laptop",
+            "windows",
+            free_udp_port(&m.runtime),
+        );
+        let joined = join(&m.runtime, &laptop.paths(m), &options)
+            .await
+            .expect("the client node joins");
+        assert!(joined.roles.is_empty(), "{joined:?}");
+        // A second join on a joined machine changes nothing.
+        let again = join(&m.runtime, &laptop.paths(m), &options).await;
+        assert!(
+            matches!(again, Err(JoinError::Conflict(JoinState::Joined))),
+            "{again:?}"
+        );
+
+        let linux_node = start_member(m, &linux).await;
+        let laptop_node = start_member(m, &laptop).await;
+
+        let code = LoginCode::decode(&done.login_code).expect("code");
+        let anonymous = m.client(&code, &Credential::None).await;
+        let key = anonymous
+            .exchange_login_code(exchange(&code, "laptop"))
+            .await
+            .expect("exchange");
+        let credential = Credential::AccessKey(AccessKeyCredential::new(
+            &key.access_key_id,
+            Zeroizing::new(key.secret.clone()),
+        ));
+        let admin = m.client(&code, &credential).await;
+        let nodes = all_heard(m, &admin, 3, 0).await;
+        let names: Vec<&str> = nodes.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, ["laptop", "linux-1", "linux-2"]);
+        assert!(roles_of(&nodes[0]).is_empty());
+        assert_eq!(
+            roles_of(&nodes[2]),
+            [i32::from(Role::Compute), i32::from(Role::Storage)]
+        );
+        drop((anonymous, admin));
+
+        // The control node restarts from its stored state; the other two
+        // make new sessions and are heard from again.
+        control.stop().await.expect("stop");
+        let restarted = m.runtime.clock().wall().0.div_euclid(1_000_000_000);
+        let (api, _) = listen(&m.runtime, addr.port());
+        let mesh = m
+            .runtime
+            .net()
+            .bind_udp(
+                SocketAddr::from((Ipv4Addr::LOCALHOST, mesh_port)),
+                alloy_rt::UdpOptions::default(),
+            )
+            .expect("the mesh port again");
+        let control = start_control(m, api, mesh).await;
+        let admin = m.client(&code, &credential).await;
+        let nodes = all_heard(m, &admin, 3, restarted).await;
+        assert_eq!(nodes.len(), 3);
+
+        // A joiner whose token has another secret is refused, and is left
+        // unjoined with its keys.
+        let mut wrong = JoinToken::decode(&done.join_token).expect("token");
+        wrong.secret = alloy_id::token::TokenSecret::from_bytes([9; 16]);
+        let wrong = wrong.encode().expect("encode");
+        let stranger = Other::new(m, "stranger").await;
+        let options = join_options(&wrong, "stranger", "linux", free_udp_port(&m.runtime));
+        let refused = join(&m.runtime, &stranger.paths(m), &options)
+            .await
+            .expect_err("refused");
+        assert!(
+            matches!(refused, JoinError::Refused(Refusal::TokenRefused)),
+            "{refused:?}"
+        );
+        assert_eq!(refused.exit_code(), 4);
+        let data = stranger.paths(m).data;
+        let head = data
+            .read(alloy_id::store::HOST_FILE)
+            .await
+            .expect("read")
+            .expect("host file");
+        assert_eq!(
+            crate::data_dir::parse_host_file(&head).expect("parse"),
+            JoinState::Unjoined
+        );
+        let kept = data
+            .open(m.runtime.rng().as_ref())
+            .await
+            .expect("open")
+            .expect("keys kept");
+        assert_eq!(kept.secrets.identity_key.len(), 32);
+        assert!(kept.secrets.join_token.is_empty());
+        assert!(data.read_node_state().await.expect("read").is_none());
+        let nodes = admin.list_all_nodes().await.expect("list");
+        assert_eq!(nodes.len(), 3);
+        drop(admin);
+
+        linux_node.stop().await;
+        laptop_node.stop().await;
+        control.stop().await.expect("stop");
+        for other in [linux, laptop, stranger] {
+            other.remove(m).await;
+        }
     });
 }

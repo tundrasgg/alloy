@@ -17,11 +17,16 @@
 //! (the `service` module); tests call it with a [`Stop`] of their own.
 //!
 //! On a node whose local join state is `joined` and whose record holds
-//! `control`, it serves the API port and the local admin socket over the
-//! global group ([`ControlNode`]), and makes the node's own heartbeats.
+//! `control`, it serves the API port, the local admin socket, and the join
+//! service over the global group ([`ControlNode`]), and makes the node's own
+//! heartbeats. On any other joined node, a Linux node or a client node, it
+//! heartbeats to and renews with the control plane over AL sessions to its
+//! homes ([`MemberNode`]). On a node in local join state `joining` it first
+//! resumes the join ([`join::resume`]).
 //!
 //! [`init`](mod@init) is the interface `alloy init` calls to create a cluster
-//! (ARFC 0002 section 3.1).
+//! (ARFC 0002 section 3.1), and [`join`](mod@join) the one `alloy join`
+//! calls to join one (section 3.3).
 //!
 //! [`channel`] holds the sans-I/O parts of the node channel (ARFC 0002
 //! section 3.13), which the node's `init`, `join`, and heartbeats run on.
@@ -34,7 +39,12 @@ pub mod channel;
 mod control;
 mod data_dir;
 pub mod init;
+pub mod join;
 mod log;
+mod member;
+mod mesh;
+mod nodes;
+mod records;
 #[cfg(windows)]
 pub mod service;
 mod signals;
@@ -63,6 +73,7 @@ pub use data_dir::{
     default_data_dir, parse_host_file,
 };
 pub use log::LineLog;
+pub use member::MemberNode;
 pub use signals::os_signals;
 pub use stop::{Stop, StopCause};
 
@@ -176,11 +187,22 @@ where
     let check = data_dir::check_at_start(runtime.disk_io().as_ref(), location).await;
     let mut node = None;
     match &check {
-        StartCheck::Alloy => {
-            if report_join_state(&runtime, location).await == Some(JoinState::Joined) {
+        StartCheck::Alloy => match report_join_state(&runtime, location).await {
+            Some(JoinState::Joined) => {
                 node = start_node(&runtime, options, location, transport).await;
             }
-        }
+            Some(JoinState::Joining) => {
+                let paths = node_paths(&runtime, options, location);
+                match join::resume(&runtime, &paths).await {
+                    Ok(joined) => {
+                        info!(node = %joined.node, "the join was resumed and is complete");
+                        node = start_node(&runtime, options, location, transport).await;
+                    }
+                    Err(e) => warn!(error = %e, "the join could not be resumed"),
+                }
+            }
+            Some(JoinState::Unjoined) | None => {}
+        },
         StartCheck::Missing => log_not_initialized(),
         StartCheck::NotAlloy(reason) => log_not_alloy(reason),
     }
@@ -203,30 +225,52 @@ where
 /// The local admin socket (ARFC 0007 clause 3.10.2).
 pub const ADMIN_SOCKET: &str = "/run/alloy/admin.sock";
 
-/// Starts serving the node of the data directory, when it holds
-/// `control`. `None`, logged, when it does not or cannot.
+/// A node `alloyd` serves.
+#[derive(Debug)]
+enum Serving {
+    Control(ControlNode),
+    Member(MemberNode),
+}
+
+fn node_paths(runtime: &Runtime, options: &RunOptions, location: &data_dir::Location) -> NodePaths {
+    NodePaths {
+        data: alloy_id::DataDir::new(Arc::clone(runtime.disk_io()), location.dir().clone()),
+        dir: location.dir().clone(),
+        native: options.data_dir.clone(),
+    }
+}
+
+/// Starts serving the joined node of the data directory: as a control node
+/// when it holds `control`, else as a member node. `None`, logged, when it
+/// cannot.
 async fn start_node(
     runtime: &Runtime,
     options: &RunOptions,
     location: &data_dir::Location,
     transport: alloy_api::Transport,
-) -> Option<ControlNode> {
-    let paths = NodePaths {
-        data: alloy_id::DataDir::new(Arc::clone(runtime.disk_io()), location.dir().clone()),
-        dir: location.dir().clone(),
-        native: options.data_dir.clone(),
-    };
+) -> Option<Serving> {
+    let paths = node_paths(runtime, options, location);
     let admin = admin_dir_ready(runtime).await;
-    let listen = |record: &alloy_id::NodeRecord| listeners(runtime, record.api_port, admin);
+    let listen = |record: &alloy_id::NodeRecord| listeners(runtime, record, admin);
     match ControlNode::start(runtime, &paths, listen, transport).await {
         Ok(node) => {
             info!(
                 node = node.name(),
-                "serving the API and the local admin socket"
+                "serving the API, the local admin socket, and the join service"
             );
-            Some(node)
+            return Some(Serving::Control(node));
         }
-        Err(NodeError::NotControl) => None,
+        Err(NodeError::NotControl) => {}
+        Err(e) => {
+            error!(error = %e, "this node cannot serve");
+            return None;
+        }
+    }
+    let bind = |record: &alloy_id::NodeRecord| {
+        mesh::bind(runtime, record.mesh_port).map_err(NodeError::Listen)
+    };
+    match MemberNode::start(runtime, &paths, bind).await {
+        Ok(node) => Some(Serving::Member(node)),
         Err(e) => {
             error!(error = %e, "this node cannot serve");
             None
@@ -234,17 +278,27 @@ async fn start_node(
     }
 }
 
-async fn stop_node(node: Option<ControlNode>) {
-    if let Some(node) = node
-        && let Err(e) = node.stop().await
-    {
-        warn!(error = %e, "the control node did not stop cleanly");
+async fn stop_node(node: Option<Serving>) {
+    match node {
+        Some(Serving::Control(node)) => {
+            if let Err(e) = node.stop().await {
+                warn!(error = %e, "the control node did not stop cleanly");
+            }
+        }
+        Some(Serving::Member(node)) => node.stop().await,
+        None => {}
     }
 }
 
 /// The API port on every local address, IPv4 and IPv6 (ARFC 0008 clause
-/// 3.8), and the local admin socket when `admin`.
-fn listeners(runtime: &Runtime, api_port: u16, admin: bool) -> Result<Listeners, NodeError> {
+/// 3.8), the mesh port likewise, and the local admin socket when `admin`.
+fn listeners(
+    runtime: &Runtime,
+    record: &alloy_id::NodeRecord,
+    admin: bool,
+) -> Result<Listeners, NodeError> {
+    let api_port = record.api_port;
+    let mesh = mesh::bind(runtime, record.mesh_port)?;
     let net = runtime.net();
     let options = ListenOptions::default();
     let v4 = net.listen(
@@ -274,7 +328,7 @@ fn listeners(runtime: &Runtime, api_port: u16, admin: bool) -> Result<Listeners,
     } else {
         None
     };
-    Ok(Listeners { api, admin })
+    Ok(Listeners { api, admin, mesh })
 }
 
 /// Makes `/run/alloy` ready for the local admin socket (ARFC 0007 clause

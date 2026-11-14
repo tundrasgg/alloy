@@ -37,6 +37,8 @@ use alloy_state::{
 
 use crate::control::{NodeError, NodePaths, create_state_dir, open_group};
 use crate::data_dir::{JoinState, parse_host_file};
+use crate::join::host_file;
+use crate::records::{self, Enrolled};
 
 /// The zone `init` puts the node in (ARFC 0002 section 3.1).
 pub const DEFAULT_ZONE: &str = "default";
@@ -129,12 +131,6 @@ impl From<GroupError> for InitError {
     fn from(error: GroupError) -> InitError {
         InitError::Node(NodeError::Group(error))
     }
-}
-
-/// The host file with join state `state` (ARFC 0017 section 4.2), before any
-/// `alloyd` has started.
-fn host_file(state: JoinState) -> String {
-    format!("alloy-host 1\njoin {state}\nrelease none\n")
 }
 
 /// Runs the steps of `init` that write, in the data directory at `paths`, on
@@ -265,7 +261,16 @@ async fn create(
 
     create_state_dir(runtime, paths).await?;
     let group = open_group(runtime, paths, MemberId(*record.node_id.as_bytes())).await?;
-    let created = populate(runtime, &group, &record, &cluster_pub, &api_ca, now).await;
+    let created = populate(
+        runtime,
+        &group,
+        &signed,
+        &record,
+        &cluster_pub,
+        &api_ca,
+        now,
+    )
+    .await;
     let shut = group.shutdown().await;
     let (join_token, login_code) = created?;
     shut?;
@@ -290,6 +295,7 @@ fn state_role(role: Role) -> StateRole {
 async fn populate(
     runtime: &Runtime,
     group: &Group,
+    signed: &SignedNodeRecord,
     record: &NodeRecord,
     cluster_pub: &alloy_crypto::ed25519::VerifyingKey,
     api_ca: &ApiCa,
@@ -318,6 +324,8 @@ async fn populate(
             BTreeMap::new(),
         )
         .await?;
+    let own = Enrolled::new(signed.clone(), record.clone(), None, None, None);
+    records::store(group, cluster_pub, &own).await?;
     group.create_org(DEFAULT_ORG, true).await?;
     group
         .create_user(
