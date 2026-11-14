@@ -38,6 +38,7 @@ mod args;
 pub mod channel;
 mod control;
 mod data_dir;
+mod host_objects;
 pub mod init;
 pub mod join;
 mod log;
@@ -287,7 +288,7 @@ async fn start_node(
     transport: alloy_api::Transport,
 ) -> Option<Serving> {
     let paths = node_paths(runtime, options, location);
-    let admin = admin_dir_ready(runtime).await;
+    let admin = admin_dir_ready(runtime, &paths.data).await;
     let listen = |record: &alloy_id::NodeRecord| listeners(runtime, record, admin);
     let bind = |record: &alloy_id::NodeRecord| {
         mesh::bind(runtime, record.mesh_port).map_err(NodeError::Listen)
@@ -363,20 +364,21 @@ fn listeners(
 }
 
 /// Makes `/run/alloy` ready for the local admin socket (ARFC 0007 clause
-/// 3.10.2): creates it `Private` when missing, refuses it when it is not a
-/// directory owned by user id 0 with mode `0700`, and removes an entry an
-/// earlier start left at the socket path. `false`, logged, when no socket
+/// 3.10.2): creates it `Private` when missing, after adding its `run` line
+/// to the host file of `data` (ARFC 0017 section 4.2), refuses it when it is
+/// not a directory owned by user id 0 with mode `0700`, and removes an entry
+/// an earlier start left at the socket path. `false`, logged, when no socket
 /// may be created, as on Windows, which has no local admin socket.
-async fn admin_dir_ready(runtime: &Runtime) -> bool {
+async fn admin_dir_ready(runtime: &Runtime, data: &alloy_id::DataDir) -> bool {
     if !cfg!(unix) {
         return false;
     }
-    prepare_admin_dir(runtime.disk_io().as_ref()).await
+    prepare_admin_dir(runtime.disk_io().as_ref(), data).await
 }
 
 /// The work of [`admin_dir_ready`] on `disk`, a `disk-io` rooted at `/`, on
 /// any platform. Every `false` is logged at warn.
-async fn prepare_admin_dir(disk: &dyn DiskIo) -> bool {
+async fn prepare_admin_dir(disk: &dyn DiskIo, data: &alloy_id::DataDir) -> bool {
     let refuse = |why: String| {
         warn!(reason = %why, "no local admin socket is created");
         false
@@ -390,7 +392,17 @@ async fn prepare_admin_dir(disk: &dyn DiskIo) -> bool {
     };
     match disk.security(&dir).await {
         Err(DiskError::NotFound) => {
+            let line = match host_objects::read_boot_id(disk).await {
+                Ok(boot_id) => host_objects::run_line(&boot_id, &dir),
+                Err(e) => return refuse(format!("/run/alloy cannot be recorded: {e}")),
+            };
+            if let Err(e) = host_objects::add_line(data, &line).await {
+                return refuse(format!("/run/alloy cannot be recorded: {e}"));
+            }
             if let Err(e) = disk.create_dir_protected(&dir, Protection::Private).await {
+                if let Err(undo) = host_objects::remove_line(data, &line).await {
+                    warn!(line = %line, reason = %undo, "the host file line could not be removed");
+                }
                 return refuse(format!("/run/alloy could not be created: {e}"));
             }
         }
@@ -713,11 +725,27 @@ mod tests {
         assert!(!log.contains("alloyd started"), "{log}");
     }
 
+    /// The boot id the `mem` hosts of these tests report.
+    const BOOT_ID: &str = "6a2b8f0e-1c3d-4e5f-8a9b-0c1d2e3f4a5b";
+
+    /// The host file of a joined node before `alloyd` adds any line.
+    const HOST_HEAD: &str = "alloy-host 1\njoin joined\nrelease none\n";
+
+    /// The `run` line of `/run/alloy` in the boot [`BOOT_ID`].
+    fn run_line() -> String {
+        format!("run {BOOT_ID} /run/alloy")
+    }
+
     /// Runs `body` on the `mem` `disk-io` of a fresh simulated host, rooted
-    /// at `/`, after creating `/run` as a Linux host has it.
+    /// at `/`, after creating `/run` and the boot id file as a Linux host has
+    /// them, and a data directory at `/var/lib/alloyd` whose host file is
+    /// [`HOST_HEAD`].
     fn on_mem_disk<F>(body: F)
     where
-        F: Fn(Arc<dyn DiskIo>) -> alloy_rt::BoxFuture<'static, ()> + Send + Sync + 'static,
+        F: Fn(Arc<dyn DiskIo>, alloy_id::DataDir) -> alloy_rt::BoxFuture<'static, ()>
+            + Send
+            + Sync
+            + 'static,
     {
         use alloy_sim::{HostBoot, HostConfig, RunConfig, RunResult};
         let done: Arc<Mutex<bool>> = Arc::default();
@@ -731,10 +759,28 @@ mod tests {
                     let body = Arc::clone(&body);
                     Box::pin(async move {
                         let disk = Arc::clone(boot.runtime.disk_io());
-                        disk.create_dir(&RtPath::new("/run").unwrap())
+                        for dir in [
+                            "/run",
+                            "/proc",
+                            "/proc/sys",
+                            "/proc/sys/kernel",
+                            "/proc/sys/kernel/random",
+                            "/var",
+                            "/var/lib",
+                        ] {
+                            disk.create_dir(&RtPath::new(dir).unwrap()).await.unwrap();
+                        }
+                        let random = RtPath::new("/proc/sys/kernel/random").unwrap();
+                        alloy_id::DataDir::new(Arc::clone(&disk), random)
+                            .write("boot_id", format!("{BOOT_ID}\n").as_bytes())
                             .await
                             .unwrap();
-                        body(disk).await;
+                        let dir = RtPath::new("/var/lib/alloyd").unwrap();
+                        let data = alloy_id::DataDir::create(Arc::clone(&disk), dir)
+                            .await
+                            .unwrap();
+                        data.write(HOST_FILE, HOST_HEAD.as_bytes()).await.unwrap();
+                        body(disk, data).await;
                         *set.lock().unwrap() = true;
                     })
                 })))
@@ -748,6 +794,12 @@ mod tests {
         assert!(*done.lock().unwrap());
     }
 
+    /// The host file of `data`, as text.
+    async fn host_text(data: &alloy_id::DataDir) -> String {
+        let bytes = data.read(HOST_FILE).await.unwrap().unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
     fn admin_dir() -> RtPath {
         RtPath::new("/run/alloy").unwrap()
     }
@@ -756,13 +808,113 @@ mod tests {
         admin_dir().join("admin.sock").unwrap()
     }
 
+    /// A `disk-io` that, when asked to create `/run/alloy`, first records
+    /// the host file and whether `/run/alloy` exists, then creates it.
+    #[derive(Debug)]
+    struct Watched {
+        inner: Arc<dyn DiskIo>,
+        data: alloy_id::DataDir,
+        seen: Mutex<Option<(String, bool)>>,
+    }
+
+    impl DiskIo for Watched {
+        fn open<'a>(
+            &'a self,
+            path: &'a RtPath,
+            options: alloy_rt::OpenOptions,
+        ) -> alloy_rt::BoxFuture<'a, Result<Box<dyn alloy_rt::DiskFile>, DiskError>> {
+            self.inner.open(path, options)
+        }
+        fn metadata<'a>(
+            &'a self,
+            path: &'a RtPath,
+        ) -> alloy_rt::BoxFuture<'a, Result<alloy_rt::Metadata, DiskError>> {
+            self.inner.metadata(path)
+        }
+        fn list<'a>(
+            &'a self,
+            dir: &'a RtPath,
+        ) -> alloy_rt::BoxFuture<'a, Result<Vec<alloy_rt::DirEntry>, DiskError>> {
+            self.inner.list(dir)
+        }
+        fn create_dir<'a>(
+            &'a self,
+            path: &'a RtPath,
+        ) -> alloy_rt::BoxFuture<'a, Result<(), DiskError>> {
+            self.inner.create_dir(path)
+        }
+        fn remove<'a>(
+            &'a self,
+            path: &'a RtPath,
+        ) -> alloy_rt::BoxFuture<'a, Result<(), DiskError>> {
+            self.inner.remove(path)
+        }
+        fn rename<'a>(
+            &'a self,
+            from: &'a RtPath,
+            to: &'a RtPath,
+        ) -> alloy_rt::BoxFuture<'a, Result<(), DiskError>> {
+            self.inner.rename(from, to)
+        }
+        fn replace<'a>(
+            &'a self,
+            from: &'a RtPath,
+            to: &'a RtPath,
+        ) -> alloy_rt::BoxFuture<'a, Result<(), DiskError>> {
+            self.inner.replace(from, to)
+        }
+        fn sync_dir<'a>(
+            &'a self,
+            dir: &'a RtPath,
+        ) -> alloy_rt::BoxFuture<'a, Result<(), DiskError>> {
+            self.inner.sync_dir(dir)
+        }
+        fn create_file<'a>(
+            &'a self,
+            path: &'a RtPath,
+            protection: Protection,
+        ) -> alloy_rt::BoxFuture<'a, Result<Box<dyn alloy_rt::DiskFile>, DiskError>> {
+            self.inner.create_file(path, protection)
+        }
+        fn create_dir_protected<'a>(
+            &'a self,
+            path: &'a RtPath,
+            protection: Protection,
+        ) -> alloy_rt::BoxFuture<'a, Result<(), DiskError>> {
+            Box::pin(async move {
+                if *path == admin_dir() {
+                    let text = host_text(&self.data).await;
+                    let exists = self.inner.security(path).await.is_ok();
+                    *self.seen.lock().unwrap() = Some((text, exists));
+                }
+                self.inner.create_dir_protected(path, protection).await
+            })
+        }
+        fn security<'a>(
+            &'a self,
+            path: &'a RtPath,
+        ) -> alloy_rt::BoxFuture<'a, Result<Security, DiskError>> {
+            self.inner.security(path)
+        }
+        fn set_mode<'a>(
+            &'a self,
+            path: &'a RtPath,
+            mode: u32,
+        ) -> alloy_rt::BoxFuture<'a, Result<(), DiskError>> {
+            self.inner.set_mode(path, mode)
+        }
+        fn rt_path(&self, native: &str) -> Result<RtPath, DiskError> {
+            self.inner.rt_path(native)
+        }
+    }
+
     /// T-0149: `/run/alloy` is created `Private`, and nothing holds the
     /// socket path, so `admin.sock` may be bound there.
     #[test]
     fn the_admin_directory_is_created_private_on_a_disk_rooted_at_the_root() {
-        on_mem_disk(|disk| {
+        on_mem_disk(|disk, data| {
             Box::pin(async move {
-                assert!(prepare_admin_dir(disk.as_ref()).await);
+                assert!(prepare_admin_dir(disk.as_ref(), &data).await);
                 assert_eq!(
                     disk.security(&admin_dir()).await.unwrap(),
                     Security::Unix {
@@ -781,11 +933,102 @@ mod tests {
         });
     }
 
+    /// T-0153: the `run` line of `/run/alloy`, with the boot id read from
+    /// the boot id file, is in the host file before `/run/alloy` is created
+    /// (ARFC 0017 section 4.2), and stays once it is.
+    #[test]
+    fn the_run_line_is_written_before_the_admin_directory_is_created() {
+        on_mem_disk(|disk, data| {
+            Box::pin(async move {
+                let watched = Watched {
+                    inner: Arc::clone(&disk),
+                    data: data.clone(),
+                    seen: Mutex::new(None),
+                };
+                assert!(prepare_admin_dir(&watched, &data).await);
+                let (before, existed) = watched.seen.lock().unwrap().take().unwrap();
+                assert_eq!(before, format!("{HOST_HEAD}{}\n", run_line()));
+                assert!(!existed);
+                assert_eq!(host_text(&data).await, before);
+                assert!(disk.security(&admin_dir()).await.is_ok());
+            })
+        });
+    }
+
+    /// T-0153: a second start adds no second `run` line, whether
+    /// `/run/alloy` is still there or was removed since, in the same boot.
+    #[test]
+    fn a_second_start_adds_no_second_run_line() {
+        on_mem_disk(|disk, data| {
+            Box::pin(async move {
+                let once = format!("{HOST_HEAD}{}\n", run_line());
+                assert!(prepare_admin_dir(disk.as_ref(), &data).await);
+                assert!(prepare_admin_dir(disk.as_ref(), &data).await);
+                assert_eq!(host_text(&data).await, once);
+                disk.remove(&admin_dir()).await.unwrap();
+                assert!(prepare_admin_dir(disk.as_ref(), &data).await);
+                assert_eq!(host_text(&data).await, once);
+                assert!(disk.security(&admin_dir()).await.is_ok());
+            })
+        });
+    }
+
+    /// T-0153: when `/run/alloy` cannot be created, here because `/run` is
+    /// missing, its `run` line is removed again and no socket is created.
+    #[test]
+    fn a_failed_creation_leaves_no_run_line() {
+        let (_, log) = logged(|| {
+            on_mem_disk(|disk, data| {
+                Box::pin(async move {
+                    disk.remove(&RtPath::new("/run").unwrap()).await.unwrap();
+                    assert!(!prepare_admin_dir(disk.as_ref(), &data).await);
+                    assert_eq!(host_text(&data).await, HOST_HEAD);
+                    assert!(matches!(
+                        disk.security(&admin_dir()).await,
+                        Err(DiskError::NotFound)
+                    ));
+                })
+            });
+        });
+        assert!(
+            log.starts_with(
+                "WARN no local admin socket is created reason=\"/run/alloy could not be created"
+            ),
+            "{log}"
+        );
+    }
+
+    /// T-0153: without a boot id, `/run/alloy` cannot be recorded, so it is
+    /// not created and the host file is unchanged.
+    #[test]
+    fn without_a_boot_id_the_admin_directory_is_not_created() {
+        let (_, log) = logged(|| {
+            on_mem_disk(|disk, data| {
+                Box::pin(async move {
+                    let boot_id = RtPath::new(host_objects::BOOT_ID_FILE).unwrap();
+                    disk.remove(&boot_id).await.unwrap();
+                    assert!(!prepare_admin_dir(disk.as_ref(), &data).await);
+                    assert_eq!(host_text(&data).await, HOST_HEAD);
+                    assert!(matches!(
+                        disk.security(&admin_dir()).await,
+                        Err(DiskError::NotFound)
+                    ));
+                })
+            });
+        });
+        assert!(
+            log.starts_with(
+                "WARN no local admin socket is created reason=\"/run/alloy cannot be recorded"
+            ),
+            "{log}"
+        );
+    }
+
     /// An entry an earlier start left at the socket path is removed, in a
     /// `/run/alloy` that is already right.
     #[test]
     fn an_old_entry_at_the_socket_path_is_removed() {
-        on_mem_disk(|disk| {
+        on_mem_disk(|disk, data| {
             Box::pin(async move {
                 disk.create_dir_protected(&admin_dir(), Protection::Private)
                     .await
@@ -797,7 +1040,7 @@ mod tests {
                     exclusive: false,
                 };
                 drop(disk.open(&admin_socket(), options).await.unwrap());
-                assert!(prepare_admin_dir(disk.as_ref()).await);
+                assert!(prepare_admin_dir(disk.as_ref(), &data).await);
                 assert!(matches!(
                     disk.security(&admin_socket()).await,
                     Err(DiskError::NotFound)
@@ -811,11 +1054,11 @@ mod tests {
     #[test]
     fn a_wrong_admin_directory_is_refused_with_a_warning() {
         let (_, log) = logged(|| {
-            on_mem_disk(|disk| {
+            on_mem_disk(|disk, data| {
                 Box::pin(async move {
                     disk.create_dir(&admin_dir()).await.unwrap();
                     disk.set_mode(&admin_dir(), 0o755).await.unwrap();
-                    assert!(!prepare_admin_dir(disk.as_ref()).await);
+                    assert!(!prepare_admin_dir(disk.as_ref(), &data).await);
                 })
             });
         });
