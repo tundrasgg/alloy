@@ -13,7 +13,7 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 | Series | Next |
 |---|---|
 | Task `T-` | T-0137 |
-| Decision `D-` | D-0065 |
+| Decision `D-` | D-0066 |
 | ADR | 0069 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0003 |
