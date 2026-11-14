@@ -12,6 +12,12 @@
 //! and random draw of `openraft` goes through the [`alloy_rt::Runtime`] the
 //! group is opened with. [`Group`] serves the resource operations of ARFC
 //! 0006 section 2.1: create, get, list, update with a generation, and delete.
+//!
+//! On them it serves the kind `Node` of section 2.6 ([`Node`]): it accepts
+//! heartbeats ([`Heartbeat`], section 4.3) as clause 3.14 says, holds what
+//! they report as soft state in memory, never through the group (section
+//! 2.3), and computes each node's [`NodeState`] when it is read (clause
+//! 3.15).
 
 #![forbid(unsafe_code)]
 
@@ -24,6 +30,8 @@ mod export;
 mod group;
 mod mem;
 mod native;
+mod node;
+mod nodes;
 mod resource;
 mod rt;
 mod rules;
@@ -31,6 +39,11 @@ mod store;
 
 pub use config::{MemStoreConfig, NativeStoreConfig};
 pub use group::{Group, GroupError};
+pub use node::{
+    HEARD_LEASE, Heartbeat, MAX_ADVERTISE, MAX_NODE_NAME, MAX_RELEASE, MAX_STATUS_ADDRESSES,
+    NODE_KIND, Node, NodeSpec, NodeState, NodeStatus, NodeView, RecordTerms, Release, Role,
+    StatusReply, last_heard, node_state,
+};
 pub use resource::{MAX_RESOURCE, Resource, ResourceError, Scope, Uid};
 pub use store::{
     ApplyBatch, Entry, LogId, LogState, LogStore, LogStoreSeam, MAX_APPEND_BYTES, MAX_BATCH_BYTES,
