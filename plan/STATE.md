@@ -35,8 +35,6 @@ Only tasks that are not done or cancelled. A finished task leaves the board in t
 | T-0140 | build | developer | review | none | Build the console shell and first screens on fixture data |
 | T-0142 | spec | architect | review | none | Close the session and bridge gaps of the T-0139 re-review |
 | T-0143 | spec | architect | review | none | Close the al0 gaps of the T-0137 re-review |
-| T-0146 | build | developer | active | none | Unbreak the v0.0.1-preview.3 release build |
-| T-0147 | verify | verifier | active | none | Renormalize the CRLF files under tests/conformance |
 | T-0145 | build | developer | paused | none | Close the CLI join gaps left after rung 2's merge |
 
 ## Still to cut for M0
