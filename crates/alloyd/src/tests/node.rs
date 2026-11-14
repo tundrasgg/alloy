@@ -724,3 +724,95 @@ fn three_nodes_on_loopback_are_healthy_and_heal_after_a_control_node_restart() {
         }
     });
 }
+
+#[test]
+fn joins_are_refused_by_name_and_compute_and_a_refused_joiner_retries_with_its_keys() {
+    Machine::new("refusals").run(async |m| {
+        let (api, addr) = listen(&m.runtime, 0);
+        let (mesh, mesh_port) = mesh_socket(&m.runtime);
+        let mut init_options = options(addr.port());
+        init_options.mesh_port = mesh_port;
+        let done = init(&m.runtime, &m.paths(), &init_options)
+            .await
+            .expect("init");
+        let control = start_control(m, api, mesh).await;
+        let token = done.join_token.as_str();
+
+        let first = Other::new(m, "first").await;
+        let options = join_options(token, "linux-2", "linux", free_udp_port(&m.runtime));
+        join(&m.runtime, &first.paths(m), &options)
+            .await
+            .expect("joins");
+
+        // A name given with --name that is in use is refused; the default
+        // name takes the lowest free suffix.
+        let second = Other::new(m, "second").await;
+        let port = free_udp_port(&m.runtime);
+        let taken = join(
+            &m.runtime,
+            &second.paths(m),
+            &join_options(token, "linux-2", "linux", port),
+        )
+        .await
+        .expect_err("name in use");
+        assert!(
+            matches!(taken, JoinError::Refused(Refusal::NameTaken)),
+            "{taken:?}"
+        );
+        assert_eq!(taken.exit_code(), 5);
+        let kept = second
+            .paths(m)
+            .data
+            .open(m.runtime.rng().as_ref())
+            .await
+            .expect("open")
+            .expect("keys kept");
+        let mut by_default = join_options(token, "linux-2", "linux", port);
+        by_default.name_is_default = true;
+        let joined = join(&m.runtime, &second.paths(m), &by_default)
+            .await
+            .expect("the retry joins");
+        assert_eq!(joined.node, "linux-2-2");
+        let reopened = second
+            .paths(m)
+            .data
+            .open(m.runtime.rng().as_ref())
+            .await
+            .expect("open")
+            .expect("keys");
+        // The retry used the keys the refused attempt kept.
+        assert_eq!(reopened.secrets.identity_key, kept.secrets.identity_key);
+        assert_eq!(reopened.secrets.mesh_key, kept.secrets.mesh_key);
+        assert!(reopened.secrets.join_request.is_none());
+
+        // Roles naming compute on a machine without virtualization are
+        // refused.
+        let third = Other::new(m, "third").await;
+        let mut compute = join_options(token, "linux-4", "linux", free_udp_port(&m.runtime));
+        compute.roles = Some(alloy_id::Roles::of(&[alloy_id::Role::Compute]));
+        compute.facts.virtualization = false;
+        let refused = join(&m.runtime, &third.paths(m), &compute)
+            .await
+            .expect_err("no virtualization");
+        assert!(
+            matches!(refused, JoinError::Refused(Refusal::ComputeUnsupported)),
+            "{refused:?}"
+        );
+        assert_eq!(refused.exit_code(), 2);
+        // A token that does not decode is a usage error, before anything is
+        // written.
+        let usage = join(
+            &m.runtime,
+            &third.paths(m),
+            &join_options("alyt_nope", "linux-4", "linux", 0),
+        )
+        .await
+        .expect_err("usage");
+        assert!(matches!(usage, JoinError::Usage(_)), "{usage:?}");
+
+        control.stop().await.expect("stop");
+        for other in [first, second, third] {
+            other.remove(m).await;
+        }
+    });
+}
