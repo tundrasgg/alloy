@@ -3,7 +3,7 @@
 - Status: accepted
 - Depends on: 0001
 - Crates: alloy-rt, alloy-sim, alloy-natlab
-- Decisions: 0008, 0036, 0039, 0045, 0054, 0068, 0069
+- Decisions: 0008, 0036, 0039, 0045, 0054, 0068, 0069, 0071
 
 ## 1. Purpose
 
@@ -14,7 +14,7 @@ before anything else.
 
 ## 2. Model
 
-`alloy-rt` defines five seams:
+`alloy-rt` defines six seams:
 
 | Seam | Trait | Gives |
 |---|---|---|
@@ -23,11 +23,17 @@ before anything else.
 | `disk-io` | `DiskIo` | Open, read at, write at, sync, truncate, list, direct block access, owner and permissions, durable replace |
 | `rng` | `Rng` | Random bytes |
 | `spawn` | `Spawn` | Start a task, join it, cancel it |
+| `host` | `Host` | Facts about the machine, free space at a path, and enabling, starting, stopping, and disabling the service `alloyd` and no other |
 
-A `Runtime` value bundles one instance of each. Every component takes a `Runtime`
-at construction and uses nothing else to reach the world.
+A `Runtime` value bundles one instance of each of the first five, and the
+**runtime kinds** in this ARFC are those five. Every component takes a
+`Runtime` at construction and uses nothing else to reach the world, except
+that `alloy init` and `alloy join` (ARFC 0002 sections 3.1, 3.3, and 3.8) also
+take a `Host`. `host` is not in `Runtime`, so no other component can stop or
+disable `alloyd` (section 2.8, ADR 0071). All six are runtime seams in the
+sense of ARFC 0001 section 2.1, with context `()`.
 
-`alloy-sim` implements all five in memory, in one thread, driven by a seeded
+`alloy-sim` implements all six in memory, in one thread, driven by a seeded
 scheduler and a virtual clock. A **world** holds hosts, links, routers, and NAT
 devices. A **scenario** is a function that builds a world, runs Alloy code on its
 hosts, injects faults, and asserts properties. `alloy-sim` is written in this
@@ -49,8 +55,8 @@ records the model.
 
 ### 2.1 Interface of `alloy-rt`
 
-Sections 2.1 to 2.6 are the whole public interface of `alloy-rt`. Items marked
-private are the developer's choice. `alloy-rt` depends on `alloy-seam` (ARFC 0001
+Sections 2.1 to 2.6 and section 2.8 are the whole public interface of
+`alloy-rt`. Items marked private are the developer's choice. `alloy-rt` depends on `alloy-seam` (ARFC 0001
 section 2.1) and on no other Alloy crate. Every error type derives `Debug`,
 `Clone`, `PartialEq`, and `Eq`, and implements `std::error::Error` and `Display`
 through `thiserror`. Types that carry packet or disk bytes (`Datagram`, `RecvSlot`,
@@ -824,13 +830,14 @@ impl OsHost {
     pub fn shutdown(&self, grace: Duration);
 }
 
-/// Registers `os` for the five runtime kinds. The factories use `host`.
+/// Registers `os` for the five runtime kinds and for `host` (section 2.8).
+/// The factories use `host`.
 pub fn register_os(builder: &mut RegistryBuilder, host: &OsHost)
     -> Result<(), RegistryError>;
 ```
 
-`alloy-sim` registers `mem` for the five kinds in the registry of each simulated
-host, with factories bound to that host. Its world and scenario interface is
+`alloy-sim` registers `mem` for the five runtime kinds and for `host` in the
+registry of each simulated host, with factories bound to that host. Its world and scenario interface is
 section 2.7.
 
 ### 2.7 Interface of `alloy-sim`
@@ -845,7 +852,7 @@ tests, and `alloy-natlab` use. Items marked private are the developer's choice.
 Runs:
 
 ```rust
-use alloy_rt::{BoxFuture, InterfaceAddr, RtPath, Runtime, WallTime};
+use alloy_rt::{Arch, BoxFuture, Host, InterfaceAddr, Platform, RtPath, Runtime, WallTime};
 use alloy_seam::{Detail, RegistryBuilder};
 use std::fmt;
 use std::future::Future;
@@ -1070,7 +1077,13 @@ pub struct HostBoot {
     pub start: u32,
     /// The five `mem` instances of this start.
     pub runtime: Runtime,
-    /// Holds `mem` for the five runtime kinds, bound to this host.
+    /// The host's `mem` instance of `host` (clause 3.1.18). One instance
+    /// per host, shared by every start, so its service state outlives a
+    /// crash as clause 3.1.18.3 says. The registry's `host` factory returns
+    /// this same instance.
+    pub machine: Arc<dyn Host>,
+    /// Holds `mem` for the five runtime kinds and for `host`, bound to this
+    /// host.
     pub registry: RegistryBuilder,
 }
 
@@ -1091,6 +1104,8 @@ pub struct HostConfig {
     pub capacity: u64,
     /// `block_size` of the file namespace, 512 or 4,096. Default 4,096.
     pub block_size: u32,
+    /// What the host's `host` instance reports (clause 3.1.18).
+    pub machine: MachineConfig,
 }
 
 impl HostConfig {
@@ -1125,6 +1140,29 @@ pub struct DeviceConfig {
     /// 512 or 4,096.
     pub block_size: u32,
 }
+
+/// The machine a `mem` `host` instance describes (clause 3.1.18). The
+/// disks it reports are the host's devices.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MachineConfig {
+    /// `None` makes `facts` return `Unsupported`. Default
+    /// `Some(Platform::Linux { release: "6.1.0".into(), major: 6, minor: 1 })`.
+    pub platform: Option<Platform>,
+    /// Default `Arch::X86_64`.
+    pub arch: Arch,
+    /// Default true.
+    pub privileged: bool,
+    /// 1 or more. Default 4.
+    pub cores: u32,
+    /// Bytes. Default 8,589,934,592.
+    pub memory: u64,
+    /// Default true.
+    pub virtualization: bool,
+    /// Whether the service `alloyd` is installed. Default true.
+    pub service: bool,
+}
+
+impl Default for MachineConfig { /* the defaults above */ }
 ```
 
 Faults (clause 3.3):
@@ -1266,13 +1304,143 @@ pub enum Verdict {
 `Observer` and `Middlebox` are plug-in traits of the simulator, not seams: they
 are not registered and have no `mem` or `os` implementation.
 
+### 2.8 Host
+
+The `host` seam is the machine itself: the facts that ARFC 0002 section 3.8
+checks, free space at a path, and control of the one service Alloy owns,
+`alloyd` (ARFC 0017 clause 3.17). It is part of the interface of `alloy-rt`
+but not of `Runtime`: `alloy init` and `alloy join` build an instance with
+`Registry::instantiate::<HostSeam>`, context `()`, beside their `Runtime`.
+Clause 3.1.18 gives its behavior, and ADR 0071 records it.
+
+```rust
+use alloy_seam::Detail;
+
+/// Seam marker (ARFC 0001 section 2.1). `Object = dyn Host`,
+/// `KIND = "host"`, `Context = ()`, `SWAP = SwapClass::Restart`.
+#[derive(Debug)]
+pub struct HostSeam;
+
+/// Seam `host`.
+pub trait Host: Send + Sync + fmt::Debug + 'static {
+    /// Facts about the machine (clause 3.1.18.1).
+    fn facts(&self) -> BoxFuture<'_, Result<HostFacts, HostError>>;
+    /// Bytes free to this process on the file system that holds the
+    /// absolute native path `path`, or its nearest existing ancestor
+    /// (clause 3.1.18.2).
+    fn free_space<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<u64, HostError>>;
+    /// The state of the service `alloyd` (clause 3.1.18.3).
+    fn service_status(&self) -> BoxFuture<'_, Result<ServiceStatus, HostError>>;
+    /// Applies `action` to the service `alloyd`. No method names any other
+    /// service (clause 3.1.18.3).
+    fn service(&self, action: ServiceAction) -> BoxFuture<'_, Result<(), HostError>>;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostFacts {
+    pub platform: Platform,
+    pub arch: Arch,
+    /// Root on Linux, an elevated token on Windows.
+    pub privileged: bool,
+    /// Online logical processors, 1 or more.
+    pub cores: u32,
+    /// Bytes of physical memory.
+    pub memory: u64,
+    /// Hardware virtualization is usable.
+    pub virtualization: bool,
+    /// Whole-disk block devices, sorted by `path` ascending bytewise. At
+    /// most 32.
+    pub disks: Vec<DiskFact>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Platform {
+    /// `release` is the kernel release, at most 64 bytes. `major` and
+    /// `minor` are its leading numbers, 0 and 0 when it has none.
+    Linux { release: String, major: u32, minor: u32 },
+    /// The version Windows reports for itself, such as 10.0.26100.
+    Windows { major: u32, minor: u32, build: u32 },
+}
+
+/// The native architecture of the operating system, not of the process.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Arch {
+    X86_64,
+    Aarch64,
+    /// Any other, named as clause 3.1.18.1 says. 1 to 32 bytes.
+    Other(String),
+}
+
+impl Arch {
+    /// `x86_64`, `aarch64`, or the `Other` text.
+    pub fn as_str(&self) -> &str;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiskFact {
+    /// The native path of the device, such as `/dev/nvme0n1`. At most
+    /// 255 bytes.
+    pub path: String,
+    /// Bytes.
+    pub size: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ServiceStatus {
+    /// The service starts with the machine.
+    pub enabled: bool,
+    pub run: RunState,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunState {
+    Stopped,
+    Starting,
+    Running,
+    Stopping,
+}
+
+/// Numbered from 1 in this order for the event trace (section 4.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServiceAction {
+    Enable,
+    Disable,
+    Start,
+    Stop,
+}
+
+/// Variants are numbered from 1 in this order for the event trace
+/// (section 4.1); `Os` is 255.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum HostError {
+    #[error("permission denied")]
+    PermissionDenied,
+    #[error("the service alloyd is not installed")]
+    NotInstalled,
+    #[error("the service alloyd is disabled")]
+    Disabled,
+    #[error("the service manager refused: {0}")]
+    Refused(Detail),
+    #[error("the service manager did not finish within 60 s")]
+    TimedOut,
+    #[error("invalid input: {0}")]
+    InvalidInput(Detail),
+    #[error("not supported on this platform")]
+    Unsupported,
+    /// An operating system error with no variant above. `os` only.
+    #[error("operating system error {code}")]
+    Os { code: i32 },
+}
+```
+
 ## 3. Behavior
 
 ### 3.1 Runtime
 
 3.1.1 Only implementations of these seams call the operating system for time,
-network, storage, randomness, or concurrency. `cargo xtask check-repo` rejects
-those calls elsewhere.
+network, storage, randomness, or concurrency, or to read machine facts or
+control a service (clause 3.1.18). `cargo xtask check-repo` rejects those
+calls elsewhere.
 
 3.1.2 The `os` implementation uses `tokio`, batched UDP I/O with segmentation
 offload where the kernel offers it, and direct I/O for block devices.
@@ -1666,9 +1834,9 @@ multiple of 4,096. `zeroed` and `from_slice` return `InvalidInput` above
   that is stored before it is awaited, or polled late by a busy scheduler, must
   not gain time, and `sleep`, whose deadline is fixed at the call, behaves the
   same way.
-- `register_os` registers `os` under the five kinds and fails as
-  `RegistryBuilder::register` does. Each `os` factory accepts the configuration of
-  section 4.2.
+- `register_os` registers `os` under the five runtime kinds and `host`, and
+  fails as `RegistryBuilder::register` does. Each `os` factory accepts the
+  configuration of section 4.2. `from_registry` builds no `host` instance.
 
 3.1.15 Disk ownership and permissions. These operations give ARFC 0002 section
 3.12 and ARFC 0006 clause 5.2 what they need: creating an entry already
@@ -2026,6 +2194,224 @@ choice.
   that is not UDP with reason 5. Any other is delivered as a datagram, by
   clause 3.3.1's delivery rule, with `src` and `dst_ip` taken from its headers.
 
+3.1.18 Host. The `host` seam (section 2.8) gives `alloy init` and `alloy join`
+what ARFC 0002 sections 3.1, 3.3, and 3.8 need from the machine. Every rule
+here holds for `os` on Linux and on Windows and for `mem`. On any other
+platform every method under `os` returns `Unsupported`.
+
+- The service is `alloyd` alone: on Linux the systemd unit `alloyd.service`,
+  on Windows the service `alloyd` (ARFC 0017 clauses 3.15 and 3.17). No method
+  takes a service name, and no implementation reads or changes any other unit
+  or service, the units named `alloyd-*` included.
+- `facts`, `free_space`, and `service_status` change nothing on the machine and
+  need no privilege. Only `service` changes anything, and only what clause
+  3.1.18.4 allows.
+- `service` calls on one instance run one at a time: a call starts its action
+  only once every earlier `service` call on the instance has returned or been
+  dropped. The other methods may run at any time.
+- A dropped `service` future leaves its action done or not done. Under `os`
+  the service manager may finish an action after its future is dropped.
+
+3.1.18.1 Facts. `facts` returns the fields of `HostFacts` as below. Under
+`os`, a failing operating system call returns `Os` with its error code, except
+where a bullet says what a failure gives.
+
+- `os` on Linux:
+  - `platform` is `Linux`, with `release` the `release` field of `uname(2)`
+    (<https://man7.org/linux/man-pages/man2/uname.2.html>), cut to 64 bytes
+    at a character boundary. `major` and `minor` are the decimal numbers
+    `release` starts with, in the form `<digits>.<digits>`, each at most
+    4,294,967,295; a release not of that form, or with a larger number, gives
+    0 and 0.
+  - `arch` is `X86_64` when the `machine` field of `uname(2)` is `x86_64`,
+    `Aarch64` when it is `aarch64`, and otherwise `Other` holding that field
+    cut to 32 bytes.
+  - `privileged` is true when the effective user id is 0.
+  - `cores` is `sysconf(_SC_NPROCESSORS_ONLN)`
+    (<https://man7.org/linux/man-pages/man3/sysconf.3.html>), and 1 when that
+    returns less than 1.
+  - `memory` is the `MemTotal` value of `/proc/meminfo`, in kibibytes, times
+    1,024 (<https://man7.org/linux/man-pages/man5/proc_meminfo.5.html>).
+  - `virtualization` is true when `/dev/kvm` opens for reading and writing
+    with `O_CLOEXEC`, and false on any error. The descriptor is closed at
+    once. This is the `hardware virtualization` check of ARFC 0002 section
+    3.8.
+  - `disks` holds one entry for each entry `<name>` of `/sys/block` whose name
+    does not start with `loop`, `ram`, `zram`, `nbd`, `dm-`, or `md`, whose
+    file `removable` holds `0`, and whose file `size` holds a number above 0:
+    `path` is `/dev/<name>` and `size` is that number times 512, since `size`
+    counts 512-byte sectors
+    (<https://www.kernel.org/doc/Documentation/ABI/stable/sysfs-block>). An
+    entry whose files cannot be read is left out, and an unreadable
+    `/sys/block` gives no entries. The first 32 by `path` are kept.
+- `os` on Windows:
+  - `platform` is `Windows`, with `dwMajorVersion`, `dwMinorVersion`, and
+    `dwBuildNumber` from `RtlGetVersion`, which, unlike `GetVersionExW`, does
+    not depend on the program's manifest
+    (<https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-rtlgetversion>).
+  - `arch` is the native machine that `IsWow64Process2` reports for the
+    current process
+    (<https://learn.microsoft.com/en-us/windows/win32/api/wow64apiset/nf-wow64apiset-iswow64process2>):
+    `X86_64` for `IMAGE_FILE_MACHINE_AMD64` (`0x8664`), `Aarch64` for
+    `IMAGE_FILE_MACHINE_ARM64` (`0xAA64`), and otherwise `Other` holding `0x`
+    and the value as four lower-case hexadecimal digits.
+  - `privileged` is true when `TokenIsElevated` of the process token's
+    `TokenElevation` is not zero
+    (<https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-token_elevation>).
+  - `cores` is `GetActiveProcessorCount(ALL_PROCESSOR_GROUPS)`
+    (<https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getactiveprocessorcount>).
+  - `memory` is `ullTotalPhys` from `GlobalMemoryStatusEx`
+    (<https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-globalmemorystatusex>).
+  - `virtualization` is `IsProcessorFeaturePresent(PF_VIRT_FIRMWARE_ENABLED)`
+    (<https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-isprocessorfeaturepresent>).
+  - `disks` is empty. Windows joins only as a client node, which holds no
+    disk (ARFC 0002 sections 3.3 and 3.11).
+- `mem`: the host's `MachineConfig` (section 2.7) gives `platform`, `arch`,
+  `privileged`, `cores`, `memory`, and `virtualization`, and a `platform` of
+  `None` makes `facts` return `Unsupported`. `disks` holds one entry per block
+  device of the host, `path` its `RtPath` text and `size` its `len`, the first
+  32 by `path`. `add_host` returns `Invalid` for `cores` 0, a Linux `release`
+  over 64 bytes, or an `Arch::Other` text outside 1 to 32 bytes. The facts
+  never change during a run.
+
+3.1.18.2 Free space. `free_space(path)` returns the bytes the calling process
+may still write on the file system that holds the entry at `path`, or, when
+nothing is at `path`, at its nearest ancestor that exists. It follows symbolic
+links and creates nothing.
+
+- `os` on Linux: `path` starts with `/`, holds no NUL byte, and is at most
+  4,096 bytes, else `InvalidInput`. The result is `f_bavail` times `f_frsize`
+  from `statvfs` (<https://man7.org/linux/man-pages/man3/statvfs.3.html>).
+- `os` on Windows: `path` is a letter, `:`, and `\` followed by components
+  separated by `\`, at most 4,096 bytes, else `InvalidInput`. The result is
+  `FreeBytesAvailableToCaller` from `GetDiskFreeSpaceExW`, which counts the
+  caller's disk quota
+  (<https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getdiskfreespaceexw>).
+- `mem`: `path` is a valid `RtPath` text, else `InvalidInput`. The result is
+  the host's `capacity` less the total of clause 3.3.7, and 0 when the total
+  is at or above it, whatever entry `path` names, since a `mem` host has one
+  file namespace.
+- The conformance suite checks, under `os`, that a missing path gives the
+  result of its nearest existing ancestor, within 16,777,216 bytes since other
+  programs write meanwhile, and the `InvalidInput` cases; and under `mem`, the
+  exact result before and after a write and a `Capacity` fault.
+
+3.1.18.3 Service control.
+
+- `service_status` returns `NotInstalled` when the unit or service does not
+  exist, and otherwise whether it is `enabled` and its `run` state.
+- `service(action)` first returns `PermissionDenied`, calling no service
+  manager, when the process is not privileged as `facts` defines it, then
+  `NotInstalled` as `service_status` would. Otherwise:
+  - `Enable`: when it returns `Ok`, the service is `enabled`. Its `run` state
+    is unchanged. Enabling an enabled service changes nothing.
+  - `Disable`: when it returns `Ok`, the service is not `enabled`. Its `run`
+    state is unchanged. Disabling a disabled service changes nothing.
+  - `Start`: on a service that is not `enabled`, returns `Disabled` and
+    changes nothing. On a `Running` service, returns `Ok` and changes
+    nothing. Otherwise starts the service and returns `Ok` once it is
+    `Running`, or `Refused` when it stops instead.
+  - `Stop`: on a `Stopped` service, returns `Ok` and changes nothing.
+    Otherwise stops the service and returns `Ok` once it is `Stopped`.
+  - An action that has not finished 60 seconds after it started returns
+    `TimedOut`. The service is then in whatever state the service manager
+    has reached.
+- `os` on Linux. When `/run/systemd/system` is not a directory, systemd is
+  not the running service manager
+  (<https://www.freedesktop.org/software/systemd/man/latest/sd_booted.html>),
+  and `service_status` and `service` return `Unsupported`. Otherwise `os`
+  runs the first of `/usr/bin/systemctl` and `/bin/systemctl` that exists,
+  never one found through `PATH`, with an environment holding only
+  `LC_ALL=C`, standard input closed, and the arguments below
+  (<https://www.freedesktop.org/software/systemd/man/latest/systemctl.html>).
+  When neither exists, both methods return `Unsupported`. A run that exits
+  with a status other than 0 gives `Refused` holding the first line of its
+  standard error, cut to 1,024 bytes. At the 60-second limit `os` kills the
+  `systemctl` process.
+  - `service_status` runs `systemctl show --property=LoadState
+    --property=UnitFileState --property=ActiveState alloyd.service` and reads
+    its `<name>=<value>` lines. `LoadState` other than `loaded` gives
+    `NotInstalled`. `enabled` is true when `UnitFileState` is `enabled`.
+    `run` is `Running` for `ActiveState` `active` and `reloading`, `Starting`
+    for `activating`, `Stopping` for `deactivating`, and `Stopped` for any
+    other value, `inactive` and `failed` included
+    (<https://www.freedesktop.org/software/systemd/man/latest/org.freedesktop.systemd1.html>).
+  - `Enable`, `Disable`, `Start`, and `Stop` run `systemctl
+    --no-ask-password --no-pager --quiet <verb> alloyd.service` with `<verb>`
+    `enable`, `disable`, `start`, or `stop`. `systemctl start` and `stop`
+    return once their job has finished, and for a unit of `Type=exec`, which
+    the install writes (ARFC 0017 clause 3.15 step 7), the start job finishes
+    once the program has been executed
+    (<https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html>,
+    `Type=`). `os` then reads `service_status`, and `Start` returns `Refused`
+    unless the service is `Running`.
+- `os` on Windows. `os` opens the service control manager with
+  `SC_MANAGER_CONNECT` and the service `alloyd` with `OpenServiceW`, asking
+  for `SERVICE_QUERY_CONFIG` and `SERVICE_QUERY_STATUS`, and also
+  `SERVICE_CHANGE_CONFIG`, `SERVICE_START`, or `SERVICE_STOP` as the action
+  needs. `ERROR_SERVICE_DOES_NOT_EXIST` (1060) gives `NotInstalled`,
+  `ERROR_ACCESS_DENIED` (5) gives `PermissionDenied`, and any other error
+  `Os` (<https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--1000-1299->).
+  - `service_status`: `enabled` is true when `dwStartType` from
+    `QueryServiceConfigW` is `SERVICE_AUTO_START` (2), delayed or not. `run`
+    from `dwCurrentState` of `QueryServiceStatusEx` is `Stopped` for
+    `SERVICE_STOPPED`, `Starting` for `SERVICE_START_PENDING`, `Stopping`
+    for `SERVICE_STOP_PENDING`, and `Running` for any other state
+    (<https://learn.microsoft.com/en-us/windows/win32/api/winsvc/ns-winsvc-service_status_process>).
+  - `Enable` and `Disable` call `ChangeServiceConfigW` with `dwStartType`
+    `SERVICE_AUTO_START` (2) or `SERVICE_DISABLED` (4), and `SERVICE_NO_CHANGE`
+    or a null pointer for every other argument
+    (<https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-changeserviceconfigw>).
+  - `Start` calls `StartServiceW` with no arguments, treating
+    `ERROR_SERVICE_ALREADY_RUNNING` (1056) as success, then reads
+    `QueryServiceStatusEx` every 100 ms: `SERVICE_RUNNING` returns `Ok`, and
+    `SERVICE_STOPPED` returns `Refused` naming `dwWin32ExitCode`.
+  - `Stop` calls `ControlService` with `SERVICE_CONTROL_STOP`, treating
+    `ERROR_SERVICE_NOT_ACTIVE` (1062) as success, then reads
+    `QueryServiceStatusEx` every 100 ms until `SERVICE_STOPPED`
+    (<https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-controlservice>).
+- `mem`. Each host has one service state, created with the host: installed
+  when `MachineConfig::service` is true, not `enabled`, and `Stopped`, as a
+  first install leaves it (ARFC 0017 clause 3.15 step 7). `privileged` false
+  gives `PermissionDenied` and `service` false gives `NotInstalled`, as above.
+  Every action finishes at the instant of its first poll, so `run` is never
+  `Starting` or `Stopping` and `TimedOut` never happens. `mem` runs no
+  program: `run` is a value that only these calls and the host's lifecycle
+  change. A crash of the host makes it `Stopped`, and `enabled` is kept. A
+  start of the host, the first included, makes an `enabled` service `Running`
+  before the host's `boot` task runs, as a service manager starts an enabled
+  service at boot. Each `service` call writes a `service` record (section
+  4.1) when it returns.
+
+3.1.18.4 Coexistence with the install. The install owns the definition of the
+unit and the service: its file or service control manager entry, program,
+account, restart policy, and ordering (ARFC 0017 clause 3.15 steps 6 and 7).
+The uninstall stops, disables, and removes it (ARFC 0017 clause 3.16 steps 5
+and 7). The `host` seam owns only whether the service is `enabled` and
+whether it runs, so `init`, `join`, and the install never contend for one
+property:
+
+- Under `os` on Linux, the only change to the file system an action makes is
+  the links that `systemctl enable` and `systemctl disable` add and remove
+  from the unit's `[Install]` section. No action runs `daemon-reload`,
+  `mask`, `unmask`, `edit`, `set-property`, `revert`, `link`, or `preset`,
+  or writes or removes a unit file.
+- Under `os` on Windows, the only change an action makes is the start type
+  and the run state. No action creates or deletes a service or changes its
+  program path, account, dependencies, description, or recovery actions.
+- `enabled` means what the install's step 7 sets when a node resumes: unit
+  file state `enabled`, start type automatic. `Disable` gives what a first
+  install leaves: unit file state `disabled`, start type `Disabled`. So after
+  `init` cleans up a failed run (ARFC 0002 section 3.1), the service is as
+  the install left it, and a later install keeps the enablement `init` or
+  `join` set (ARFC 0017 clause 3.15 step 7).
+- The seam does not read the install manifest. `init` and `join` check with
+  the `names` check of ARFC 0002 section 3.8 that the unit or service is the
+  install's before they act on it.
+- The conformance suite checks, under `os` with privilege, that across every
+  action the unit file's bytes, or on Windows the configuration that
+  `QueryServiceConfigW` returns other than `dwStartType`, are unchanged.
+
 ### 3.2 Determinism
 
 3.2.1 A scenario run is a pure function of `(binary, seed)`. Two runs with the
@@ -2295,8 +2681,8 @@ disjoint sets of existing hosts, and `id` must not be in force: otherwise
     units, each kept or dropped by its own draw.
   Block devices follow the same rules for their writes.
 - `Restart` starts a crashed host at that instant: `host-start` is written, the
-  five `mem` instances are built anew, and `boot` runs with `start` one above the
-  last. With `rng_replay` `Some(s)`, `s` from 1 to the last start, the host's
+  five `mem` instances are built anew, the host's one `host` instance is kept
+  (clause 3.1.18.3), and `boot` runs with `start` one above the last. With `rng_replay` `Some(s)`, `s` from 1 to the last start, the host's
   `rng` instances of this start draw, in creation order, the streams that the
   instances of start `s` drew in the same order (clause 3.1.5).
 - `Crash` on a crashed host and `Restart` on a running host return `State`.
@@ -2530,6 +2916,7 @@ Body fields used below, in order of appearance in each body:
 | `0050` | `disk-op` | u64 handle (0 for a path operation), u8 operation, u64 offset, u64 length, u8 result, `digest` |
 | `0060` | `rng` | u32 bytes filled |
 | `0070` | `fault` | `text` describing the fault applied or changed |
+| `0080` | `service` | u8 action, the `ServiceAction` number; u8 result: 0 for `Ok`, else the `HostError` number (clause 3.1.18.3) |
 | `00F0` | `note` | `text` from the scenario |
 | `00FF` | `run-end` | u8 result: 0 pass, 1 fail, 2 liveness |
 
@@ -2643,7 +3030,7 @@ implementation reads and writes version 1 only (`MIN_VERSION` and `VERSION` both
 
 | Kind | Implementation | Message |
 |---|---|---|
-| `clock`, `rng`, `spawn`, `net` | `os`, `mem` | `message Empty {}` |
+| `clock`, `rng`, `spawn`, `net`, `host` | `os`, `mem` | `message Empty {}` |
 | `disk-io` | `mem` | `message Empty {}` |
 | `disk-io` | `os` | `message OsDiskIoConfig { string root = 1; }` |
 
@@ -2661,8 +3048,9 @@ the field `root`.
 | `disk-io` | `DiskIo` | `DiskIoSeam` | `os`, `mem` | `tests/conformance/rt/disk-io/` |
 | `rng` | `Rng` | `RngSeam` | `os`, `mem` | `tests/conformance/rt/rng/` |
 | `spawn` | `Spawn` | `SpawnSeam` | `os`, `mem` | `tests/conformance/rt/spawn/` |
+| `host` | `Host` | `HostSeam` | `os`, `mem` | `tests/conformance/rt/host/` |
 
-All five have swap class `restart` and context `()`. Each suite runs against
+All six have swap class `restart` and context `()`. Each suite runs against
 `mem` on the simulator and against `os` on the CI host. A clause that names one
 implementation is tested on that implementation only. The `os` tests of clause
 3.1.17 need the privilege that `create_tun` names. `cargo xtask ci` runs them
@@ -2676,6 +3064,29 @@ test that meets `PermissionDenied` fails, and so does a run that skips clause
 3.1.17.1 on Linux or clause 3.1.17.2 on Windows. Elsewhere a harness that
 lacks the privilege checks the `PermissionDenied` refusal and says in its
 output that it did so.
+
+In the `host` suite, `facts`, `free_space`, and `service_status` need no
+privilege and run on every host. The `os` tests of `service` need root, or on
+Windows elevation, and a unit or service `alloyd` that nothing else uses, so
+they never act on an installed Alloy. On the CI hosts, where `GITHUB_ACTIONS`
+is `true`, `cargo xtask ci` provides both, with the privilege above. Before
+the `host` suite it checks that no unit `alloyd.service`, or on Windows no
+service `alloyd`, exists, and fails when one does. It then installs one: on
+Linux the unit `packaging/alloyd.service` with `ExecStart` naming the
+workspace's own `alloyd` executable, at `/etc/systemd/system/alloyd.service`,
+followed by `systemctl daemon-reload`; on Windows the service `alloyd` that
+`packaging/install.ps1` creates, with start type `Disabled`, running that
+executable. With no Alloy data directory at its path, that `alloyd` stays up,
+serves nothing, and stops on request (ARFC 0002 section 3.12). It runs the
+suite with the environment variable `ALLOY_TEST_SERVICE` set to `1`, then
+stops, disables, and removes the unit or service, on Linux followed by
+`systemctl daemon-reload`. A test of `service` under `os` runs only where
+`ALLOY_TEST_SERVICE` is `1`. Where `GITHUB_ACTIONS` is `true`, a run in which
+it is not `1`, or a test that meets `PermissionDenied`, fails. Elsewhere,
+without that variable, the suite checks each action's `PermissionDenied`
+refusal when it runs unprivileged, runs no action when it runs privileged,
+and says in its output which it did. The `mem` tests of the suite run on the
+simulator.
 
 The simulator itself is not a seam. Its own suite, `tests/conformance/sim/`,
 tests through section 2.7 the trace format and the summary line of clauses 3.2.4
@@ -2739,6 +3150,11 @@ streamed to disk and capped at 1 GiB unless a scenario raises the cap.
 | `RtPath` | 4,096 bytes, 255 per component | `InvalidPath` |
 | Live tasks per `spawn` instance | 1,048,576 | `SpawnError::Limit` |
 | `TaskName` | 64 bytes | `SpawnError::InvalidName` |
+| One `service` action | 60 s | `HostError::TimedOut` |
+| Disks in `HostFacts` | 32 | The rest, by `path`, are left out |
+| Linux `release` in `Platform` | 64 bytes | Cut at a character boundary |
+| `Arch::Other` text | 32 bytes | Cut |
+| `free_space` path under `os` | 4,096 bytes | `HostError::InvalidInput` |
 | `Instant` | 2^63 - 1 ns | Saturates or `None` (section 2.1) |
 | `mem` clock rate offset | -500,000 to 500,000 parts per million | The world rejects the fault when it is injected |
 | Trace record body | 65,535 bytes | `text` fields are cut to 1,024 bytes |
@@ -2775,6 +3191,11 @@ lengths and 8-byte digests of payloads, never the payloads themselves. Observers
 (clause 3.6.1) receive payloads in memory, inside the test process only, so a
 checker can inspect them. Nothing the simulator writes to a file or to standard
 error holds them.
+
+The `host` seam can change one thing on a machine: whether the service
+`alloyd` is enabled and running (clause 3.1.18.4). It takes no service name,
+runs `systemctl` only from a fixed path with a fixed environment, and is kept
+out of `Runtime`, so only `init` and `join` hold it (ADR 0071).
 
 ## 9. Open questions
 

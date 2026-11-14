@@ -3,7 +3,7 @@
 - Status: accepted
 - Depends on: 0000, 0003, 0007, 0009, 0017
 - Crates: alloy-id, alloy-crypto
-- Decisions: 0012, 0015, 0018, 0040, 0041, 0042, 0048, 0053, 0062, 0065, 0068, 0069
+- Decisions: 0012, 0015, 0018, 0040, 0041, 0042, 0048, 0053, 0062, 0065, 0068, 0069, 0071
 
 ## 1. Purpose
 
@@ -128,20 +128,24 @@ section 3.8), none of them required. Its data directory is `/var/lib/alloyd`
    | join token | 24 hours, unlimited uses, no preset roles or zone (section 3.2) |
    | login code | For `admin`, with `issued_by` `init` (section 3.7) |
 
-4. It enables and starts `alloyd` and waits until the node is `active` and the
-   API answers TLS on its port at the first advertise address that is on one of
-   the node's interfaces. When no advertise address is on the node's
-   interfaces, as for a forwarded address behind NAT, it checks the API at the
-   loopback address instead, and says that it did not check whether other
+4. It enables and starts `alloyd` through the `host` seam (ARFC 0005 clause
+   3.1.18): `Enable`, then, when `service_status` shows it running, `Stop`, so
+   that it starts on the data directory `init` wrote, then `Start`. It then
+   waits until the node is `active` and the API answers TLS on its port at
+   the first advertise address that is on one of the node's interfaces. When
+   no advertise address is on the node's interfaces, as for a forwarded
+   address behind NAT, it checks the API at the loopback address instead, and says that it did not check whether other
    machines reach the advertise address.
 5. It prints the join token and the login code once each, on standard output,
    and writes neither to any log or file. It then prints the standing warnings
    that apply (ARFC 0019 section 3.2.5).
 
-When a step after the checks fails, `init` stops and disables `alloyd`, removes
-everything it wrote, and exits with the failure. The local join state is then
-`unjoined`, so a rerun starts clean. From start to exit, `init` must take under
-30 seconds on a machine whose checks all pass.
+When a step after the checks fails, `init` stops and disables `alloyd` with
+`Stop` and `Disable`, which leave the service as a first install leaves it
+(ARFC 0005 clause 3.1.18.4), removes everything it wrote, and exits with the
+failure. The local join state is then `unjoined`, so a rerun starts clean.
+From start to exit, `init` must take under 30 seconds on a machine whose
+checks all pass.
 
 ### 3.2 Join token
 
@@ -226,8 +230,9 @@ at the same point.
    is `joined`, or `joining` with another token. When it is `joining` with the
    same token, it skips the remaining checks and resumes waiting at step 7.
 2. It writes the join request, the token included, to the data directory as
-   section 3.14 says, then enables and starts `alloyd`, which holds the request
-   from here on and carries out steps 3 to 7. The local join state is now
+   section 3.14 says, then enables and starts `alloyd` through the `host` seam
+   as `init` does (section 3.1 step 4). `alloyd` holds the request from here
+   on and carries out steps 3 to 7. The local join state is now
    `joining`. On Windows, enabling sets the start type of the service `alloyd`
    (ARFC 0017 clause 3.15) to automatic. How the CLI learns the outcome from
    `alloyd` is internal to one release, and it learns it within 1 second.
@@ -265,7 +270,12 @@ at the same point.
    `{token_id, identity_pub, name, name_is_default, roles, zone, advertise,
    mesh_port, api_port, facts}`, with `roles` and `zone` empty when not given,
    and `facts` being operating system, architecture, cores, memory,
-   virtualization support, and disks. The request names no mesh key: the
+   virtualization support, and disks, from `facts` of the `host` seam (ARFC
+   0005 clause 3.1.18.1): `os` is `linux ` followed by the kernel release, cut
+   to 64 bytes at a character boundary, or `windows ` followed by
+   `<major>.<minor>.<build>` in decimal; `arch` is
+   `Arch::as_str`; and `cores`, `memory_bytes`, `virtualization`, and each
+   disk's path and size are copied. The request names no mesh key: the
    joiner's mesh key, in the record it may be issued and in every check below,
    is the key the AL session authenticated, as a `forwarded` carries it
    (section 3.13). The **join message** is the 16 ASCII bytes
@@ -596,13 +606,23 @@ process, then check the local join state (sections 3.1 and 3.3), exiting 5 on
 
 | Check | `ok` | `warn` | `fail`, exit code |
 |---|---|---|---|
-| host | Linux 6.1 or later on x86_64 or aarch64. For `join` of a client node, also Windows build 17763 or later on x86_64 or aarch64 | | Anything else, 1 |
+| host | Linux 6.1 or later on x86_64 or aarch64. For `join` of a client node, also Windows build 17763 or later on x86_64 or aarch64. On either, the unit `alloyd.service` or the service `alloyd` is installed | | Anything else, 1. A missing service is named, with the install command of ARFC 0017 clause 3.15 |
 | hardware virtualization | `/dev/kvm` opens for reading and writing | Otherwise | |
 | ports | The mesh UDP port (default 7476, ARFC 0004 section 3.6) is free, and, when the node's roles include `anchor` or `control`, so is its API TCP port (default 443, ARFC 0008 section 3.8) | | A port is in use, 5. The message names the process and pid holding it when they can be found |
 | data directory | The data directory does not exist, or is an Alloy data directory, or is a directory that section 3.12 lets `init` and `join` adopt | | Any other directory or file at its path, 5. The message names the path and its owner |
 | names | No object that ARFC 0017 clause 3.17 reserves by name exists, other than an Alloy data directory and the install's files and service. On Linux, every id of the guest id range is free (ARFC 0017 clause 3.17.7) | | One exists, or an id is held, 5. The message names the object, or the entry, line, or process that holds the id |
 | addresses | The cluster's infrastructure prefix (section 3.4) overlaps no route and no address, as ARFC 0017 clause 3.17.3 says | | An overlap, 5. The message names the route or the interface and address |
 | free space | At least 10 GiB free under the data directory | 1 to 10 GiB | Under 1 GiB, 1 |
+
+`init` and `join` read what the checks need through the `host` seam (ARFC
+0005 clause 3.1.18), building its `os` instance beside their runtime. The
+host check reads `platform` and `arch` from `facts`, and the service with
+`service_status`: `NotInstalled` and `Unsupported` fail the check, and
+`PermissionDenied` does not, since the privilege check comes next.
+`Unsupported` from `facts` fails the host check. Root or elevation is
+`privileged` from `facts`, the hardware virtualization check is
+`virtualization` from `facts`, and free space is `free_space` of the data
+directory's native path.
 
 For a client node the hardware virtualization check does not run, and free
 space is `ok` from 1 GiB, with no `warn`. `join` takes the `cluster_id` for the
