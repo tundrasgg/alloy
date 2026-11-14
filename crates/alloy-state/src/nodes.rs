@@ -205,6 +205,19 @@ impl Group {
                 return StatusReply::Refused;
             }
             if recorded.is_none() {
+                #[cfg(test)]
+                {
+                    let pause = self
+                        .pause_heartbeat
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .take();
+                    if let Some((reached, resume)) = pause {
+                        // Either half dropped only ends the pause early.
+                        let _ = reached.send(());
+                        let _ = resume.await;
+                    }
+                }
                 let now = self.now();
                 self.soft_state()
                     .record(node.uid, now, wall, checked.addresses.clone());
@@ -465,5 +478,46 @@ mod tests {
     #[test]
     fn removing_a_node_drops_its_soft_state() {
         assert_eq!(failing_seeds(50, removal), Vec::new());
+    }
+
+    /// T-0121 review F2: a removal that lands between a heartbeat's read of
+    /// its node and its record of soft state, as it can on `os`, leaves no
+    /// soft state once the heartbeat returns. Without the re-read of
+    /// `accept_heartbeat` the entry outlives its node.
+    async fn overtaken(world: World) -> Result<(), Failure> {
+        let (runtime, group) = serving(&world).await?;
+        group
+            .create_node("n1", NodeSpec::default(), joined(&runtime), BTreeMap::new())
+            .await
+            .map_err(fail)?;
+        let (reached_tx, reached) = tokio::sync::oneshot::channel();
+        let (resume, resume_rx) = tokio::sync::oneshot::channel();
+        *group
+            .pause_heartbeat
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((reached_tx, resume_rx));
+        let remove = async {
+            reached.await.map_err(fail)?;
+            delete_and_remove(&group, "n1").await?;
+            resume.send(()).map_err(fail)
+        };
+        let (reply, removed) =
+            futures_util::future::join(group.accept_heartbeat("n1", &heartbeat()), remove).await;
+        removed?;
+        check(
+            group.get_node("n1").await.map_err(fail)?.is_none(),
+            "the node is removed",
+        )?;
+        check(
+            reply == StatusReply::Unavailable,
+            "the heartbeat's commit finds its node gone",
+        )?;
+        check(heard(&group).is_empty(), "no heartbeat outlives its node")?;
+        group.shutdown().await.map_err(fail)
+    }
+
+    #[test]
+    fn a_removal_between_a_heartbeat_read_and_record_leaves_no_soft_state() {
+        assert_eq!(failing_seeds(20, overtaken), Vec::new());
     }
 }

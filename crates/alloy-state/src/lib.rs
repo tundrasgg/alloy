@@ -18,6 +18,14 @@
 //! they report as soft state in memory, never through the group (section
 //! 2.3), and computes each node's [`NodeState`] when it is read (clause
 //! 3.15).
+//!
+//! It also serves the identity state of M11 rung 2 (ARFC 0006 sections 2.8
+//! and 2.9, ARFC 0007 sections 2.5 and 3.11, ARFC 0002 section 3.15): the
+//! kinds `JoinToken` ([`JoinTokenRecord`]), `Org` ([`Org`]), `User`
+//! ([`User`]), `LoginCode` ([`LoginCodeRecord`]), and `AccessKey`
+//! ([`AccessKey`]). A login code is issued with [`Group::issue_login_code`]
+//! and exchanged, once, for a user access key with
+//! [`Group::exchange_login_code`], each in one transaction.
 
 #![forbid(unsafe_code)]
 
@@ -28,6 +36,8 @@ use alloy_seam::{Factory, ImplName, RegistryBuilder, RegistryError};
 mod config;
 mod export;
 mod group;
+mod iam;
+mod identity;
 mod mem;
 mod native;
 mod node;
@@ -36,9 +46,17 @@ mod resource;
 mod rt;
 mod rules;
 mod store;
+mod token;
 
 pub use config::{MemStoreConfig, NativeStoreConfig};
 pub use group::{Group, GroupError};
+pub use iam::{
+    ACCESS_KEY_KIND, AccessKey, AccessKeyId, AccessKeySecret, CODE_LIFETIME_NANOS, ClusterRole,
+    CodeId, CodeState, IssuedBy, KEY_NAME_CUT, LOGIN_CODE_KIND, LoginCodeRecord, MAX_KEPT_KEYS,
+    MAX_NAME, MAX_UNREVOKED_KEYS, MAX_UNUSED_CODES, ORG_KIND, Org, SEALED_SECRET_LEN, USER_KIND,
+    User, check_name,
+};
+pub use identity::{Exchanged, IdentityError, KeyLimit};
 pub use node::{
     HEARD_LEASE, Heartbeat, MAX_ADVERTISE, MAX_NODE_NAME, MAX_RELEASE, MAX_STATUS_ADDRESSES,
     NODE_KIND, Node, NodeSpec, NodeState, NodeStatus, NodeView, RecordTerms, Release, Role,
@@ -50,6 +68,7 @@ pub use store::{
     MAX_CHUNK, MAX_ENTRY_PAYLOAD, MAX_KEY, MAX_READ_BYTES, MAX_SCAN, MAX_VALUE, NodeId, Op,
     StateInstall, StateSnapshot, StateStore, StateStoreSeam, StoreError, Vote,
 };
+pub use token::{JOIN_TOKEN_KIND, JoinTokenRecord, JoinTokenSpec, TokenId};
 
 fn impl_name(name: &str) -> ImplName {
     // "native" and "mem" satisfy the rules of ImplName::new.
