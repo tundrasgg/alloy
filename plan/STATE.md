@@ -13,7 +13,7 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 | Series | Next |
 |---|---|
 | Task `T-` | T-0158 |
-| Decision `D-` | D-0086 |
+| Decision `D-` | D-0087 |
 | ADR | 0072 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0003 |
@@ -36,7 +36,6 @@ Only tasks that are not done or cancelled. A finished task leaves the board in t
 | T-0142 | spec | architect | review | none | Close the session and bridge gaps of the T-0139 re-review |
 | T-0143 | spec | architect | review | none | Close the al0 gaps of the T-0137 re-review |
 | T-0145 | build | developer | paused | none | Close the CLI join gaps left after rung 2's merge |
-| T-0157 | build | developer | active | none | Check ports through the host seam's port holders call |
 
 ## Still to cut for M0
 
@@ -112,6 +111,7 @@ Only tasks that are not done or cancelled. A finished task leaves the board in t
 - From T-0153 review F1: an existing `/run/alloy` (uid 0, mode 0700) with no matching `run` line is reused, against ARFC 0017 clause 3.17.2 and unlike `install.sh`. Settle the developer's spec issue (ARFC 0007 clause 3.10.2 against 3.17.2), then make `alloyd` follow it.
 - From T-0155 re-review F1 (next ARFC 0005 task): the replacement rule for `process` covers only Cc. U+2028, U+2029, and the bidi controls (U+202A to U+202E, U+2066 to U+2069) still pass, so the text's claim that no line break or reordering gets through is too strong. Replace those too, or narrow the claim.
 - From T-0156 review F1 (next `alloy-rt` task): under `os` on a platform other than Linux and Windows, `port_holders(_, 0)` gives `InvalidInput` where clause 3.1.18 says `Unsupported`; fix it and its module doc, and test port 0 there.
+- From T-0157 review F1 (next `alloy` task): `step_line` sends the ports check's text through `text::wrap(_, 72)` (and the summary through `wrap(_, 80)`), so a long holder line splits across terminal lines and runs of spaces in `process` collapse, against ARFC 0002 clause 3.8 ("one line each", `process` as the call returns it). Print each holder as exactly one line, byte for byte, in the step output and the failure message, and test a line over 72 columns and a name with repeated spaces.
 - Paused after rung 2 (pilot direction): T-0138 fix round, re-review of T-0140, reviews of T-0142 and T-0143, and T-0145.
 
 - From T-0130 review (fold into the next `alloy-state` task): F1, the generic `Group::update`, `delete`, and `remove` skip the identity kinds' checks (`check_kind`), as T-0114's F1 did for `Node`; and the notes in `plan/reports/T-0130.reviewer.1.md`.
