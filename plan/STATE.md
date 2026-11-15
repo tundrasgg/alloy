@@ -12,8 +12,8 @@ The board. Written only by the lead. Rules: `agent/protocol/tasks.md`.
 
 | Series | Next |
 |---|---|
-| Task `T-` | T-0157 |
-| Decision `D-` | D-0083 |
+| Task `T-` | T-0158 |
+| Decision `D-` | D-0084 |
 | ADR | 0072 |
 | Research `R-` | R-0009 |
 | Brief `PB-` | PB-0003 |
@@ -36,9 +36,8 @@ Only tasks that are not done or cancelled. A finished task leaves the board in t
 | T-0142 | spec | architect | review | none | Close the session and bridge gaps of the T-0139 re-review |
 | T-0143 | spec | architect | review | none | Close the al0 gaps of the T-0137 re-review |
 | T-0145 | build | developer | paused | none | Close the CLI join gaps left after rung 2's merge |
-| T-0151 | build | developer | active | none | Apply the snapshot exclusions of 3.17.6 in host-snapshot.ps1 |
-| T-0155 | spec | architect | active | none | Add a port holders call to the host seam |
-| T-0156 | build | developer | blocked | T-0155 | Build the host seam's port holders call |
+| T-0156 | build | developer | active | none | Build the host seam's port holders call |
+| T-0157 | build | developer | blocked | T-0156 | Check ports through the host seam's port holders call |
 
 ## Still to cut for M0
 
@@ -109,9 +108,10 @@ Only tasks that are not done or cancelled. A finished task leaves the board in t
 - From T-0144: `cargo xtask ci` installs and removes a test service `alloyd` and sets `ALLOY_TEST_SERVICE=1` on CI hosts for the privileged `host` tests (ARFC 0005 section 5); a verify task writes `tests/conformance/rt/host/` against clause 3.1.18 independently of T-0141.
 - From T-0149 review (for the next task on `crates/alloyd/src/**`): log a wrong `/run/alloy` again every 60 seconds while it lasts (ARFC 0007 clause 3.10.2, F2); a test of each start line under its condition (F3). For T-0145: the CLI maps every local admin failure to "Not logged in".
 - For rung 3: Alloy creates no Windows Firewall rule (ARFC 0017 clause 3.17), so inbound mesh packets to `alloyd.exe` on a Windows client may be dropped; check what the mesh needs there.
-- After T-0156: cut the CLI task that moves the ports check (`crates/alloy/src/setup/probe.rs` `busy_ports`) to the port holders call and names each holder (D-0078). Also, the `os` net tests of `alloy` and `alloyd` listen on wildcard addresses on Windows and leave `Query User` rules; make them bind loopback.
+- The `os` net tests of `alloy` and `alloyd` listen on wildcard addresses on Windows and leave `Query User` rules; make them bind loopback.
 - From T-0150 re-review (next ARFC 0017 task): the `Get-Service` section cannot see delayed automatic start or a changed binary path, account, or dependencies of a non-reserved service, and the clause should say so (F1). The full long path definition should exclude an empty name and a name ending in `.`, so those spellings keep their rule (F2).
 - From T-0153 review F1: an existing `/run/alloy` (uid 0, mode 0700) with no matching `run` line is reused, against ARFC 0017 clause 3.17.2 and unlike `install.sh`. Settle the developer's spec issue (ARFC 0007 clause 3.10.2 against 3.17.2), then make `alloyd` follow it.
+- From T-0155 re-review F1 (next ARFC 0005 task): the replacement rule for `process` covers only Cc. U+2028, U+2029, and the bidi controls (U+202A to U+202E, U+2066 to U+2069) still pass, so the text's claim that no line break or reordering gets through is too strong. Replace those too, or narrow the claim.
 - Paused after rung 2 (pilot direction): T-0138 fix round, re-review of T-0140, reviews of T-0142 and T-0143, and T-0145.
 
 - From T-0130 review (fold into the next `alloy-state` task): F1, the generic `Group::update`, `delete`, and `remove` skip the identity kinds' checks (`check_kind`), as T-0114's F1 did for `Node`; and the notes in `plan/reports/T-0130.reviewer.1.md`.
