@@ -1,13 +1,14 @@
 //! What the checks of ARFC 0002 section 3.8 read from the machine beyond
 //! the `host` seam: the routing tables and the user and group databases as
-//! files through `disk-io`, the interfaces through `net`, and whether a port
-//! is free by binding it. The parsers are pure, so every platform tests them.
+//! files through `disk-io`, and the interfaces through `net`; and the text
+//! of the ports check for what the `host` seam's `port_holders` returns.
+//! The parsers are pure, so every platform tests them.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use alloy_rt::{
-    Access, Create, DiskIo, EntryKind, Interface, IoBuf, ListenOptions, NetError, OpenOptions,
-    ReadOp, RtPath, StreamAddr, UdpOptions,
+    Access, Create, DiskIo, EntryKind, Interface, IoBuf, OpenOptions, PortHolder, PortProtocol,
+    ReadOp, RtPath,
 };
 
 use super::Setup;
@@ -276,42 +277,32 @@ pub(crate) fn status_holds_guest_id(text: &str) -> bool {
         })
 }
 
-/// Why the port is not free: the UDP mesh port on both families, then the
-/// TCP API port when `api` is `Some`.
-pub(crate) fn busy_ports(setup: &Setup<'_>, mesh: u16, api: Option<u16>) -> Vec<String> {
-    let net = setup.ctx.runtime.net();
-    let unspecified = [
-        IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-        IpAddr::V6(Ipv6Addr::UNSPECIFIED),
-    ];
-    let mut busy = Vec::new();
-    let mut note = |what: String, error: NetError| {
-        let reason = match error {
-            NetError::AddrInUse => "in use".to_owned(),
-            other => format!("not available: {other}"),
-        };
-        busy.push(format!("{what} is {reason}"));
-    };
-    for ip in unspecified {
-        match net.bind_udp(SocketAddr::new(ip, mesh), UdpOptions::default()) {
-            Ok(socket) => drop(socket),
-            // A machine without IPv6 still has the port free on IPv4.
-            Err(NetError::AddrNotAvailable) if ip.is_ipv6() => {}
-            Err(e) => note(format!("UDP {mesh}"), e),
-        }
+/// `UDP` or `TCP`, as the ports check names a protocol (ARFC 0002 section
+/// 3.8).
+pub(crate) fn protocol_name(protocol: PortProtocol) -> &'static str {
+    match protocol {
+        PortProtocol::Udp => "UDP",
+        PortProtocol::Tcp => "TCP",
     }
-    if let Some(api) = api {
-        for ip in unspecified {
-            let address = StreamAddr::Ip(SocketAddr::new(ip, api));
-            match net.listen(address, ListenOptions::default()) {
-                Ok(listener) => drop(listener),
-                Err(NetError::AddrNotAvailable) if ip.is_ipv6() => {}
-                Err(e) => note(format!("TCP {api}"), e),
-            }
-        }
+}
+
+/// The line of the ports check for one holder of the `protocol` port
+/// `port` (ARFC 0002 section 3.8): `<protocol> <port> is in use on <local>
+/// by <process> (pid <pid>)`, ending ` by pid <pid>` for a holder without a
+/// process name, and after `<local>` for one without a pid. `process` holds
+/// no control character (ARFC 0005 clause 3.1.18.5), so it is written as
+/// the call returned it.
+pub(crate) fn holder_line(protocol: PortProtocol, port: u16, holder: &PortHolder) -> String {
+    let head = format!(
+        "{} {port} is in use on {}",
+        protocol_name(protocol),
+        holder.local
+    );
+    match (holder.pid, &holder.process) {
+        (Some(pid), Some(process)) => format!("{head} by {process} (pid {pid})"),
+        (Some(pid), None) => format!("{head} by pid {pid}"),
+        (None, _) => head,
     }
-    busy.dedup();
-    busy
 }
 
 #[cfg(test)]
@@ -484,5 +475,44 @@ mod tests {
         assert!(!status_holds_guest_id(
             "Uid:\t0\t0\t0\t1900000001\nGid:\t5\t5\t5\t5\n"
         ));
+    }
+
+    #[test]
+    fn a_holder_line_follows_section_3_8() {
+        let holder = |local: &str, pid: Option<u32>, process: Option<&str>| PortHolder {
+            local: local.parse().unwrap(),
+            pid,
+            process: process.map(str::to_owned),
+        };
+        let full = holder("0.0.0.0:7476", Some(812), Some("svchost.exe"));
+        assert_eq!(
+            holder_line(PortProtocol::Udp, 7476, &full),
+            "UDP 7476 is in use on 0.0.0.0:7476 by svchost.exe (pid 812)"
+        );
+        let unnamed = holder("[::]:443", Some(4), None);
+        assert_eq!(
+            holder_line(PortProtocol::Tcp, 443, &unnamed),
+            "TCP 443 is in use on [::]:443 by pid 4"
+        );
+        let orphan = holder("127.0.0.1:7476", None, None);
+        assert_eq!(
+            holder_line(PortProtocol::Udp, 7476, &orphan),
+            "UDP 7476 is in use on 127.0.0.1:7476"
+        );
+        // A scoped IPv6 address, as `Display` for `SocketAddr` writes it.
+        let scoped = PortHolder {
+            local: std::net::SocketAddr::V6(std::net::SocketAddrV6::new(
+                "fe80::1".parse().unwrap(),
+                7476,
+                0,
+                3,
+            )),
+            pid: Some(9),
+            process: Some("a b".to_owned()),
+        };
+        assert_eq!(
+            holder_line(PortProtocol::Udp, 7476, &scoped),
+            "UDP 7476 is in use on [fe80::1%3]:7476 by a b (pid 9)"
+        );
     }
 }

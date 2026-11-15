@@ -14,8 +14,8 @@ use alloy_id::datadir::{
 };
 use alloy_id::{ClusterId, Role, Roles};
 use alloy_rt::{
-    Access, Arch, Create, DiskError, EntryKind, HostError, HostFacts, Interface, IoBuf,
-    OpenOptions, Platform, ReadOp, Security, Sid,
+    Access, Arch, Create, DiskError, EntryKind, Host, HostError, HostFacts, Interface, IoBuf,
+    OpenOptions, Platform, PortProtocol, ReadOp, Security, Sid,
 };
 use alloyd::{JoinState, parse_host_file};
 
@@ -229,7 +229,7 @@ pub(crate) async fn run(
     if !kind.client() {
         lines.push(virtualization_line(&facts));
     }
-    lines.push(ports_line(setup, kind, mesh_port, api_port));
+    lines.push(ports_line(setup.host, kind, mesh_port, api_port).await);
     lines.push(match &data {
         Ok(action) => Line::ok(data_dir_text(setup, *action)),
         Err(line) => line.clone(),
@@ -371,16 +371,50 @@ fn virtualization_line(facts: &HostFacts) -> Line {
     }
 }
 
-fn ports_line(setup: &Setup<'_>, kind: Kind, mesh: u16, api: u16) -> Line {
+/// The `ports` check (ARFC 0002 section 3.8): who holds the mesh UDP port,
+/// then, when the node serves the API, the API TCP port, as the `host`
+/// seam's `port_holders` reads them. It opens, binds, and listens on no
+/// socket, so it raises no firewall prompt.
+///
+/// A port is in use when the call returns any holder, whatever its local
+/// address and family. A `fail` names every holder, one line each, in the
+/// order of the call, UDP before TCP, and each call that failed with its
+/// error; its code is 5 when a port is in use, else 1. It sees only ports
+/// that a socket holds: a port the machine refuses to bind for another
+/// reason, as one in a range Windows excludes, passes it.
+pub(crate) async fn ports_line(host: &dyn Host, kind: Kind, mesh: u16, api: u16) -> Line {
     let api = kind.serves_api().then_some(api);
-    let busy = probe::busy_ports(setup, mesh, api);
-    if busy.is_empty() {
+    let asks = [
+        Some((PortProtocol::Udp, mesh)),
+        api.map(|a| (PortProtocol::Tcp, a)),
+    ];
+    let mut lines = Vec::new();
+    let mut in_use = false;
+    for (protocol, port) in asks.into_iter().flatten() {
+        match host.port_holders(protocol, port).await {
+            Ok(holders) => {
+                in_use |= !holders.is_empty();
+                lines.extend(
+                    holders
+                        .iter()
+                        .map(|holder| probe::holder_line(protocol, port, holder)),
+                );
+            }
+            Err(error) => lines.push(format!(
+                "{} {port} cannot be checked: {}",
+                probe::protocol_name(protocol),
+                escape(&error.to_string())
+            )),
+        }
+    }
+    if lines.is_empty() {
         match api {
             Some(api) => Line::ok(format!("UDP {mesh} and TCP {api} are free")),
             None => Line::ok(format!("UDP {mesh} is free")),
         }
     } else {
-        Line::fail(EXIT_CONFLICT, busy.join(", "))
+        let code = if in_use { EXIT_CONFLICT } else { EXIT_FAILURE };
+        Line::fail(code, lines.join("\n"))
     }
 }
 

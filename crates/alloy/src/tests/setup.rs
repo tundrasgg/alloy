@@ -9,7 +9,7 @@
 //! their own, and the steps after them through `after_checks`.
 
 use std::future::Future;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -19,8 +19,8 @@ use alloy_id::DataDir;
 use alloy_id::datadir::InitAction;
 use alloy_proto::cluster::v1alpha1::NodeState;
 use alloy_rt::{
-    Arch, Host, OsHost, Platform, RunState, Runtime, ServiceStatus, StreamAddr, TaskName,
-    UdpOptions,
+    Arch, Host, Net, OsHost, Platform, PortHolder, PortProtocol, RunState, Runtime, ServiceStatus,
+    StreamAddr, TaskName, UdpOptions,
 };
 use alloy_sim::{HostBoot, HostConfig, MachineConfig, RunConfig, RunResult, World};
 use alloyd::{ControlNode, JoinState, Listeners, MemberNode, NodeError, NodePaths};
@@ -34,25 +34,35 @@ use crate::setup::{DataPath, Setup};
 /// A `mem` instance of `host` for `config`, from a simulated host, and the
 /// world that holds its state, which must outlive it.
 fn mem_machine(config: MachineConfig) -> (Arc<dyn Host>, World) {
-    type Slot = Arc<Mutex<Option<(Arc<dyn Host>, World)>>>;
+    let (machine, _, world) = mem_machine_and_net(config);
+    (machine, world)
+}
+
+/// [`mem_machine`], with the simulated host's `mem` instance of `net`
+/// beside it. That `net` refuses every `bind_udp` and `listen` (`MemNet` in
+/// `alloy-sim`).
+fn mem_machine_and_net(config: MachineConfig) -> (Arc<dyn Host>, Arc<dyn Net>, World) {
+    type Booted = (Arc<dyn Host>, Arc<dyn Net>);
+    type Slot = Arc<Mutex<Option<(Booted, World)>>>;
     let slot: Slot = Arc::default();
     let kept = Arc::clone(&slot);
     let summary = alloy_sim::run(RunConfig::new(1), move |world: World| async move {
-        let machine: Arc<Mutex<Option<Arc<dyn Host>>>> = Arc::default();
-        let held = Arc::clone(&machine);
+        let booted: Arc<Mutex<Option<Booted>>> = Arc::default();
+        let held = Arc::clone(&booted);
         let mut host = HostConfig::new(Arc::new(move |b: HostBoot| {
-            *held.lock().unwrap() = Some(Arc::clone(&b.machine));
+            *held.lock().unwrap() = Some((Arc::clone(&b.machine), Arc::clone(b.runtime.net())));
             Box::pin(async {})
         }));
         host.machine = config;
         world.add_host(host).expect("a host");
         world.sleep(Duration::from_millis(1)).await;
-        let machine = machine.lock().unwrap().clone().expect("booted");
-        *kept.lock().unwrap() = Some((machine, world.clone()));
+        let booted = booted.lock().unwrap().clone().expect("booted");
+        *kept.lock().unwrap() = Some((booted, world.clone()));
         Ok(())
     });
     assert_eq!(summary.result, RunResult::Pass);
-    slot.lock().unwrap().take().expect("a machine")
+    let ((machine, net), world) = slot.lock().unwrap().take().expect("a machine");
+    (machine, net, world)
 }
 
 /// The `os` runtime on loopback with every protection `Default`, as in
@@ -278,8 +288,17 @@ fn every_table_check_prints_and_the_first_fail_decides() {
         env: &env,
         styles: Styles::default(),
     };
+    // Another program on the machine listens on the API port.
     let (machine, _world) = mem_machine(MachineConfig {
         virtualization: false,
+        ports: vec![(
+            PortProtocol::Tcp,
+            PortHolder {
+                local: SocketAddr::from((Ipv4Addr::UNSPECIFIED, 443)),
+                pid: Some(77),
+                process: Some("nginx".to_owned()),
+            },
+        )],
         ..MachineConfig::default()
     });
     let setup = Setup {
@@ -287,22 +306,10 @@ fn every_table_check_prints_and_the_first_fail_decides() {
         host: machine.as_ref(),
         data: DataPath::of(&data).unwrap(),
     };
-    let mesh = free_udp_port(&bench.runtime);
-    let held = bench
-        .runtime
-        .net()
-        .listen(
-            StreamAddr::Ip(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))),
-            alloy_rt::ListenOptions::default(),
-        )
-        .unwrap();
-    let StreamAddr::Ip(api) = held.local_addr() else {
-        panic!("a TCP listener has an IP address");
-    };
     let mut err = Vec::new();
     let failure = bench
         .host
-        .block_on(checks::run(&setup, Kind::Init, mesh, api.port(), &mut err))
+        .block_on(checks::run(&setup, Kind::Init, 7476, 443, &mut err))
         .unwrap_err();
     let err = String::from_utf8(err).unwrap();
     assert_eq!(failure.code, EXIT_CONFLICT, "{err}");
@@ -316,9 +323,11 @@ fn every_table_check_prints_and_the_first_fail_decides() {
             "        role"
         ]
     );
-    // The API port is held by the listener above.
-    assert!(lines[4].starts_with("  fail  TCP "), "{err}");
-    assert!(lines[4].ends_with(" is in use"), "{err}");
+    // The API port is held by the program above.
+    assert_eq!(
+        lines[4], "  fail  TCP 443 is in use on 0.0.0.0:443 by nginx (pid 77)",
+        "{err}"
+    );
     assert!(lines[5].starts_with("  fail  "), "{err}");
     assert!(err.contains("no name Alloy reserves is taken"), "{err}");
     assert!(
@@ -328,7 +337,7 @@ fn every_table_check_prints_and_the_first_fail_decides() {
     assert!(
         failure
             .message
-            .starts_with("A check of this machine failed, so alloy init changed nothing: TCP "),
+            .starts_with("A check of this machine failed, so alloy init changed nothing: TCP 443 "),
         "{}",
         failure.message
     );
@@ -892,6 +901,187 @@ fn init_draws_a_cluster_id_that_overlaps_nothing() {
         line.text.ends_with("the address fd00::1/8 on eth1"),
         "{}",
         line.text
+    );
+    bench.finish();
+}
+
+/// The exit code and the ports step of the checks for `kind`, with mesh
+/// port 7476 and API port 443, on a `mem` machine for `config`. The
+/// bench's runtime runs them with its `net` swapped for the simulated
+/// host's `mem` one, which refuses every `bind_udp` and `listen`, so a
+/// check that bound or listened could not find a port free.
+fn ports_step(bench: &Bench, config: MachineConfig, kind: Kind) -> (Option<u8>, String) {
+    let (machine, net, _world) = mem_machine_and_net(config);
+    let unspecified = SocketAddr::from((Ipv4Addr::UNSPECIFIED, 7476));
+    assert!(net.bind_udp(unspecified, UdpOptions::default()).is_err());
+    let os = &bench.runtime;
+    let runtime = Runtime::new(
+        Arc::clone(os.clock()),
+        net,
+        Arc::clone(os.disk_io()),
+        Arc::clone(os.rng()),
+        Arc::clone(os.spawner()),
+    );
+    let env = Env::default();
+    let ctx = Ctx {
+        runtime: &runtime,
+        transport: bench.transport,
+        env: &env,
+        styles: Styles::default(),
+    };
+    let setup = Setup {
+        ctx: &ctx,
+        host: machine.as_ref(),
+        data: DataPath::of(&bench.base.join("data")).unwrap(),
+    };
+    let mut err = Vec::new();
+    let code = bench
+        .host
+        .block_on(checks::run(&setup, kind, 7476, 443, &mut err))
+        .err()
+        .map(|failure| failure.code);
+    let err = String::from_utf8(err).unwrap();
+    // The step whose text starts with a protocol, and the lines that
+    // continue it.
+    let lines: Vec<&str> = err.lines().collect();
+    let at = lines
+        .iter()
+        .position(|l| l.get(8..).is_some_and(|t| t.starts_with("UDP ")))
+        .unwrap_or_else(|| panic!("no ports step in {err}"));
+    let more = lines[at + 1..]
+        .iter()
+        .take_while(|l| l.starts_with("        "))
+        .count();
+    (code, lines[at..=at + more].join("\n"))
+}
+
+fn holder(local: SocketAddr, pid: Option<u32>, process: Option<&str>) -> PortHolder {
+    PortHolder {
+        local,
+        pid,
+        process: process.map(str::to_owned),
+    }
+}
+
+fn join_as(roles: &[alloy_id::Role]) -> Kind {
+    Kind::Join {
+        roles: alloy_id::Roles::of(roles),
+        cluster_id: alloy_id::ClusterId::from_bytes([7; 16]),
+    }
+}
+
+/// Free ports pass on the `mem` `net`, which refuses every bind and listen:
+/// the check asks the `host` seam and opens no socket.
+#[test]
+fn free_ports_pass_with_no_socket_opened() {
+    let bench = Bench::new();
+    let (_, step) = ports_step(&bench, MachineConfig::default(), Kind::Init);
+    assert_eq!(step, "  ok    UDP 7476 and TCP 443 are free");
+    let compute = join_as(&[alloy_id::Role::Compute]);
+    let (_, step) = ports_step(&bench, MachineConfig::default(), compute);
+    assert_eq!(step, "  ok    UDP 7476 is free");
+    // A holder of another port, or of a port over the other protocol,
+    // holds neither.
+    let any = |port: u16| holder(SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)), None, None);
+    let elsewhere = MachineConfig {
+        ports: vec![
+            (PortProtocol::Udp, any(7477)),
+            (PortProtocol::Udp, any(443)),
+            (PortProtocol::Tcp, any(7476)),
+        ],
+        ..MachineConfig::default()
+    };
+    let (_, step) = ports_step(&bench, elsewhere, Kind::Init);
+    assert_eq!(step, "  ok    UDP 7476 and TCP 443 are free");
+    bench.finish();
+}
+
+/// A held port fails with exit 5 and one line for each holder, in the
+/// order `port_holders` returns them, UDP before TCP.
+#[test]
+fn a_held_port_names_each_holder() {
+    let bench = Bench::new();
+    let v4 = SocketAddr::from((Ipv4Addr::UNSPECIFIED, 7476));
+    let one = MachineConfig {
+        ports: vec![(
+            PortProtocol::Udp,
+            holder(v4, Some(812), Some("svchost.exe")),
+        )],
+        ..MachineConfig::default()
+    };
+    assert_eq!(
+        ports_step(&bench, one, join_as(&[alloy_id::Role::Compute])),
+        (
+            Some(EXIT_CONFLICT),
+            "  fail  UDP 7476 is in use on 0.0.0.0:7476 by svchost.exe (pid 812)".to_owned()
+        )
+    );
+    let v6 = SocketAddr::from((Ipv6Addr::UNSPECIFIED, 7476));
+    let api = SocketAddr::from((Ipv6Addr::LOCALHOST, 443));
+    let several = MachineConfig {
+        ports: vec![
+            (PortProtocol::Tcp, holder(api, None, None)),
+            (PortProtocol::Udp, holder(v6, Some(9), None)),
+            (
+                PortProtocol::Udp,
+                holder(v4, Some(812), Some("svchost.exe")),
+            ),
+        ],
+        ..MachineConfig::default()
+    };
+    assert_eq!(
+        ports_step(&bench, several, Kind::Init),
+        (
+            Some(EXIT_CONFLICT),
+            [
+                "  fail  UDP 7476 is in use on 0.0.0.0:7476 by svchost.exe (pid 812)",
+                "        UDP 7476 is in use on [::]:7476 by pid 9",
+                "        TCP 443 is in use on [::1]:443",
+            ]
+            .join("\n")
+        )
+    );
+    bench.finish();
+}
+
+/// A call that fails fails the check with exit 1, naming the protocol, the
+/// port, and the error; with a port in use as well, the exit is 5.
+#[test]
+fn a_failed_call_fails_the_check() {
+    let bench = Bench::new();
+    let (machine, _world) = mem_machine(MachineConfig::default());
+    let ports = |mesh: u16, api: u16| {
+        bench
+            .host
+            .block_on(checks::ports_line(machine.as_ref(), Kind::Init, mesh, api))
+    };
+    let (alone, both) = (ports(0, 443), ports(0, 0));
+    assert_eq!(alone.code, EXIT_FAILURE, "{alone:?}");
+    assert!(
+        alone.text.starts_with("UDP 0 cannot be checked: ") && !alone.text.contains('\n'),
+        "{alone:?}"
+    );
+    assert_eq!(both.code, EXIT_FAILURE, "{both:?}");
+    assert!(
+        both.text.contains("\nTCP 0 cannot be checked: "),
+        "{both:?}"
+    );
+    let held = MachineConfig {
+        ports: vec![(
+            PortProtocol::Udp,
+            holder(SocketAddr::from((Ipv4Addr::LOCALHOST, 7476)), None, None),
+        )],
+        ..MachineConfig::default()
+    };
+    let (machine, _world) = mem_machine(held);
+    let line = bench
+        .host
+        .block_on(checks::ports_line(machine.as_ref(), Kind::Init, 7476, 0));
+    assert_eq!(line.code, EXIT_CONFLICT, "{line:?}");
+    assert!(
+        line.text
+            .starts_with("UDP 7476 is in use on 127.0.0.1:7476\nTCP 0 cannot be checked: "),
+        "{line:?}"
     );
     bench.finish();
 }

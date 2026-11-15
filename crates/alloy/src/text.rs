@@ -4,8 +4,17 @@
 /// `text` wrapped at `width` columns, breaking only at spaces outside
 /// backticks, so that a quoted command, path, or name is never split. A word
 /// longer than `width` stands alone on its line. Columns are counted as
-/// characters.
+/// characters. Each line of `text` is wrapped on its own, so a line break in
+/// `text` stays one.
 pub(crate) fn wrap(text: &str, width: usize) -> String {
+    text.split('\n')
+        .map(|line| wrap_line(line, width))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// One line of [`wrap`].
+fn wrap_line(text: &str, width: usize) -> String {
     let mut words: Vec<String> = Vec::new();
     let mut word = String::new();
     let mut quoted = false;
@@ -123,6 +132,9 @@ mod tests {
         assert_eq!(wrap("one  two", 80), "one two");
         assert_eq!(wrap("x `alloy node list` y", 10), "x\n`alloy node list`\ny");
         assert_eq!(wrap("", 80), "");
+        // Each line wraps on its own, and its break stays.
+        assert_eq!(wrap("a b c\nd e", 3), "a b\nc\nd e");
+        assert_eq!(wrap("a\n", 80), "a\n");
         let long = "word ".repeat(40);
         assert!(
             wrap(&long, 80)
