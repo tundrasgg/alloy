@@ -1,12 +1,13 @@
-//! The `host` seam: facts about the machine, free space at a path, and
-//! control of the one service Alloy owns, `alloyd` (ARFC 0005 section 2.8
-//! and clause 3.1.18, ADR 0071).
+//! The `host` seam: facts about the machine, free space at a path, the
+//! holders of a local TCP or UDP port, and control of the one service Alloy
+//! owns, `alloyd` (ARFC 0005 section 2.8 and clause 3.1.18, ADR 0071).
 //!
 //! It is not part of [`Runtime`](crate::Runtime): only `alloy init` and
 //! `alloy join` build an instance, with `Registry::instantiate::<HostSeam>`
 //! and context `()`, so no other component can stop or disable `alloyd`.
 
 use std::fmt;
+use std::net::SocketAddr;
 
 use alloy_seam::{Detail, Seam, SwapClass};
 
@@ -26,8 +27,8 @@ impl Seam for HostSeam {
 
 /// Seam `host`.
 ///
-/// `facts`, `free_space`, and `service_status` change nothing and need no
-/// privilege. `service` calls on one instance run one at a time, in the
+/// `facts`, `free_space`, `port_holders`, and `service_status` change
+/// nothing and need no privilege. `service` calls on one instance run one at a time, in the
 /// order they are first polled; a dropped `service` future leaves its action
 /// done or not done (ARFC 0005 clause 3.1.18).
 pub trait Host: Send + Sync + fmt::Debug + 'static {
@@ -48,6 +49,26 @@ pub trait Host: Send + Sync + fmt::Debug + 'static {
     /// [`HostError::InvalidInput`] for a path that is not absolute in the
     /// platform's form or is over 4,096 bytes, and [`HostError::Os`].
     fn free_space<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<u64, HostError>>;
+
+    /// The sockets that hold the local `protocol` port `port`, on every
+    /// address of both families. TCP counts listening sockets only. Opens
+    /// no socket (clause 3.1.18.5).
+    ///
+    /// The result is sorted by the derived order of [`PortHolder`], holds
+    /// no two equal entries, and holds at most the first 256. An empty
+    /// result means no socket held the port when the operating system's
+    /// tables were read.
+    ///
+    /// # Errors
+    ///
+    /// [`HostError::InvalidInput`] for `port` 0, [`HostError::Unsupported`]
+    /// on a platform the implementation does not cover, and
+    /// [`HostError::Os`] for a failing operating system call.
+    fn port_holders(
+        &self,
+        protocol: PortProtocol,
+        port: u16,
+    ) -> BoxFuture<'_, Result<Vec<PortHolder>, HostError>>;
 
     /// The state of the service `alloyd` (clause 3.1.18.3).
     ///
@@ -146,6 +167,30 @@ pub struct DiskFact {
     pub path: String,
     /// Bytes.
     pub size: u64,
+}
+
+/// The transport protocol of a port [`Host::port_holders`] asks about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PortProtocol {
+    /// TCP. Only listening sockets hold a port.
+    Tcp,
+    /// UDP. Every socket holds its port, bound or connected.
+    Udp,
+}
+
+/// One socket that holds a local port, and a process that holds the socket
+/// (clause 3.1.18.5). The derived order is the order of `port_holders`'
+/// result: by `local`, then `pid` with `None` first, then `process` with
+/// `None` first.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PortHolder {
+    /// The socket's local address. Its port is the port asked for.
+    pub local: SocketAddr,
+    /// The process that holds the socket, when it can be found.
+    pub pid: Option<u32>,
+    /// That process's name, 1 to 255 bytes with no control character, when
+    /// it can be read. Always `None` when `pid` is `None`.
+    pub process: Option<String>,
 }
 
 /// The state of the service `alloyd`.

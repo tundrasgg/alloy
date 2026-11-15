@@ -1,10 +1,14 @@
-//! `host` under `os` on Linux (ARFC 0005 clauses 3.1.18.1 to 3.1.18.4):
+//! `host` under `os` on Linux (ARFC 0005 clauses 3.1.18.1 to 3.1.18.5):
 //! `uname(2)`, `sysconf`, `/proc/meminfo`, `/dev/kvm`, `/sys/block`,
-//! `statvfs`, and `systemctl` from a fixed path.
+//! `statvfs`, `/proc/net` and the `fd` links of `/proc`, and `systemctl`
+//! from a fixed path.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{CStr, CString};
 use std::fs::OpenOptions;
 use std::io::{ErrorKind, Read};
+use std::net::SocketAddr;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -13,8 +17,11 @@ use std::time::{Duration, Instant};
 use alloy_seam::Detail;
 
 use super::parse::{self, MAX_ARCH, MAX_DISKS, MAX_PATH, MAX_RELEASE};
+use super::ports::{self, PROC_LISTEN};
 use super::{Manager, ServiceAction};
-use crate::{Arch, DiskFact, HostError, HostFacts, Platform, ServiceStatus};
+use crate::{
+    Arch, DiskFact, HostError, HostFacts, Platform, PortHolder, PortProtocol, ServiceStatus,
+};
 
 /// The `Os` code of a call cut short because the runtime stopped: `EIO`.
 pub(super) const STOPPED: i32 = libc::EIO;
@@ -177,6 +184,116 @@ pub(super) fn free_space(path: &str) -> Result<u64, HostError> {
             Err(e) => return Err(os_error(&e)),
         }
     }
+}
+
+/// The `/proc/net` tables of `protocol`, IPv4 first.
+fn tables(protocol: PortProtocol) -> [&'static str; 2] {
+    match protocol {
+        PortProtocol::Tcp => ["/proc/net/tcp", "/proc/net/tcp6"],
+        PortProtocol::Udp => ["/proc/net/udp", "/proc/net/udp6"],
+    }
+}
+
+/// The sockets of the calling process's network namespace whose local port
+/// is `port`, with their inodes. For TCP only listening sockets count. A
+/// table that does not exist gives none.
+fn sockets(protocol: PortProtocol, port: u16) -> Result<Vec<(SocketAddr, u64)>, HostError> {
+    let mut found = Vec::new();
+    for table in tables(protocol) {
+        let bytes = match std::fs::read(table) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == ErrorKind::NotFound => continue,
+            Err(e) => return Err(os_error(&e)),
+        };
+        let text = String::from_utf8_lossy(&bytes);
+        for line in text.lines().skip(1) {
+            let Some(socket) = ports::proc_net_line(line) else {
+                continue;
+            };
+            let counts = protocol == PortProtocol::Udp || socket.state == PROC_LISTEN;
+            if socket.local.port() == port && counts {
+                found.push((socket.local, socket.inode));
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// A pid and the name of its process, when it can be read.
+type Owner = (u32, Option<String>);
+
+/// The processes that hold each socket of `inodes`: every process whose
+/// `fd` directory holds a link to `socket:[<inode>]`. A process directory,
+/// link, or file that cannot be read is skipped; `/proc` itself must be.
+fn owners(inodes: &BTreeSet<u64>) -> Result<BTreeMap<u64, Vec<Owner>>, HostError> {
+    let mut owners: BTreeMap<u64, Vec<Owner>> = BTreeMap::new();
+    if inodes.is_empty() {
+        return Ok(owners);
+    }
+    let entries = std::fs::read_dir("/proc").map_err(|e| os_error(&e))?;
+    for entry in entries.filter_map(Result::ok) {
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+            .and_then(|n| n.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let Ok(fds) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
+            continue;
+        };
+        let mut comm: Option<Option<String>> = None;
+        for fd in fds.filter_map(Result::ok) {
+            let Ok(target) = std::fs::read_link(fd.path()) else {
+                continue;
+            };
+            let Some(inode) = ports::socket_inode(target.as_os_str().as_bytes()) else {
+                continue;
+            };
+            if !inodes.contains(&inode) {
+                continue;
+            }
+            let process = comm
+                .get_or_insert_with(|| {
+                    std::fs::read(format!("/proc/{pid}/comm"))
+                        .ok()
+                        .and_then(|bytes| ports::linux_name(&bytes))
+                })
+                .clone();
+            owners.entry(inode).or_default().push((pid, process));
+        }
+    }
+    Ok(owners)
+}
+
+pub(super) fn port_holders(
+    protocol: PortProtocol,
+    port: u16,
+) -> Result<Vec<PortHolder>, HostError> {
+    let sockets = sockets(protocol, port)?;
+    let inodes: BTreeSet<u64> = sockets
+        .iter()
+        .map(|&(_, inode)| inode)
+        .filter(|&inode| inode != 0)
+        .collect();
+    let owners = owners(&inodes)?;
+    let mut holders = Vec::new();
+    for (local, inode) in sockets {
+        match owners.get(&inode).filter(|_| inode != 0) {
+            Some(processes) => holders.extend(processes.iter().map(|(pid, process)| PortHolder {
+                local,
+                pid: Some(*pid),
+                process: process.clone(),
+            })),
+            None => holders.push(PortHolder {
+                local,
+                pid: None,
+                process: None,
+            }),
+        }
+    }
+    Ok(holders)
 }
 
 /// The `systemctl` to run, or `Unsupported` when systemd is not the running

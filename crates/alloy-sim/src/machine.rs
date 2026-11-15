@@ -1,12 +1,12 @@
-//! The `mem` instance of `host` (ARFC 0005 clauses 3.1.18.1 to 3.1.18.3):
+//! The `mem` instance of `host` (ARFC 0005 clauses 3.1.18.1 to 3.1.18.5):
 //! one per simulated host, shared by every start, reporting the host's
 //! [`MachineConfig`] and holding the state of its service `alloyd`.
 
 use std::sync::{Mutex, Weak};
 
 use alloy_rt::{
-    Arch, BoxFuture, DiskFact, Host, HostError, HostFacts, Platform, RtPath, RunState,
-    ServiceAction, ServiceStatus,
+    Arch, BoxFuture, DiskFact, Host, HostError, HostFacts, Platform, PortHolder, PortProtocol,
+    RtPath, RunState, ServiceAction, ServiceStatus,
 };
 use alloy_seam::Detail;
 
@@ -22,6 +22,11 @@ const MAX_DISKS: usize = 32;
 const MAX_RELEASE: usize = 64;
 /// The most bytes of an `Arch::Other` text (section 7).
 const MAX_ARCH: usize = 32;
+/// The most `MachineConfig::ports` entries, and the most entries of a
+/// `port_holders` result (section 7).
+const MAX_HOLDERS: usize = 256;
+/// The most bytes of `PortHolder::process` (section 7).
+const MAX_PROCESS: usize = 255;
 
 /// The machine a `mem` `host` instance describes (clause 3.1.18). The disks
 /// it reports are the host's devices.
@@ -42,6 +47,11 @@ pub struct MachineConfig {
     pub virtualization: bool,
     /// Whether the service `alloyd` is installed. Default true.
     pub service: bool,
+    /// Holders of ports that `port_holders` reports beside the host's own
+    /// sockets, as other programs on the machine would hold them. They
+    /// hold no port of the host's `net` (clause 3.1.18.5). At most 256.
+    /// Default empty.
+    pub ports: Vec<(PortProtocol, PortHolder)>,
 }
 
 impl Default for MachineConfig {
@@ -58,14 +68,17 @@ impl Default for MachineConfig {
             memory: 8_589_934_592,
             virtualization: true,
             service: true,
+            ports: Vec::new(),
         }
     }
 }
 
 impl MachineConfig {
     /// Why `add_host` refuses this configuration: `cores` 0, a Linux
-    /// `release` over 64 bytes, or an `Arch::Other` text outside 1 to 32
-    /// bytes.
+    /// `release` over 64 bytes, an `Arch::Other` text outside 1 to 32
+    /// bytes, more than 256 `ports` entries, or a `ports` entry whose
+    /// `local` port is 0, whose `process` is outside 1 to 255 bytes, or
+    /// whose `process` is `Some` with `pid` `None` (clause 3.1.18.5).
     pub(crate) fn check(&self) -> Result<(), &'static str> {
         if self.cores == 0 {
             return Err("machine cores must be 1 or more");
@@ -80,8 +93,40 @@ impl MachineConfig {
         {
             return Err("a machine's Arch::Other text is 1 to 32 bytes");
         }
+        if self.ports.len() > MAX_HOLDERS {
+            return Err("a machine has at most 256 ports entries");
+        }
+        for (_, holder) in &self.ports {
+            if holder.local.port() == 0 {
+                return Err("a machine's ports entry has a local port from 1 to 65,535");
+            }
+            if let Some(process) = &holder.process {
+                if !(1..=MAX_PROCESS).contains(&process.len()) {
+                    return Err("a machine's ports entry has a process of 1 to 255 bytes");
+                }
+                if holder.pid.is_none() {
+                    return Err("a machine's ports entry with a process has a pid");
+                }
+            }
+        }
         Ok(())
     }
+}
+
+/// The second and third steps of clause 3.1.18.5: each control character
+/// becomes U+FFFD, then the text is cut to 255 bytes at a character
+/// boundary. `None` when that leaves nothing.
+fn process_text(text: &str) -> Option<String> {
+    let mut replaced: String = text
+        .chars()
+        .map(|c| if c.is_control() { '\u{FFFD}' } else { c })
+        .collect();
+    let mut end = replaced.len().min(MAX_PROCESS);
+    while !replaced.is_char_boundary(end) {
+        end -= 1;
+    }
+    replaced.truncate(end);
+    (!replaced.is_empty()).then_some(replaced)
 }
 
 /// The `mem` instance of `host` of one simulated host.
@@ -208,6 +253,39 @@ impl Host for MemMachine {
             };
             let core = lock(&shared.core);
             Ok(core.host(self.host).map_or(0, |host| host.disk.free()))
+        })
+    }
+
+    /// The host's `net` opens no socket yet: it refuses every `bind_udp`
+    /// and `listen` until T-0077 and T-0078 build them. So the result is
+    /// the `ports` entries of `protocol` and `port` alone, which hold no
+    /// port and outlive a crash. Writes no trace record.
+    fn port_holders(
+        &self,
+        protocol: PortProtocol,
+        port: u16,
+    ) -> BoxFuture<'_, Result<Vec<PortHolder>, HostError>> {
+        Box::pin(async move {
+            if port == 0 {
+                return Err(HostError::InvalidInput(Detail::new(
+                    "port_holders takes a port from 1 to 65,535",
+                )));
+            }
+            let mut holders: Vec<PortHolder> = self
+                .config
+                .ports
+                .iter()
+                .filter(|(p, holder)| *p == protocol && holder.local.port() == port)
+                .map(|(_, holder)| PortHolder {
+                    local: holder.local,
+                    pid: holder.pid,
+                    process: holder.process.as_deref().and_then(process_text),
+                })
+                .collect();
+            holders.sort();
+            holders.dedup();
+            holders.truncate(MAX_HOLDERS);
+            Ok(holders)
         })
     }
 

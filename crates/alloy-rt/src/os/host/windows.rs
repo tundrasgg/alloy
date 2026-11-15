@@ -1,15 +1,21 @@
-//! `host` under `os` on Windows (ARFC 0005 clauses 3.1.18.1 to 3.1.18.4):
+//! `host` under `os` on Windows (ARFC 0005 clauses 3.1.18.1 to 3.1.18.5):
 //! `RtlGetVersion`, `IsWow64Process2`, the process token's elevation,
 //! `GetActiveProcessorCount`, `GlobalMemoryStatusEx`,
-//! `IsProcessorFeaturePresent`, `GetDiskFreeSpaceExW`, and the service
-//! control manager for the service `alloyd`.
+//! `IsProcessorFeaturePresent`, `GetDiskFreeSpaceExW`, the extended TCP and
+//! UDP tables with `QueryFullProcessImageNameW`, and the service control
+//! manager for the service `alloyd`.
 
+use std::collections::BTreeMap;
 use std::ptr;
 use std::time::Instant;
 
 use alloy_seam::Detail;
 use windows_sys::Wdk::System::SystemServices::RtlGetVersion;
-use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE};
+use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, NO_ERROR};
+use windows_sys::Win32::NetworkManagement::IpHelper::{
+    GetExtendedTcpTable, GetExtendedUdpTable, TCP_TABLE_OWNER_PID_LISTENER, UDP_TABLE_OWNER_PID,
+};
+use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6};
 use windows_sys::Win32::Security::{
     GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation,
 };
@@ -28,12 +34,16 @@ use windows_sys::Win32::System::SystemInformation::{
 };
 use windows_sys::Win32::System::Threading::{
     ALL_PROCESSOR_GROUPS, GetActiveProcessorCount, GetCurrentProcess, IsProcessorFeaturePresent,
-    IsWow64Process2, OpenProcessToken, PF_VIRT_FIRMWARE_ENABLED,
+    IsWow64Process2, OpenProcess, OpenProcessToken, PF_VIRT_FIRMWARE_ENABLED, PROCESS_NAME_WIN32,
+    PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
 
 use super::parse::MAX_PATH;
+use super::ports::{self, RowKind};
 use super::{Manager, ServiceAction};
-use crate::{Arch, HostError, HostFacts, Platform, RunState, ServiceStatus};
+use crate::{
+    Arch, HostError, HostFacts, Platform, PortHolder, PortProtocol, RunState, ServiceStatus,
+};
 
 /// The `Os` code of a call cut short because the runtime stopped:
 /// `ERROR_IO_DEVICE`.
@@ -242,6 +252,134 @@ pub(super) fn free_space(path: &str) -> Result<u64, HostError> {
             Err(error) => return Err(HostError::Os { code: code(error) }),
         }
     }
+}
+
+/// `AF_INET`, then `AF_INET6`: the order clause 3.1.18.5 reads the tables
+/// in.
+const FAMILIES: [(u32, bool); 2] = [(AF_INET as u32, false), (AF_INET6 as u32, true)];
+
+/// The calls of one extended table after the first that may still find
+/// its buffer too small (ARFC 0005 section 7).
+const TABLE_RETRIES: u32 = 4;
+
+/// The UTF-16 units of the buffer `QueryFullProcessImageNameW` writes into.
+const IMAGE_NAME_UNITS: u32 = 32_768;
+
+/// One call of `GetExtendedTcpTable` or `GetExtendedUdpTable` for
+/// `protocol` and `family` into `buffer`, of `size` bytes, which the call
+/// sets to the size it needs when the buffer is too small.
+#[allow(unsafe_code, reason = "the extended table calls have no safe binding")]
+fn table_call(protocol: PortProtocol, family: u32, buffer: &mut [u32], size: &mut u32) -> u32 {
+    let table = if buffer.is_empty() {
+        ptr::null_mut()
+    } else {
+        buffer.as_mut_ptr().cast()
+    };
+    match protocol {
+        // SAFETY: `table` is null with `size` 0, or points to `buffer`,
+        // writable for the `size` bytes passed, which the caller sets to at
+        // most its length in bytes; `size` is valid and writable.
+        PortProtocol::Tcp => unsafe {
+            GetExtendedTcpTable(table, size, 0, family, TCP_TABLE_OWNER_PID_LISTENER, 0)
+        },
+        // SAFETY: as for the TCP table above.
+        PortProtocol::Udp => unsafe {
+            GetExtendedUdpTable(table, size, 0, family, UDP_TABLE_OWNER_PID, 0)
+        },
+    }
+}
+
+/// The bytes of the extended table of `protocol` and `family`: a size of 0
+/// first, then while the buffer is too small, a buffer of the size the call
+/// returned, at most 4 more times.
+fn extended_table(protocol: PortProtocol, family: u32) -> Result<Vec<u8>, HostError> {
+    let mut buffer: Vec<u32> = Vec::new();
+    let mut size = 0_u32;
+    let mut result = table_call(protocol, family, &mut buffer, &mut size);
+    let mut retries = 0;
+    while result == ERROR_INSUFFICIENT_BUFFER {
+        if retries == TABLE_RETRIES {
+            return Err(HostError::Os {
+                code: code(ERROR_INSUFFICIENT_BUFFER),
+            });
+        }
+        retries += 1;
+        // A `u32` count of 4-byte words always fits in `usize` here.
+        buffer = vec![0_u32; size.div_ceil(4) as usize];
+        size = size.div_ceil(4).saturating_mul(4);
+        result = table_call(protocol, family, &mut buffer, &mut size);
+    }
+    if result != NO_ERROR {
+        return Err(HostError::Os { code: code(result) });
+    }
+    Ok(buffer.iter().flat_map(|word| word.to_ne_bytes()).collect())
+}
+
+/// The name of the process `pid`, or `None` when it cannot be opened or
+/// its image name cannot be read, as for the System Idle Process and the
+/// System process.
+#[allow(
+    unsafe_code,
+    reason = "OpenProcess and QueryFullProcessImageNameW have no safe binding"
+)]
+fn process_name(pid: u32) -> Option<String> {
+    // SAFETY: OpenProcess takes plain values and returns a handle or null.
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return None;
+    }
+    let mut name = vec![0_u16; IMAGE_NAME_UNITS as usize];
+    let mut units = IMAGE_NAME_UNITS;
+    // SAFETY: `handle` was opened above with the access the call needs,
+    // `name` is writable for `units` UTF-16 units, and `units` is valid and
+    // writable.
+    let ok = unsafe {
+        QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_WIN32,
+            name.as_mut_ptr(),
+            &raw mut units,
+        )
+    };
+    // SAFETY: `handle` is a handle this function opened and closes once.
+    unsafe { CloseHandle(handle) };
+    if ok == 0 {
+        return None;
+    }
+    let units = (units as usize).min(name.len());
+    ports::windows_name(&name[..units])
+}
+
+pub(super) fn port_holders(
+    protocol: PortProtocol,
+    port: u16,
+) -> Result<Vec<PortHolder>, HostError> {
+    let mut names: BTreeMap<u32, Option<String>> = BTreeMap::new();
+    let mut holders = Vec::new();
+    for (family, v6) in FAMILIES {
+        let table = extended_table(protocol, family)?;
+        let kind = match (protocol, v6) {
+            (PortProtocol::Tcp, false) => RowKind::Tcp4,
+            (PortProtocol::Tcp, true) => RowKind::Tcp6,
+            (PortProtocol::Udp, false) => RowKind::Udp4,
+            (PortProtocol::Udp, true) => RowKind::Udp6,
+        };
+        for (local, pid) in ports::windows_rows(&table, kind) {
+            if local.port() != port {
+                continue;
+            }
+            let process = names
+                .entry(pid)
+                .or_insert_with(|| process_name(pid))
+                .clone();
+            holders.push(PortHolder {
+                local,
+                pid: Some(pid),
+                process,
+            });
+        }
+    }
+    Ok(holders)
 }
 
 /// A service control manager handle, closed when dropped.

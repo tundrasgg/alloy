@@ -1,7 +1,9 @@
 //! The `os` implementation of `host` (ARFC 0005 clause 3.1.18): the
-//! machine's facts, free space, and the service `alloyd` through systemd on
-//! Linux and the service control manager on Windows. On any other platform
-//! every method returns `Unsupported`.
+//! machine's facts, free space, the holders of a local port from the
+//! operating system's socket tables, and the service `alloyd` through
+//! systemd on Linux and the service control manager on Windows. On any
+//! other platform every method but `port_holders` of port 0 returns
+//! `Unsupported`.
 //!
 //! Every call runs on the runtime's blocking pool. A `service` action runs
 //! to its end there with a deadline 60 seconds after it started, so a
@@ -10,11 +12,15 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::{BoxFuture, HostError, HostFacts, RunState, ServiceAction, ServiceStatus};
+use crate::{
+    BoxFuture, HostError, HostFacts, PortHolder, PortProtocol, RunState, ServiceAction,
+    ServiceStatus,
+};
 
 use super::Host as OsRuntime;
 
 mod parse;
+mod ports;
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -79,6 +85,19 @@ impl crate::Host for OsMachine {
     fn free_space<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<u64, HostError>> {
         let path = path.to_owned();
         self.blocking(move || sys::free_space(&path))
+    }
+
+    fn port_holders(
+        &self,
+        protocol: PortProtocol,
+        port: u16,
+    ) -> BoxFuture<'_, Result<Vec<PortHolder>, HostError>> {
+        if port == 0 {
+            return Box::pin(std::future::ready(Err(HostError::InvalidInput(
+                alloy_seam::Detail::new("port_holders takes a port from 1 to 65,535"),
+            ))));
+        }
+        self.blocking(move || sys::port_holders(protocol, port).map(ports::finish))
     }
 
     fn service_status(&self) -> BoxFuture<'_, Result<ServiceStatus, HostError>> {

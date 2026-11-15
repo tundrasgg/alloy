@@ -4,7 +4,7 @@
 use std::time::Instant;
 
 use super::{Manager, ServiceAction};
-use crate::{HostError, HostFacts, ServiceStatus};
+use crate::{HostError, HostFacts, PortHolder, PortProtocol, ServiceStatus};
 
 /// The `Os` code of a call cut short because the runtime stopped: `EIO`.
 pub(super) const STOPPED: i32 = 5;
@@ -14,6 +14,13 @@ pub(super) fn facts() -> Result<HostFacts, HostError> {
 }
 
 pub(super) fn free_space(_path: &str) -> Result<u64, HostError> {
+    Err(HostError::Unsupported)
+}
+
+pub(super) fn port_holders(
+    _protocol: PortProtocol,
+    _port: u16,
+) -> Result<Vec<PortHolder>, HostError> {
     Err(HostError::Unsupported)
 }
 

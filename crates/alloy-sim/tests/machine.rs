@@ -1,7 +1,8 @@
 //! The `mem` instance of `host` through the public interface: facts from
 //! `MachineConfig`, free space, the service rules, the service state across
-//! a crash and a restart, the `service` record, and the registry's factory
-//! (ARFC 0005 clauses 3.1.18.1 to 3.1.18.3 and section 4.1).
+//! a crash and a restart, the `service` record, the registry's factory, and
+//! the port holders from `MachineConfig::ports` (ARFC 0005 clauses 3.1.18.1
+//! to 3.1.18.5 and section 4.1).
 
 use std::future::Future;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -9,7 +10,7 @@ use std::time::Duration;
 
 use alloy_rt::{
     Access, Arch, BoxFuture, Create, DiskFact, Host, HostError, HostSeam, OpenOptions, Platform,
-    RtPath, RunState, ServiceAction, ServiceStatus,
+    PortHolder, PortProtocol, RtPath, RunState, ServiceAction, ServiceStatus,
 };
 use alloy_seam::{ConfigValue, Detail, ImplName};
 use alloy_sim::{
@@ -413,6 +414,194 @@ fn the_registry_factory_returns_the_hosts_instance() {
             .map_err(fail)?;
         world.sleep(Duration::from_millis(1)).await;
         check(*same.lock().unwrap() == Some(true), "same instance")
+    });
+    assert_eq!(summary.result, RunResult::Pass, "{:?}", summary.failure);
+}
+
+fn holder(local: &str, pid: Option<u32>, process: Option<&str>) -> PortHolder {
+    PortHolder {
+        local: local.parse().expect("a valid socket address"),
+        pid,
+        process: process.map(str::to_owned),
+    }
+}
+
+/// Counts every record written.
+#[derive(Clone, Default)]
+struct Count(Shared<u64>);
+
+impl Observer for Count {
+    fn record(&mut self, _record: &Record<'_>) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) += 1;
+    }
+}
+
+#[test]
+fn port_holders_are_the_ports_entries_sorted_and_across_a_crash() {
+    let count = Count::default();
+    let summary = run(RunConfig::new(7), move |world: World| async move {
+        world.observe(Box::new(count.clone())).map_err(fail)?;
+        let boots: Boots = Arc::default();
+        let mut config = recording_host(&boots);
+        let named = holder("[::]:8080", Some(9), Some("nginx"));
+        config.machine.ports = vec![
+            (PortProtocol::Tcp, named.clone()),
+            (
+                PortProtocol::Tcp,
+                holder("0.0.0.0:8080", Some(9), Some("nginx")),
+            ),
+            (PortProtocol::Tcp, holder("127.0.0.1:8080", None, None)),
+            (PortProtocol::Tcp, holder("127.0.0.1:8080", Some(3), None)),
+            (
+                PortProtocol::Tcp,
+                holder("0.0.0.0:8080", Some(2), Some("a")),
+            ),
+            (PortProtocol::Tcp, named),
+            (
+                PortProtocol::Udp,
+                holder("0.0.0.0:8080", Some(4), Some("dns")),
+            ),
+            (
+                PortProtocol::Tcp,
+                holder("0.0.0.0:8081", Some(5), Some("other")),
+            ),
+            (
+                PortProtocol::Udp,
+                holder("[::1]:53", Some(6), Some("\u{1b}[2J\r\n\u{9b}x")),
+            ),
+        ];
+        let host = world.add_host(config).map_err(fail)?;
+        world.sleep(Duration::from_millis(1)).await;
+        let machine = machine_of(&boots, 0);
+        let tcp = vec![
+            holder("0.0.0.0:8080", Some(2), Some("a")),
+            holder("0.0.0.0:8080", Some(9), Some("nginx")),
+            holder("127.0.0.1:8080", None, None),
+            holder("127.0.0.1:8080", Some(3), None),
+            holder("[::]:8080", Some(9), Some("nginx")),
+        ];
+        let before = *count.0.lock().unwrap();
+        let got = machine.port_holders(PortProtocol::Tcp, 8080).await;
+        check(
+            *count.0.lock().unwrap() == before,
+            "port_holders writes no trace record",
+        )?;
+        check(got == Ok(tcp.clone()), "TCP 8080: sorted, no two equal")?;
+        check(
+            machine.port_holders(PortProtocol::Udp, 8080).await
+                == Ok(vec![holder("0.0.0.0:8080", Some(4), Some("dns"))]),
+            "UDP 8080",
+        )?;
+        check(
+            machine.port_holders(PortProtocol::Udp, 53).await
+                == Ok(vec![holder(
+                    "[::1]:53",
+                    Some(6),
+                    Some("\u{fffd}[2J\u{fffd}\u{fffd}\u{fffd}x"),
+                )]),
+            "control characters become U+FFFD",
+        )?;
+        check(
+            machine.port_holders(PortProtocol::Tcp, 53).await == Ok(vec![]),
+            "no TCP holder of 53",
+        )?;
+        check(
+            matches!(
+                machine.port_holders(PortProtocol::Udp, 0).await,
+                Err(HostError::InvalidInput(_))
+            ),
+            "port 0",
+        )?;
+        world
+            .apply(Fault::Crash {
+                host,
+                after_polls: 0,
+                unsynced: Unsynced::Lost,
+            })
+            .map_err(fail)?;
+        check(
+            machine.port_holders(PortProtocol::Tcp, 8080).await == Ok(tcp.clone()),
+            "a crash leaves the ports entries",
+        )?;
+        world
+            .apply(Fault::Restart {
+                host,
+                rng_replay: None,
+            })
+            .map_err(fail)?;
+        world.sleep(Duration::from_millis(1)).await;
+        check(
+            machine_of(&boots, 1)
+                .port_holders(PortProtocol::Tcp, 8080)
+                .await
+                == Ok(tcp),
+            "and so does a restart",
+        )?;
+        Ok(())
+    });
+    assert_eq!(summary.result, RunResult::Pass, "{:?}", summary.failure);
+}
+
+#[test]
+fn a_process_that_grows_past_255_bytes_is_cut() {
+    let summary = run(RunConfig::new(8), |world: World| async move {
+        let boots: Boots = Arc::default();
+        let mut config = recording_host(&boots);
+        // 255 bytes of ESC, each of which becomes the 3 bytes of U+FFFD.
+        let escapes = "\u{1b}".repeat(255);
+        config.machine.ports = vec![(
+            PortProtocol::Udp,
+            holder("0.0.0.0:9", Some(1), Some(&escapes)),
+        )];
+        world.add_host(config).map_err(fail)?;
+        world.sleep(Duration::from_millis(1)).await;
+        let got = machine_of(&boots, 0)
+            .port_holders(PortProtocol::Udp, 9)
+            .await
+            .map_err(host_fail)?;
+        let cut = "\u{fffd}".repeat(85);
+        check(
+            got == vec![holder("0.0.0.0:9", Some(1), Some(&cut))],
+            "cut to 255 bytes at a character boundary",
+        )
+    });
+    assert_eq!(summary.result, RunResult::Pass, "{:?}", summary.failure);
+}
+
+#[test]
+fn ports_entries_out_of_range_are_refused() {
+    let summary = run(RunConfig::new(9), |world: World| async move {
+        let with = |ports: Vec<(PortProtocol, PortHolder)>| {
+            let mut config = HostConfig::new(boot(|_| async {}));
+            config.machine.ports = ports;
+            config
+        };
+        let long = "a".repeat(256);
+        let entry = |local, pid, process| vec![(PortProtocol::Udp, holder(local, pid, process))];
+        let refused = [
+            ("port 0", entry("0.0.0.0:0", Some(1), None)),
+            ("empty process", entry("0.0.0.0:1", Some(1), Some(""))),
+            ("long process", entry("0.0.0.0:1", Some(1), Some(&long))),
+            ("process without pid", entry("0.0.0.0:1", None, Some("a"))),
+            (
+                "257 entries",
+                vec![(PortProtocol::Udp, holder("0.0.0.0:1", None, None)); 257],
+            ),
+        ];
+        for (what, ports) in refused {
+            check(
+                matches!(world.add_host(with(ports)), Err(WorldError::Invalid(_))),
+                what,
+            )?;
+        }
+        let at_most = "a".repeat(255);
+        let mut accepted = vec![(PortProtocol::Udp, holder("0.0.0.0:1", None, None)); 255];
+        accepted.push((
+            PortProtocol::Tcp,
+            holder("[::]:65535", Some(1), Some(&at_most)),
+        ));
+        world.add_host(with(accepted)).map_err(fail)?;
+        Ok(())
     });
     assert_eq!(summary.result, RunResult::Pass, "{:?}", summary.failure);
 }

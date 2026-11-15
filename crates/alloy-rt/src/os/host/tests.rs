@@ -8,7 +8,7 @@ use alloy_seam::{ConfigValue, ImplName, Registry, RegistryBuilder};
 
 use super::*;
 use crate::os::register_os;
-use crate::{Arch, Host, HostSeam, OsHost, Platform};
+use crate::{Arch, Host, HostSeam, OsHost, Platform, PortHolder};
 
 fn machine(host: &OsHost) -> Arc<dyn Host> {
     let mut builder = RegistryBuilder::new();
@@ -89,6 +89,87 @@ fn free_space_reads_the_nearest_existing_ancestor() {
             Err(HostError::InvalidInput(_))
         ));
     });
+}
+
+/// The name `port_holders` gives this process (clause 3.1.18.5).
+fn own_name() -> String {
+    if cfg!(windows) {
+        let exe = std::env::current_exe().unwrap();
+        exe.file_name().unwrap().to_str().unwrap().to_owned()
+    } else {
+        let comm = std::fs::read_to_string("/proc/self/comm").unwrap();
+        comm.strip_suffix('\n').unwrap_or(&comm).to_owned()
+    }
+}
+
+/// Whether `holders` holds an entry for `local` with this process's pid,
+/// and if so, whether it names this process.
+fn own_entry(holders: &[PortHolder], local: std::net::SocketAddr) -> Option<bool> {
+    let pid = std::process::id();
+    holders
+        .iter()
+        .find(|h| h.local == local && h.pid == Some(pid))
+        .map(|h| h.process.as_deref() == Some(own_name().as_str()))
+}
+
+/// Binds only on loopback with port 0, so that no firewall prompts. A
+/// connected stream and an accepted one are not listeners, so their ports
+/// give no entry with this pid.
+#[test]
+fn port_holders_find_this_process_on_loopback() {
+    use std::net::{TcpListener, TcpStream, UdpSocket};
+
+    use crate::PortProtocol::{Tcp, Udp};
+
+    if !cfg!(any(target_os = "linux", windows)) {
+        with_machine(async |machine| {
+            assert_eq!(
+                machine.port_holders(Udp, 7476).await,
+                Err(HostError::Unsupported)
+            );
+        });
+        return;
+    }
+    let udp4 = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let udp6 = UdpSocket::bind("[::1]:0").ok();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let listen6 = TcpListener::bind("[::1]:0").ok();
+    let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let (accepted, _) = listener.accept().unwrap();
+    with_machine(async |machine| {
+        let mut owned = vec![(Udp, udp4.local_addr().unwrap())];
+        owned.push((Tcp, listener.local_addr().unwrap()));
+        owned.extend(udp6.iter().map(|s| (Udp, s.local_addr().unwrap())));
+        owned.extend(listen6.iter().map(|s| (Tcp, s.local_addr().unwrap())));
+        for (protocol, local) in owned {
+            let holders = machine.port_holders(protocol, local.port()).await.unwrap();
+            assert!(holders.iter().all(|h| h.local.port() == local.port()));
+            assert!(holders.windows(2).all(|w| w[0] < w[1]), "{holders:?}");
+            assert_eq!(
+                own_entry(&holders, local),
+                Some(true),
+                "{protocol:?} {local}: {holders:?}"
+            );
+        }
+        let client = stream.local_addr().unwrap();
+        let holders = machine.port_holders(Tcp, client.port()).await.unwrap();
+        assert_eq!(own_entry(&holders, client), None, "{holders:?}");
+        assert!(matches!(
+            machine.port_holders(Tcp, 0).await,
+            Err(HostError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            machine.port_holders(Udp, 0).await,
+            Err(HostError::InvalidInput(_))
+        ));
+    });
+    let served = listener.local_addr().unwrap();
+    drop(listener);
+    with_machine(async |machine| {
+        let holders = machine.port_holders(Tcp, served.port()).await.unwrap();
+        assert_eq!(own_entry(&holders, served), None, "{holders:?}");
+    });
+    drop((stream, accepted));
 }
 
 #[test]
